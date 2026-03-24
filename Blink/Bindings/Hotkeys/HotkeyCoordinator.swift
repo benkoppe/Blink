@@ -8,7 +8,7 @@
 import Foundation
 import Observation
 
-/// Observes HotkeyStore for changes and keeps HotkeyManager registrations in sync
+/// Observes BindingStore for changes and keeps HotkeyManager registrations in sync
 /// Uses withObservationTracking to re-register whenever any hotkey or enabled state changes.
 final class HotkeyCoordinator {
     private let store: BindingStore

@@ -29,6 +29,19 @@ final class BindingStore {
     private(set) var space10Hotkey: HotkeyCombination
     private(set) var hotkeyEnabledStates: [BoundAction: Bool] = [:]
 
+    // MARK: - Swipe bindings
+
+    private(set) var swipeBindings: [SwipeBindingID: SwipeBinding] = [:]
+
+    // MARK: - Default swipe slots
+
+    static let defaultSwipeSlots: [SwipeBindingID: SwipeBinding] = [
+        SwipeBindingID(direction: .left, fingerCount: 3): .defaultLeft3,
+        SwipeBindingID(direction: .right, fingerCount: 3): .defaultRight3,
+        SwipeBindingID(direction: .left, fingerCount: 4): .defaultLeft4,
+        SwipeBindingID(direction: .right, fingerCount: 4): .defaultRight4,
+    ]
+
     private let defaults: UserDefaults
 
     // MARK: - Init
@@ -55,6 +68,12 @@ final class BindingStore {
                 defaults.object(forKey: "enabled.\(action.rawValue)") as? Bool ?? true
         }
         hotkeyEnabledStates = states
+
+        var bindings: [SwipeBindingID: SwipeBinding] = [:]
+        for (id, defaultBinding) in BindingStore.defaultSwipeSlots {
+            bindings[id] = defaults.swipeBinding(forKey: id.defaultsKey) ?? defaultBinding
+        }
+        swipeBindings = bindings
     }
 
     // MARK: - Hotkey read
@@ -157,6 +176,37 @@ final class BindingStore {
             defaults.setHotkey(hotkeyCombo(for: action), forKey: "hotkey.\(action.rawValue)")
         }
     }
+
+    // MARK: - Swipe binding read
+
+    func swipeBinding(for id: SwipeBindingID) -> SwipeBinding? {
+        swipeBindings[id]
+    }
+
+    // MARK: - Swipe binding write
+
+    func updateSwipeBinding(_ binding: SwipeBinding, for id: SwipeBindingID) {
+        guard swipeBindings[id] != binding else { return }
+        swipeBindings[id] = binding
+        defaults.setSwipeBinding(binding, forKey: id.defaultsKey)
+    }
+
+    func addSwipeBinding(_ binding: SwipeBinding, for id: SwipeBindingID) {
+        swipeBindings[id] = binding
+        defaults.setSwipeBinding(binding, forKey: id.defaultsKey)
+    }
+
+    func removeSwipeBinding(for id: SwipeBindingID) {
+        swipeBindings.removeValue(forKey: id)
+        defaults.removeObject(forKey: id.defaultsKey)
+    }
+
+    func resetSwipeBindingsToDefaults() {
+        swipeBindings = BindingStore.defaultSwipeSlots
+        for (id, binding) in BindingStore.defaultSwipeSlots {
+            defaults.setSwipeBinding(binding, forKey: id.defaultsKey)
+        }
+    }
 }
 
 // MARK: - UserDefaults helpers
@@ -168,6 +218,17 @@ extension UserDefaults {
 
     fileprivate func setHotkey(_ hotkey: HotkeyCombination, forKey key: String) {
         if let data = try? JSONEncoder().encode(hotkey) {
+            set(data, forKey: key)
+        }
+    }
+
+    fileprivate func swipeBinding(forKey key: String) -> SwipeBinding? {
+        guard let data = data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(SwipeBinding.self, from: data)
+    }
+
+    fileprivate func setSwipeBinding(_ binding: SwipeBinding, forKey key: String) {
+        if let data = try? JSONEncoder().encode(binding) {
             set(data, forKey: key)
         }
     }

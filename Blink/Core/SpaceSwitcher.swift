@@ -19,8 +19,10 @@ import Observation
 
 private typealias CGSConnectionIDFn = @convention(c) () -> Int32
 private typealias CGSGetAciveSpaceFn = @convention(c) (Int32) -> UInt64
-private typealias CGSCopyDisplaySpacesFn = @convention(c) (Int32, CFString?) -> Unmanaged<CFArray>?
-private typealias CGSCopyMenuBarDisplayFn = @convention(c) (Int32) -> Unmanaged<CFString>?
+private typealias CGSCopyDisplaySpacesFn =
+    @convention(c) (Int32, CFString?) -> Unmanaged<CFArray>?
+private typealias CGSCopyMenuBarDisplayFn =
+    @convention(c) (Int32) -> Unmanaged<CFString>?
 
 // MARK - Symbol loader
 
@@ -33,7 +35,9 @@ private struct CGSSymbols {
     /// Load all symbols from CoreGraphics
     static func load() -> CGSSymbols? {
         let handle = dlopen(
-            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", 0x4 | 0x1)
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+            0x4 | 0x1
+        )
 
         func sym<T>(_ name: String, as type: T.Type) -> T? {
             dlsym(handle, name).map { unsafeBitCast($0, to: type) }
@@ -42,7 +46,10 @@ private struct CGSSymbols {
         guard
             let conn = sym("CGSMainConnectionID", as: CGSConnectionIDFn.self),
             let actv = sym("CGSGetActiveSpace", as: CGSGetAciveSpaceFn.self),
-            let disp = sym("CGSCopyManagedDisplaySpaces", as: CGSCopyDisplaySpacesFn.self)
+            let disp = sym(
+                "CGSCopyManagedDisplaySpaces",
+                as: CGSCopyDisplaySpacesFn.self
+            )
         else {
             return nil
         }
@@ -52,7 +59,9 @@ private struct CGSSymbols {
             getActiveSpace: actv,
             copyDisplaySpaces: disp,
             copyMenuBarDisplayID: sym(
-                "CGSCopyActiveMenuBarDisplayIdentifier", as: CGSCopyMenuBarDisplayFn.self)
+                "CGSCopyActiveMenuBarDisplayIdentifier",
+                as: CGSCopyMenuBarDisplayFn.self
+            )
         )
     }
 }
@@ -135,7 +144,9 @@ final class SpaceSwitcher {
     deinit {
         // removeEventTap()
         let nc = NSWorkspace.shared.notificationCenter
-        [spaceObserver, appObserver].compactMap { $0 }.forEach { nc.removeObserver($0) }
+        [spaceObserver, appObserver].compactMap { $0 }.forEach {
+            nc.removeObserver($0)
+        }
     }
 
     // MARK: - Public interface
@@ -150,7 +161,9 @@ final class SpaceSwitcher {
     func switchToIndex(_ index: Int) -> Bool {
         guard let info = spaceInfo, info.spaceCount > 0 else { return false }
         let target = min(index, info.spaceCount - 1)
-        guard target != info.currentIndex else { return index < info.spaceCount }
+        guard target != info.currentIndex else {
+            return index < info.spaceCount
+        }
         let direction: Direction = target > info.currentIndex ? .right : .left
         let steps = abs(target - info.currentIndex)
         for _ in 0..<steps {
@@ -173,12 +186,14 @@ final class SpaceSwitcher {
         let nc = NSWorkspace.shared.notificationCenter
         spaceObserver = nc.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil, queue: .main
+            object: nil,
+            queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
 
         appObserver = nc.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil, queue: .main
+            object: nil,
+            queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
     }
 
@@ -202,9 +217,11 @@ final class SpaceSwitcher {
 
         // Fetch all display/space layout data. Fall back to nil displayID
         // (all displays) if the targeted display yields no results
-        var rawDisplays = cgs.copyDisplaySpaces(connection, displayID)?.takeRetainedValue()
+        var rawDisplays = cgs.copyDisplaySpaces(connection, displayID)?
+            .takeRetainedValue()
         if rawDisplays == nil, displayID != nil {
-            rawDisplays = cgs.copyDisplaySpaces(connection, nil)?.takeRetainedValue()
+            rawDisplays = cgs.copyDisplaySpaces(connection, nil)?
+                .takeRetainedValue()
         }
         guard let rawDisplays else { return nil }
 
@@ -225,13 +242,21 @@ final class SpaceSwitcher {
         }
 
         guard let displayDict = target ?? fallback else { return nil }
-        return extractSpaceInfo(from: displayDict, globalActiveSpaceID: activeSpaceID)
+        return extractSpaceInfo(
+            from: displayDict,
+            globalActiveSpaceID: activeSpaceID
+        )
     }
 
-    private func extractSpaceInfo(from displayDict: NSDictionary, globalActiveSpaceID: UInt64)
+    private func extractSpaceInfo(
+        from displayDict: NSDictionary,
+        globalActiveSpaceID: UInt64
+    )
         -> SpaceInfo?
     {
-        guard let spacesArray = displayDict["Spaces"] as? NSArray else { return nil }
+        guard let spacesArray = displayDict["Spaces"] as? NSArray else {
+            return nil
+        }
 
         // Prefer the per-display active space ID
         var activeID = globalActiveSpaceID
@@ -257,17 +282,23 @@ final class SpaceSwitcher {
         }
 
         guard count > 0 else { return nil }
-        return SpaceInfo(currentIndex: foundActive ? activeIndex : 0, spaceCount: count)
+        return SpaceInfo(
+            currentIndex: foundActive ? activeIndex : 0,
+            spaceCount: count
+        )
     }
 
     private func cursorDisplayIdentifier() -> CFString? {
         guard let event = CGEvent(source: nil) else { return nil }
         var displayID: CGDirectDisplayID = 0
         var count: UInt32 = 0
-        guard CGGetDisplaysWithPoint(event.location, 1, &displayID, &count) == .success,
+        guard
+            CGGetDisplaysWithPoint(event.location, 1, &displayID, &count)
+                == .success,
             count > 0
         else { return nil }
-        let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue()
+        let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?
+            .takeRetainedValue()
         return CFUUIDCreateString(nil, uuid)
     }
 
@@ -295,17 +326,40 @@ final class SpaceSwitcher {
             let beginDock = CGEvent(source: nil)
         else { return false }
 
-        beginGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
+        beginGesture.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.gesture
+        )
+        beginGesture.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
 
-        beginDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        beginDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
+        beginDock.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.dockControl
+        )
+        beginDock.setIntegerValueField(
+            GestureField.hidType,
+            value: kDockSwipeHIDType
+        )
         beginDock.setIntegerValueField(GestureField.phase, value: Phase.began)
         beginDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        beginDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
+        beginDock.setIntegerValueField(
+            GestureField.swipeMotion,
+            value: Motion.horizontal
+        )
         beginDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        beginDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
+        beginDock.setDoubleValueField(
+            GestureField.zoomDeltaX,
+            value: kFltTrueMin
+        )
+        beginDock.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
 
-        beginDock.post(tap: .cgSessionEventTap)
+        beginGesture.post(tap: .cgSessionEventTap)
         beginDock.post(tap: .cgSessionEventTap)
 
         // -- End gesture --
@@ -313,21 +367,41 @@ final class SpaceSwitcher {
             let endDock = CGEvent(source: nil)
         else { return false }
 
-        endGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
+        endGesture.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.gesture
+        )
+        endGesture.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
 
-        endDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        endDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
+        endDock.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.dockControl
+        )
+        endDock.setIntegerValueField(
+            GestureField.hidType,
+            value: kDockSwipeHIDType
+        )
         endDock.setIntegerValueField(GestureField.phase, value: Phase.ended)
         endDock.setDoubleValueField(GestureField.swipeProgress, value: progress)
         endDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        endDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
+        endDock.setIntegerValueField(
+            GestureField.swipeMotion,
+            value: Motion.horizontal
+        )
         endDock.setDoubleValueField(GestureField.scrollY, value: 0)
         endDock.setDoubleValueField(GestureField.velocityX, value: velocity)
         endDock.setDoubleValueField(GestureField.velocityY, value: 0)
         endDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
+        endDock.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
 
-        endDock.post(tap: .cgSessionEventTap)
         endGesture.post(tap: .cgSessionEventTap)
+        endDock.post(tap: .cgSessionEventTap)
 
         return true
     }

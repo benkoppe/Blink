@@ -12,12 +12,15 @@ import Observation
 final class AppModel {
     let spaceSwitcher = SpaceSwitcher()
     let bindingStore = BindingStore()
-
-    // Coordinator must be held strongly for the app's lifetime
-    private var coordinator: HotkeyCoordinator?
+    private var hotkeyCoordinator: HotkeyCoordinator?
+    private var swipeCoordinator: SwipeGestureCoordinator?
 
     init() {
-        coordinator = HotkeyCoordinator(
+        hotkeyCoordinator = HotkeyCoordinator(
+            store: bindingStore,
+            switcher: spaceSwitcher
+        )
+        swipeCoordinator = SwipeGestureCoordinator(
             store: bindingStore,
             switcher: spaceSwitcher
         )
