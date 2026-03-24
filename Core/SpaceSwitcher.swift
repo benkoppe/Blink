@@ -140,6 +140,28 @@ final class SpaceSwitcher {
 
     // MARK: - Public interface
 
+    @discardableResult
+    func switchLeft() -> Bool { postGesture(.left) }
+
+    @discardableResult
+    func switchRight() -> Bool { postGesture(.right) }
+
+    @discardableResult
+    func switchToIndex(_ index: Int) -> Bool {
+        guard let info = spaceInfo, info.spaceCount > 0 else { return false }
+        let target = min(index, info.spaceCount - 1)
+        guard target != info.currentIndex else { return index < info.spaceCount }
+        let direction: Direction = target > info.currentIndex ? .right : .left
+        let steps = abs(target - info.currentIndex)
+        for _ in 0..<steps {
+            guard postGesture(direction) else { return false }
+        }
+        return index < info.spaceCount
+    }
+
+    func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
+    func canMoveRight() -> Bool { spaceInfo.map { !$0.isAtRightEdge } ?? false }
+
     func refreshSpaceInfo() {
         // Use the menu-bar display for the icon (always correct on multi-monitor)
         spaceInfo = loadSpaceInfo(useCursorDisplay: false)
