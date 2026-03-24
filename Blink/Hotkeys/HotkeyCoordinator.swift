@@ -33,8 +33,9 @@ final class HotkeyCoordinator {
             registerAll()
         } onChange: { [weak self] in
             // marshal to main thread
-            Task { @MainActor in
-                self?.trackAndRegisterAll()  // re-register and re-arm tracking
+            guard let self else { return }
+            Task { @MainActor [self] in
+                self.trackAndRegisterAll()  // re-register and re-arm tracking
             }
         }
     }
