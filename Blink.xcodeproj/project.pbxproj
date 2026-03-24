@@ -13,6 +13,7 @@
 		B54E4E012F724CF1008FC353 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54E4E002F724CF1008FC353 /* AppModel.swift */; };
 		B54E4E052F724FFD008FC353 /* BlinkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54E4E032F724FFD008FC353 /* BlinkApp.swift */; };
 		B54E4E062F724FFD008FC353 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B54E4E022F724FFD008FC353 /* Assets.xcassets */; };
+		B54E4E0B2F72623A008FC353 /* BlinkMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54E4E0A2F72623A008FC353 /* BlinkMenu.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -23,6 +24,7 @@
 		B54E4E002F724CF1008FC353 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		B54E4E022F724FFD008FC353 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B54E4E032F724FFD008FC353 /* BlinkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkApp.swift; sourceTree = "<group>"; };
+		B54E4E0A2F72623A008FC353 /* BlinkMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkMenu.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -88,6 +90,7 @@
 				B54E4E072F725074008FC353 /* UI */,
 				B54E4E022F724FFD008FC353 /* Assets.xcassets */,
 				B54E4E032F724FFD008FC353 /* BlinkApp.swift */,
+				B54E4E0A2F72623A008FC353 /* BlinkMenu.swift */,
 			);
 			path = Blink;
 			sourceTree = "<group>";
@@ -168,6 +171,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B54E4E012F724CF1008FC353 /* AppModel.swift in Sources */,
+				B54E4E0B2F72623A008FC353 /* BlinkMenu.swift in Sources */,
 				B54E4E052F724FFD008FC353 /* BlinkApp.swift in Sources */,
 				B54E4DFF2F7243D7008FC353 /* SpaceSwitcher.swift in Sources */,
 			);

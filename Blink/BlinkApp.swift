@@ -13,7 +13,7 @@ struct BlinkApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            Text("Hello")
+            BlinkMenu()
                 .environment(appModel)
         } label: {
             SpaceIconLabel(info: appModel.spaceSwitcher.spaceInfo)
