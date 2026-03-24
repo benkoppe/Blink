@@ -11,7 +11,7 @@ import SwiftUI
 struct BlinkApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            EmptyView()
         }
     }
 }
