@@ -6,8 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DF92F724399008FC353 /* ApplicationServices.framework */; };
+		B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DFB2F72439E008FC353 /* Carbon.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		B54E4DEA2F7242F2008FC353 /* Blink.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blink.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B54E4DF92F724399008FC353 /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
+		B54E4DFB2F72439E008FC353 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +30,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */,
+				B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +42,7 @@
 			isa = PBXGroup;
 			children = (
 				B54E4DEC2F7242F2008FC353 /* Blink */,
+				B54E4DF82F724399008FC353 /* Frameworks */,
 				B54E4DEB2F7242F2008FC353 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +53,15 @@
 				B54E4DEA2F7242F2008FC353 /* Blink.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B54E4DF82F724399008FC353 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B54E4DFB2F72439E008FC353 /* Carbon.framework */,
+				B54E4DF92F724399008FC353 /* ApplicationServices.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
