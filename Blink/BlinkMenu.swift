@@ -12,12 +12,15 @@ struct BlinkMenu: View {
 
     var body: some View {
         VStack {
-            Button("Switch left") {
+            Button("Switch Left") {
                 appModel.spaceSwitcher.switchLeft()
             }
-            Button("Switch right") {
+            .disabled(!appModel.spaceSwitcher.canMoveLeft())
+
+            Button("Switch Right") {
                 appModel.spaceSwitcher.switchRight()
             }
+            .disabled(!appModel.spaceSwitcher.canMoveRight())
         }
     }
 }
