@@ -198,12 +198,12 @@ enum HotkeyIdentifier: String, CaseIterable {
 // MARK: - Extensions
 
 extension UserDefaults {
-    fileprivate func hotkey(forKey key: String) -> HotkeyCombination? {
+    func hotkey(forKey key: String) -> HotkeyCombination? {
         guard let data = data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(HotkeyCombination.self, from: data)
     }
 
-    fileprivate func setHotkey(_ hotkey: HotkeyCombination, forKey key: String) {
+    func setHotkey(_ hotkey: HotkeyCombination, forKey key: String) {
         if let data = try? JSONEncoder().encode(hotkey) {
             set(data, forKey: key)
         }
