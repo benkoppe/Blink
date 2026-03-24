@@ -9,9 +9,14 @@ import SwiftUI
 
 @main
 struct BlinkApp: App {
+    @State private var appModel = AppModel()
+
     var body: some Scene {
-        WindowGroup {
-            EmptyView()
+        MenuBarExtra {
+            Text("Hello")
+                .environment(appModel)
+        } label: {
+            SpaceIconLabel(info: appModel.spaceSwitcher.spaceInfo)
         }
     }
 }

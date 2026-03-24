@@ -25,6 +25,14 @@
 		B54E4E032F724FFD008FC353 /* BlinkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		B54E4E072F725074008FC353 /* UI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = UI;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		B54E4DE72F7242F2008FC353 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -77,6 +85,7 @@
 		B54E4E042F724FFD008FC353 /* Blink */ = {
 			isa = PBXGroup;
 			children = (
+				B54E4E072F725074008FC353 /* UI */,
 				B54E4E022F724FFD008FC353 /* Assets.xcassets */,
 				B54E4E032F724FFD008FC353 /* BlinkApp.swift */,
 			);
@@ -97,6 +106,9 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B54E4E072F725074008FC353 /* UI */,
 			);
 			name = Blink;
 			packageProductDependencies = (
