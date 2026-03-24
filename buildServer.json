@@ -1,0 +1,19 @@
+{
+	"name": "xcode build server",
+	"version": "1.3.0",
+	"bspVersion": "2.2.0",
+	"languages": [
+		"c",
+		"cpp",
+		"objective-c",
+		"objective-cpp",
+		"swift"
+	],
+	"argv": [
+		"/Users/ben/Developer/xcode-build-server/xcode-build-server"
+	],
+	"workspace": "/Users/ben/Developer/Blink/Blink.xcodeproj/project.xcworkspace",
+	"build_root": "/Volumes/Apps/XcodeStorage/DerivedData/Blink-beftbvftwzmgzbazuowrhosexlmb",
+	"scheme": "Blink",
+	"kind": "xcode"
+}
