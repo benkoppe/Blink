@@ -9,12 +9,14 @@
 /* Begin PBXBuildFile section */
 		B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DF92F724399008FC353 /* ApplicationServices.framework */; };
 		B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DFB2F72439E008FC353 /* Carbon.framework */; };
+		B54E4DFF2F7243D7008FC353 /* SpaceSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54E4DFE2F7243D7008FC353 /* SpaceSwitcher.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		B54E4DEA2F7242F2008FC353 /* Blink.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blink.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B54E4DF92F724399008FC353 /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
 		B54E4DFB2F72439E008FC353 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
+		B54E4DFE2F7243D7008FC353 /* SpaceSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceSwitcher.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -41,6 +43,7 @@
 		B54E4DE12F7242F2008FC353 = {
 			isa = PBXGroup;
 			children = (
+				B54E4DFD2F7243CA008FC353 /* Core */,
 				B54E4DEC2F7242F2008FC353 /* Blink */,
 				B54E4DF82F724399008FC353 /* Frameworks */,
 				B54E4DEB2F7242F2008FC353 /* Products */,
@@ -62,6 +65,14 @@
 				B54E4DF92F724399008FC353 /* ApplicationServices.framework */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B54E4DFD2F7243CA008FC353 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				B54E4DFE2F7243D7008FC353 /* SpaceSwitcher.swift */,
+			);
+			path = Core;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -138,6 +149,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B54E4DFF2F7243D7008FC353 /* SpaceSwitcher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
