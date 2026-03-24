@@ -29,7 +29,7 @@ struct HotkeyCombination: Codable, Equatable {
     }
 
     var isValid: Bool {
-        modifiers != 0 && displayKey.isEmpty
+        modifiers != 0 && !displayKey.isEmpty
     }
 
     // MARK: - Defaults
