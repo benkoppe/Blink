@@ -10,17 +10,36 @@ import SwiftUI
 struct BlinkMenu: View {
     @Environment(AppModel.self) private var appModel
 
-    var body: some View {
-        VStack {
-            Button("Switch Left") {
-                appModel.spaceSwitcher.switchLeft()
-            }
-            .disabled(!appModel.spaceSwitcher.canMoveLeft())
+    private var switcher: SpaceSwitcher { appModel.spaceSwitcher }
 
-            Button("Switch Right") {
-                appModel.spaceSwitcher.switchRight()
+    var body: some View {
+        Button("Switch Left") {
+            switcher.switchLeft()
+        }
+        .disabled(!switcher.canMoveLeft())
+
+        Button("Switch Right") {
+            switcher.switchRight()
+        }
+        .disabled(!switcher.canMoveRight())
+
+        Divider()
+
+        if let info = switcher.spaceInfo, info.spaceCount > 0 {
+            ForEach(0..<info.spaceCount, id: \.self) { index in
+                Button("Space \(index + 1)\(index == info.currentIndex ? " ✓" : "")") {
+                    switcher.switchToIndex(index)
+                }
             }
-            .disabled(!appModel.spaceSwitcher.canMoveRight())
+        } else {
+            Text("No space info available")
+                .foregroundStyle(.secondary)
+        }
+
+        Divider()
+
+        Button("Quit Blink") {
+            NSApplication.shared.terminate(nil)
         }
     }
 }
