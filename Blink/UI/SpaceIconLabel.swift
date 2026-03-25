@@ -14,31 +14,112 @@ struct SpaceIconLabel: View {
 
     var iconColor: Color { colorScheme == .dark ? .white : .black }
 
-    @ViewBuilder
-    func infoIconView(info: SpaceInfo) -> some View {
-        Image(systemName: "\(info.displayNumber).square.fill")
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: 40, height: 40)
-            .foregroundStyle(iconColor)
-            .symbolRenderingMode(.monochrome)
+    func makeSpaceMenuBarImage(for displayText: String, isSelected: Bool) -> NSImage? {
+        let iconSize: CGFloat = 20
+        let cornerRadius: CGFloat = 6
+        let lineWidth: CGFloat = 0.8
+
+        let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
+        image.lockFocus()
+
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            image.unlockFocus()
+            return nil
+        }
+
+        let rect = NSRect(x: 0, y: 0, width: iconSize, height: iconSize)
+
+        let inset = lineWidth / 2
+        let adjustedRect = rect.insetBy(dx: inset, dy: inset)
+
+        let path = NSBezierPath(
+            roundedRect: adjustedRect,
+            xRadius: cornerRadius - inset,
+            yRadius: cornerRadius - inset
+        )
+
+        let font = NSFont.systemFont(ofSize: iconSize * 0.6, weight: .bold)
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black,
+        ]
+
+        let textSize = displayText.size(withAttributes: attributes)
+        let textRect = NSRect(
+            x: (iconSize - textSize.width) / 2,
+            y: (iconSize - textSize.height) / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+
+        if isSelected {
+            // filled background, knockout text
+            context.beginTransparencyLayer(auxiliaryInfo: nil)
+
+            NSColor.black.setFill()
+            path.fill()
+
+            context.setBlendMode(.destinationOut)
+            displayText.draw(in: textRect, withAttributes: attributes)
+
+            context.endTransparencyLayer()
+        } else {
+            // outline, normal text
+            NSColor.black.setStroke()
+            path.lineWidth = lineWidth
+            path.stroke()
+
+            displayText.draw(in: textRect, withAttributes: attributes)
+        }
+
+        image.unlockFocus()
+        image.isTemplate = true
+
+        return image
     }
 
-    @ViewBuilder
-    func allSpacesInlineInfoIconView(info: SpaceInfo) -> some View {
-        HStack(spacing: 4) {
-            ForEach(0..<info.spaceCount, id: \.self) { index in
-                let number = index + 1
-                let isSelected = index == info.currentIndex
+    func makeCombinedMenuBarImage(images: [NSImage], spacing: CGFloat = 2) -> NSImage? {
+        guard !images.isEmpty else { return nil }
 
-                Image(systemName: "\(number).square\(isSelected ? ".fill" : "")")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 40, height: 40)
-                    .foregroundStyle(iconColor)
-                    .symbolRenderingMode(.monochrome)
-            }
+        let height = images.map { $0.size.height }.max() ?? 0
+        let totalWidth =
+            images.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(images.count - 1)
+
+        let combined = NSImage(size: .init(width: totalWidth, height: height))
+        combined.lockFocus()
+
+        var xOffset: CGFloat = 0
+
+        for image in images {
+            let yOffset = (height - image.size.height) / 2
+
+            image.draw(
+                in: NSRect(
+                    x: xOffset, y: yOffset, width: image.size.width, height: image.size.height),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1.0
+            )
+
+            xOffset += image.size.width + spacing
         }
+
+        combined.unlockFocus()
+        combined.isTemplate = true
+
+        return combined
+    }
+
+    func combinedSpacesImage(info: SpaceInfo) -> NSImage? {
+        let images: [NSImage] = (0..<info.spaceCount).compactMap {
+            let isSelected = $0 == info.currentIndex
+            return makeSpaceMenuBarImage(for: String($0 + 1), isSelected: isSelected)
+        }
+
+        guard images.count == info.spaceCount else { return nil }
+
+        return makeCombinedMenuBarImage(images: images, spacing: 2)
     }
 
     @ViewBuilder
@@ -46,20 +127,10 @@ struct SpaceIconLabel: View {
         Text("\(info.displayNumber)")
     }
 
-    // normally, swiftui puts too much padding around menu bar icons
-    // to fix this, we must convert into an image and scale up
-    func resizedMenuBarImage<Content: View>(content: Content) -> Image? {
-        let renderer = ImageRenderer(content: content)
-        guard let cgImage = renderer.cgImage else { return nil }
-        return Image(cgImage, scale: 2.0, orientation: .up, label: Text(""))
-            .renderingMode(.template)
-
-    }
-
     var body: some View {
         if let info {
-            if let image = resizedMenuBarImage(content: infoIconView(info: info)) {
-                image
+            if let combined = combinedSpacesImage(info: info) {
+                Image(nsImage: combined)
             } else {
                 fallbackInfoTextView(info: info)
             }
