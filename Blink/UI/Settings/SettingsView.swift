@@ -77,8 +77,8 @@ struct SettingsView: View {
                     sidebarItem(for: identifier)
                 }
             } header: {
-                Text("Blink")
-                    .font(.system(size: 20, weight: .medium))
+                Text(Constants.appName)
+                    .font(.system(size: 36, weight: .medium))
                     .foregroundStyle(.primary)
                     .padding(.vertical, 5)
             }
