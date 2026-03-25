@@ -8,6 +8,9 @@
 import Foundation
 
 enum Constants {
+    /// The app's name
+    static let appName = "Blink"
+
     /// The version string in the app's bundle.
     static let versionString = Bundle.main.versionString!
 
