@@ -44,8 +44,8 @@ struct BlinkMenu: View {
 
         Divider()
 
-        SettingsLink {
-            Text("Settings...")
+        Button("Settings...") {
+            appState.openSettingsWindow()
         }
 
         Divider()
