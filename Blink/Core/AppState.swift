@@ -70,7 +70,6 @@ final class AppState {
 
     /// Opens the settings window.
     func openSettingsWindow() {
-        print("trying to open settings window...")
         with(EnvironmentValues()) { environment in
             environment.openWindow(id: Constants.settingsWindowID)
         }
