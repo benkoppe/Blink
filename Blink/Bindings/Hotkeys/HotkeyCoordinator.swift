@@ -12,15 +12,18 @@ import Observation
 /// Uses withObservationTracking to re-register whenever any hotkey or enabled state changes.
 final class HotkeyCoordinator {
     private let store: BindingStore
+    private let settings: AppSettings
     private let manager: HotkeyManager
     private let switcher: SpaceSwitcher
 
     init(
         store: BindingStore,
+        settings: AppSettings,
         manager: HotkeyManager = .shared,
         switcher: SpaceSwitcher
     ) {
         self.store = store
+        self.settings = settings
         self.manager = manager
         self.switcher = switcher
         trackAndRegisterAll()
@@ -41,6 +44,11 @@ final class HotkeyCoordinator {
     }
 
     private func registerAll() {
+        guard settings.bindingsEnabled else {
+            manager.unregisterAll()
+            return
+        }
+
         for action in BoundAction.allCases {
             guard store.isHotkeyEnabled(action) else {
                 manager.unregister(action: action)

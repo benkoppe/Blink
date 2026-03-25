@@ -10,6 +10,7 @@ import Observation
 
 @Observable
 final class AppModel {
+    let settings = AppSettings()
     let spaceSwitcher = SpaceSwitcher()
     let bindingStore = BindingStore()
     private var hotkeyCoordinator: HotkeyCoordinator?
@@ -18,10 +19,12 @@ final class AppModel {
     init() {
         hotkeyCoordinator = HotkeyCoordinator(
             store: bindingStore,
+            settings: settings,
             switcher: spaceSwitcher
         )
         swipeCoordinator = SwipeGestureCoordinator(
             store: bindingStore,
+            settings: settings,
             switcher: spaceSwitcher
         )
     }

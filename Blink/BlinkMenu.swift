@@ -13,6 +13,12 @@ struct BlinkMenu: View {
     private var switcher: SpaceSwitcher { appModel.spaceSwitcher }
 
     var body: some View {
+        @Bindable var settings = appModel.settings
+
+        Toggle("Enable", isOn: $settings.bindingsEnabled)
+
+        Divider()
+
         Button("Switch Left") {
             switcher.switchLeft()
         }

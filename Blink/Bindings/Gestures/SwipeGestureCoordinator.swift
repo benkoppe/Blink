@@ -12,15 +12,18 @@ import Observation
 /// Mirrors the structure of HotkeyCoordinator.
 final class SwipeGestureCoordinator {
     private let store: BindingStore
+    private let settings: AppSettings
     private let monitor: SwipeGestureMonitor
     private let switcher: SpaceSwitcher
 
     init(
         store: BindingStore,
+        settings: AppSettings,
         monitor: SwipeGestureMonitor = SwipeGestureMonitor(),
         switcher: SpaceSwitcher
     ) {
         self.store = store
+        self.settings = settings
         self.monitor = monitor
         self.switcher = switcher
 
@@ -46,6 +49,11 @@ final class SwipeGestureCoordinator {
     }
 
     private func reconfigure() {
+        guard settings.bindingsEnabled else {
+            monitor.stopMonitoring()
+            return
+        }
+
         // Monitor only when at least one swipe binding is enabled.
         let anyEnabled = store.swipeBindings.values.contains { $0.isEnabled }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()
