@@ -110,9 +110,18 @@ struct SettingsView: View {
                 .font(.system(size: sidebarItemFontSize))
                 .padding(.leading, 2)
         } icon: {
-            Image(systemName: "app")
+            icon(for: identifier).view
         }
         .frame(height: sidebarItemHeight)
+    }
+
+    private func icon(for identifier: SettingsNavigationIdentifier) -> IconResource {
+        switch identifier {
+        case .general: .systemSymbol("gearshape")
+        case .menuBar: .systemSymbol("swatchpalette")
+        case .hotkeys: .systemSymbol("keyboard")
+        case .about: .systemSymbol("app")
+        }
     }
 }
 
