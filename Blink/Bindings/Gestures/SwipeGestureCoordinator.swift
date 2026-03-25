@@ -11,21 +11,15 @@ import Observation
 /// Observes BindingStore for swipe binding changes and keeps SwipeGestureMonitor in sync.
 /// Mirrors the structure of HotkeyCoordinator.
 final class SwipeGestureCoordinator {
-    private let store: BindingStore
-    private let settings: AppSettings
+    private weak var appState: AppState?
     private let monitor: SwipeGestureMonitor
-    private let switcher: SpaceSwitcher
 
     init(
-        store: BindingStore,
-        settings: AppSettings,
+        appState: AppState,
         monitor: SwipeGestureMonitor = SwipeGestureMonitor(),
-        switcher: SpaceSwitcher
     ) {
-        self.store = store
-        self.settings = settings
+        self.appState = appState
         self.monitor = monitor
-        self.switcher = switcher
 
         // Wire the callback once. It reads current store state at fire time,
         // so it never goes stale when bindings change.
@@ -49,19 +43,34 @@ final class SwipeGestureCoordinator {
     }
 
     private func reconfigure() {
-        guard settings.bindingsEnabled else {
+        guard let appState else {
+            Logger.swipeGestureCoordinator.error("Error registering all hotkeys: Missing app state")
+            return
+        }
+
+        guard appState.settings.bindingsEnabled else {
             monitor.stopMonitoring()
             return
         }
 
         // Monitor only when at least one swipe binding is enabled.
-        let anyEnabled = store.swipeBindings.values.contains { $0.isEnabled }
+        let anyEnabled = appState.bindingStore.swipeBindings.values.contains { $0.isEnabled }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()
     }
 
     private func handleSwipe(direction: SwipeDirection, fingerCount: Int) {
+        guard let appState else { return }
+
         let id = SwipeBindingID(direction: direction, fingerCount: fingerCount)
-        guard let binding = store.swipeBinding(for: id), binding.isEnabled else { return }
-        binding.action.execute(on: switcher)
+        guard let binding = appState.bindingStore.swipeBinding(for: id), binding.isEnabled else {
+            return
+        }
+        binding.action.execute(on: appState.spaceSwitcher)
     }
+}
+
+// MARK: - Logger
+
+extension Logger {
+    fileprivate static let swipeGestureCoordinator = Logger(category: "SwipeGestureCoordinator")
 }

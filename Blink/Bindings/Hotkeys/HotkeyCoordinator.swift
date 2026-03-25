@@ -11,21 +11,15 @@ import Observation
 /// Observes BindingStore for changes and keeps HotkeyManager registrations in sync
 /// Uses withObservationTracking to re-register whenever any hotkey or enabled state changes.
 final class HotkeyCoordinator {
-    private let store: BindingStore
-    private let settings: AppSettings
+    private weak var appState: AppState?
     private let manager: HotkeyManager
-    private let switcher: SpaceSwitcher
 
     init(
-        store: BindingStore,
-        settings: AppSettings,
+        appState: AppState,
         manager: HotkeyManager = .shared,
-        switcher: SpaceSwitcher
     ) {
-        self.store = store
-        self.settings = settings
+        self.appState = appState
         self.manager = manager
-        self.switcher = switcher
         trackAndRegisterAll()
     }
 
@@ -44,27 +38,38 @@ final class HotkeyCoordinator {
     }
 
     private func registerAll() {
-        guard settings.bindingsEnabled else {
+        guard let appState else {
+            Logger.hotkeyCoordinator.error("Error registering all hotkeys: Missing app state")
+            return
+        }
+
+        guard appState.settings.bindingsEnabled else {
             manager.unregisterAll()
             return
         }
 
         for action in BoundAction.allCases {
-            guard store.isHotkeyEnabled(action) else {
+            guard appState.bindingStore.isHotkeyEnabled(action) else {
                 manager.unregister(action: action)
                 continue
             }
 
-            let combination = store.hotkeyCombo(for: action)
+            let combination = appState.bindingStore.hotkeyCombo(for: action)
             guard combination.isValid else {
                 manager.unregister(action: action)
                 continue
             }
 
             manager.register(action: action, combination: combination) { [weak self] in
-                guard let self else { return }
-                action.execute(on: self.switcher)
+                guard let self, let switcher = self.appState?.spaceSwitcher else { return }
+                action.execute(on: switcher)
             }
         }
     }
+}
+
+// MARK: - Logger
+
+extension Logger {
+    fileprivate static let hotkeyCoordinator = Logger(category: "HotkeyCoordinator")
 }

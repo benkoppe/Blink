@@ -8,24 +8,14 @@
 import Foundation
 import Observation
 
-@Observable
+@Observable @MainActor
 final class AppState {
     let settings = AppSettings()
     let spaceSwitcher = SpaceSwitcher()
     let bindingStore = BindingStore()
-    private var hotkeyCoordinator: HotkeyCoordinator?
-    private var swipeCoordinator: SwipeGestureCoordinator?
 
-    init() {
-        hotkeyCoordinator = HotkeyCoordinator(
-            store: bindingStore,
-            settings: settings,
-            switcher: spaceSwitcher
-        )
-        swipeCoordinator = SwipeGestureCoordinator(
-            store: bindingStore,
-            settings: settings,
-            switcher: spaceSwitcher
-        )
-    }
+    @ObservationIgnored
+    private lazy var hotkeyCoordinator = HotkeyCoordinator(appState: self)
+    @ObservationIgnored
+    private lazy var swipeCoordinator = SwipeGestureCoordinator(appState: self)
 }
