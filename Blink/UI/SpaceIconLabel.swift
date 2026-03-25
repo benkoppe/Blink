@@ -11,12 +11,13 @@ struct SpaceIconLabel: View {
     @Environment(\.colorScheme) var colorScheme
 
     let info: SpaceInfo?
+    let settings: AppSettings
 
     var iconColor: Color { colorScheme == .dark ? .white : .black }
 
     func makeSpaceMenuBarImage(for displayText: String, isSelected: Bool) -> NSImage? {
-        let iconSize: CGFloat = 20
-        let cornerRadius: CGFloat = 6
+        let iconSize = settings.iconSize
+        let cornerRadius = settings.iconCornerRadius
         let lineWidth: CGFloat = 0.8
 
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
@@ -79,9 +80,10 @@ struct SpaceIconLabel: View {
         return image
     }
 
-    func makeCombinedMenuBarImage(images: [NSImage], spacing: CGFloat = 2) -> NSImage? {
+    func makeCombinedMenuBarImage(images: [NSImage]) -> NSImage? {
         guard !images.isEmpty else { return nil }
 
+        let spacing = settings.iconSpacing
         let height = images.map { $0.size.height }.max() ?? 0
         let totalWidth =
             images.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(images.count - 1)
@@ -119,7 +121,7 @@ struct SpaceIconLabel: View {
 
         guard images.count == info.spaceCount else { return nil }
 
-        return makeCombinedMenuBarImage(images: images, spacing: 2)
+        return makeCombinedMenuBarImage(images: images)
     }
 
     @ViewBuilder

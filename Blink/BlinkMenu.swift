@@ -44,6 +44,12 @@ struct BlinkMenu: View {
 
         Divider()
 
+        SettingsLink {
+            Text("Settings...")
+        }
+
+        Divider()
+
         Button("Quit Blink") {
             NSApplication.shared.terminate(nil)
         }

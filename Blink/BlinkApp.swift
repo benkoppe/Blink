@@ -16,7 +16,15 @@ struct BlinkApp: App {
             BlinkMenu()
                 .environment(appModel)
         } label: {
-            SpaceIconLabel(info: appModel.spaceSwitcher.spaceInfo)
+            SpaceIconLabel(
+                info: appModel.spaceSwitcher.spaceInfo,
+                settings: appModel.settings
+            )
+        }
+
+        Settings {
+            SettingsView()
+                .environment(appModel)
         }
     }
 }
