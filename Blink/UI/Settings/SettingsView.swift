@@ -92,17 +92,13 @@ struct SettingsView: View {
     private var detailView: some View {
         switch navigationIdentifier {
         case .general:
-            // GeneralSettingsPane()
-            EmptyView()
+            GeneralSettingsPane()
         case .menuBar:
-            // MenuBarSettingsPane()
-            EmptyView()
+            MenuBarSettingsPane()
         case .hotkeys:
-            // HotkeysSettingsPane()
-            EmptyView()
+            HotkeysSettingsPane()
         case .about:
-            // AboutSettingsPane()
-            EmptyView()
+            AboutSettingsPane()
         }
     }
 
