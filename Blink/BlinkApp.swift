@@ -9,7 +9,12 @@ import SwiftUI
 
 @main
 struct BlinkApp: App {
+    @NSApplicationDelegateAdaptor var appDelegate: AppDelegate
     @State private var appState = AppState()
+
+    init() {
+        appDelegate.assignAppState(appState)
+    }
 
     var body: some Scene {
         MenuBarExtra {
@@ -24,6 +29,11 @@ struct BlinkApp: App {
 
         Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
             SettingsView()
+                .readWindow { window in
+                    guard let window else { return }
+                    appState.assignSettingsWindow(window)
+                }
+                .frame(minWidth: 825, minHeight: 500)
         }
         .commandsRemoved()
         .windowResizability(.contentSize)
