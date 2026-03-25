@@ -23,7 +23,7 @@ struct BlinkApp: App {
         }
 
         Settings {
-            SettingsView()
+            OldSettingsView()
                 .environment(appModel)
         }
     }

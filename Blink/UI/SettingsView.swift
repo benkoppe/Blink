@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-struct SettingsView: View {
+struct OldSettingsView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
@@ -40,8 +40,4 @@ struct SettingsView: View {
             .padding()
         }
     }
-}
-
-#Preview {
-    SettingsView()
 }
