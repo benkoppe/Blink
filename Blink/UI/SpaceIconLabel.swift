@@ -7,17 +7,28 @@
 
 import SwiftUI
 
-struct SpaceIconLabel: View {
-    @Environment(\.colorScheme) var colorScheme
+struct SpaceIconImage {
+    let image: NSImage
 
-    let info: SpaceInfo?
-    let settings: AppSettings
+    init?(
+        text displayText: String,
+        isSelected: Bool,
+        appState: AppState
+    ) {
+        self.init(
+            text: displayText,
+            isSelected: isSelected,
+            iconSize: appState.settings.iconSize,
+            cornerRadius: appState.settings.iconCornerRadius
+        )
+    }
 
-    var iconColor: Color { colorScheme == .dark ? .white : .black }
-
-    func makeSpaceMenuBarImage(for displayText: String, isSelected: Bool) -> NSImage? {
-        let iconSize = settings.iconSize
-        let cornerRadius = settings.iconCornerRadius
+    init?(
+        text displayText: String,
+        isSelected: Bool,
+        iconSize: Double,
+        cornerRadius: Double
+    ) {
         let lineWidth: CGFloat = 0.8
 
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
@@ -77,34 +88,42 @@ struct SpaceIconLabel: View {
         image.unlockFocus()
         image.isTemplate = true
 
-        return image
+        self.image = image
+    }
+}
+
+extension [SpaceIconImage] {
+    func combine(appState: AppState) -> NSImage? {
+        return combine(spacing: appState.settings.iconSpacing)
     }
 
-    func makeCombinedMenuBarImage(images: [NSImage]) -> NSImage? {
-        guard !images.isEmpty else { return nil }
+    func combine(spacing: Double) -> NSImage? {
+        guard !self.isEmpty else { return nil }
 
-        let spacing = settings.iconSpacing
-        let height = images.map { $0.size.height }.max() ?? 0
+        let height = self.map { $0.image.size.height }.max() ?? 0
         let totalWidth =
-            images.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(images.count - 1)
+            self.reduce(0) { $0 + $1.image.size.width } + spacing * CGFloat(self.count - 1)
 
         let combined = NSImage(size: .init(width: totalWidth, height: height))
         combined.lockFocus()
 
         var xOffset: CGFloat = 0
 
-        for image in images {
-            let yOffset = (height - image.size.height) / 2
+        for item in self {
+            let yOffset = (height - item.image.size.height) / 2
 
-            image.draw(
+            item.image.draw(
                 in: NSRect(
-                    x: xOffset, y: yOffset, width: image.size.width, height: image.size.height),
+                    x: xOffset,
+                    y: yOffset,
+                    width: item.image.size.width,
+                    height: item.image.size.height),
                 from: .zero,
                 operation: .sourceOver,
                 fraction: 1.0
             )
 
-            xOffset += image.size.width + spacing
+            xOffset += item.image.size.width + spacing
         }
 
         combined.unlockFocus()
@@ -112,16 +131,24 @@ struct SpaceIconLabel: View {
 
         return combined
     }
+}
+
+struct SpaceIconLabel: View {
+    @Environment(\.colorScheme) var colorScheme
+
+    let appState: AppState
+
+    var iconColor: Color { colorScheme == .dark ? .white : .black }
 
     func combinedSpacesImage(info: SpaceInfo) -> NSImage? {
-        let images: [NSImage] = (0..<info.spaceCount).compactMap {
+        let images: [SpaceIconImage] = (0..<info.spaceCount).compactMap {
             let isSelected = $0 == info.currentIndex
-            return makeSpaceMenuBarImage(for: String($0 + 1), isSelected: isSelected)
+            return .init(text: String($0 + 1), isSelected: isSelected, appState: appState)
         }
 
         guard images.count == info.spaceCount else { return nil }
 
-        return makeCombinedMenuBarImage(images: images)
+        return images.combine(appState: appState)
     }
 
     @ViewBuilder
@@ -130,7 +157,7 @@ struct SpaceIconLabel: View {
     }
 
     var body: some View {
-        if let info {
+        if let info = appState.spaceSwitcher.spaceInfo {
             if let combined = combinedSpacesImage(info: info) {
                 Image(nsImage: combined)
             } else {

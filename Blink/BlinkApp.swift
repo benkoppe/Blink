@@ -21,10 +21,7 @@ struct BlinkApp: App {
             BlinkMenu()
                 .environment(appState)
         } label: {
-            SpaceIconLabel(
-                info: appState.spaceSwitcher.spaceInfo,
-                settings: appState.settings
-            )
+            SpaceIconLabel(appState: appState)
         }
 
         Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
