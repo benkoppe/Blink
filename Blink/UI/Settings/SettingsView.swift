@@ -85,6 +85,7 @@ struct SettingsView: View {
             .collapsible(false)
         }
         .scrollDisabled(true)
+        .removeSidebarToggle()
         .navigationSplitViewColumnWidth(sidebarWidth)
     }
 
