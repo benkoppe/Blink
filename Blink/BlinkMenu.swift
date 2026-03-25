@@ -8,12 +8,12 @@
 import SwiftUI
 
 struct BlinkMenu: View {
-    @Environment(AppModel.self) private var appModel
+    @Environment(AppState.self) private var appState
 
-    private var switcher: SpaceSwitcher { appModel.spaceSwitcher }
+    private var switcher: SpaceSwitcher { appState.spaceSwitcher }
 
     var body: some View {
-        @Bindable var settings = appModel.settings
+        @Bindable var settings = appState.settings
 
         Toggle("Enable", isOn: $settings.bindingsEnabled)
 

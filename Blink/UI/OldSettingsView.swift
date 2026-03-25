@@ -8,10 +8,10 @@
 import SwiftUI
 
 struct OldSettingsView: View {
-    @Environment(AppModel.self) private var appModel
+    @Environment(AppState.self) private var appState
 
     var body: some View {
-        @Bindable var settings = appModel.settings
+        @Bindable var settings = appState.settings
 
         Form {
             Section("Menu Bar Icon") {

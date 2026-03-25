@@ -1,5 +1,5 @@
 //
-//  AppModel.swift
+//  AppState.swift
 //  Blink
 //
 //  Created by Ben on 3/24/26.
@@ -9,7 +9,7 @@ import Foundation
 import Observation
 
 @Observable
-final class AppModel {
+final class AppState {
     let settings = AppSettings()
     let spaceSwitcher = SpaceSwitcher()
     let bindingStore = BindingStore()

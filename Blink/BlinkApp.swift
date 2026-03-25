@@ -9,22 +9,25 @@ import SwiftUI
 
 @main
 struct BlinkApp: App {
-    @State private var appModel = AppModel()
+    @State private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra {
             BlinkMenu()
-                .environment(appModel)
+                .environment(appState)
         } label: {
             SpaceIconLabel(
-                info: appModel.spaceSwitcher.spaceInfo,
-                settings: appModel.settings
+                info: appState.spaceSwitcher.spaceInfo,
+                settings: appState.settings
             )
         }
 
-        Settings {
+        Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
             SettingsView()
-                .environment(appModel)
         }
+        .commandsRemoved()
+        .windowResizability(.contentSize)
+        .defaultSize(width: 900, height: 625)
+        .environment(appState)
     }
 }
