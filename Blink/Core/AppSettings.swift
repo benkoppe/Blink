@@ -16,16 +16,26 @@ final class AppSettings {
     @ObservationIgnored
     var bindingsEnabled: Bool
 
-    @ObservableUserDefault(.init(key: "settings.iconSize", defaultValue: 20.0, store: .standard))
+    @ObservableUserDefault(
+        .init(key: "settings.iconSize", defaultValue: AppSettings.defaultIconSize, store: .standard)
+    )
     @ObservationIgnored
     var iconSize: Double
-
-    @ObservableUserDefault(.init(key: "settings.iconSpacing", defaultValue: 2.0, store: .standard))
-    @ObservationIgnored
-    var iconSpacing: Double
+    static let defaultIconSize = 20.0
 
     @ObservableUserDefault(
-        .init(key: "settings.iconCornerRadius", defaultValue: 6.0, store: .standard))
+        .init(
+            key: "settings.iconSpacing", defaultValue: AppSettings.defaultIconSpacing,
+            store: .standard))
+    @ObservationIgnored
+    var iconSpacing: Double
+    static let defaultIconSpacing = 2.0
+
+    @ObservableUserDefault(
+        .init(
+            key: "settings.iconCornerRadius", defaultValue: AppSettings.defaultIconCornerRadius,
+            store: .standard))
     @ObservationIgnored
     var iconCornerRadius: Double
+    static let defaultIconCornerRadius = 6.0
 }
