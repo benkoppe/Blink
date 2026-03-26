@@ -80,6 +80,7 @@ final class HotkeyRegistry {
             .sink { [weak self] _ in
                 self?.registerAllRetained()
             }
+            .store(in: &cancellables)
 
         let handler: EventHandlerUPP = { _, event, userData in
             guard
