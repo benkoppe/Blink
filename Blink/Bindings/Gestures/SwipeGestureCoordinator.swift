@@ -65,7 +65,7 @@ final class SwipeGestureCoordinator {
         guard let binding = appState.bindingStore.swipeBinding(for: id), binding.isEnabled else {
             return
         }
-        binding.action.execute(on: appState.spaceSwitcher)
+        binding.action.execute(appState: appState)
     }
 }
 

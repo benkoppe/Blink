@@ -29,7 +29,9 @@ enum BoundAction: String, Codable, CaseIterable {
         }
     }
 
-    func execute(on switcher: SpaceSwitcher) {
+    func execute(appState: AppState) {
+        let switcher = appState.spaceSwitcher
+
         switch self {
         case .left: switcher.switchLeft()
         case .right: switcher.switchRight()

@@ -61,8 +61,8 @@ final class HotkeyCoordinator {
             }
 
             manager.register(action: action, combination: combination) { [weak self] in
-                guard let self, let switcher = self.appState?.spaceSwitcher else { return }
-                action.execute(on: switcher)
+                guard let self, let appState = self.appState else { return }
+                action.execute(appState: appState)
             }
         }
     }
