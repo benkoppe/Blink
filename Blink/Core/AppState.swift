@@ -29,6 +29,9 @@ final class AppState {
     /// The window that contains the permissions interface.
     @ObservationIgnored private(set) weak var permissionsWindow: NSWindow?
 
+    /// The app's hotkey registry.
+    nonisolated let hotkeyRegistry = HotkeyRegistry()
+
     let isPreview: Bool = {
         #if DEBUG
             let environment = ProcessInfo.processInfo.environment
