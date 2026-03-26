@@ -48,11 +48,49 @@ struct BlinkSlider<
         }
     }
 
+    var tickCount: Int {
+        Int(((bounds.upperBound - bounds.lowerBound) / step).rounded()) + 1
+    }
+
+    @State private var isHovered = false
+
     var body: some View {
-        CompactSlider(
-            value: value,
-            in: bounds,
-            step: step
-        )
+        ZStack {
+            GeometryReader { geo in
+                CompactSlider(
+                    value: value,
+                    in: bounds,
+                    step: step
+                )
+                .compactSliderOptions(.snapToSteps)
+                .compactSliderScaleStyles(
+                    visibility: .default, alignment: .top,
+                    .linear(count: tickCount, lineLength: 3)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture { location in
+                    let width = geo.size.width
+                    let percent = location.x / width
+
+                    let range = bounds.upperBound - bounds.lowerBound
+                    let rawValue = bounds.lowerBound + Value(percent) * range
+
+                    if step > 0 {
+                        let steps = ((rawValue - bounds.lowerBound) / step).rounded()
+                        value.wrappedValue = bounds.lowerBound + steps * step
+                    } else {
+                        value.wrappedValue = rawValue
+                    }
+                }
+            }
+
+            valueLabel
+                .foregroundStyle(isHovered ? .primary : .secondary)
+                .textSelection(valueLabelSelectability)
+                .allowsHitTesting(false)
+        }
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
