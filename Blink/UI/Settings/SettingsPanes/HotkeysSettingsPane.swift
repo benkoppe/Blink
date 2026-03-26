@@ -8,8 +8,17 @@
 import SwiftUI
 
 struct HotkeysSettingsPane: View {
+    @Environment(AppState.self) private var appState
+
     var body: some View {
-        Text(/*@START_MENU_TOKEN@*/"Hello, World!"/*@END_MENU_TOKEN@*/)
+        BlinkForm {
+            BlinkSection("Change Spaces") {
+
+            }
+            BlinkSection("Jump to Index") {
+
+            }
+        }
     }
 }
 
