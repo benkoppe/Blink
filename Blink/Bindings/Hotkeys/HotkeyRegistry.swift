@@ -10,6 +10,7 @@ import Cocoa
 import Combine
 
 /// An object that manages the registration, storage, and unregistration of hotkeys.
+@MainActor
 final class HotkeyRegistry {
     /// The event kinds that a hotkey can be registered for.
     enum EventKind {
