@@ -28,6 +28,20 @@ struct MenuBarSettingsPane: View {
         Text("Hello")
     }
 
+    @ViewBuilder
+    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
+        -> some View
+    {
+        Button {
+            binding.wrappedValue = defaultValue
+        } label: {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+        }
+        .buttonStyle(.borderless)
+        .help("Reset to default")
+        .disabled(binding.wrappedValue == defaultValue)
+    }
+
     var barAppearanceEditor: some View {
         @Bindable var settings = appState.settings
 
@@ -52,11 +66,15 @@ struct MenuBarSettingsPane: View {
                 )
                 .frame(height: 20)
             } label: {
-                Text("Size")
-                    .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
-                    .onFrameChange { frame in
-                        maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
-                    }
+                BlinkLabeledContent {
+                    resetButton(binding: $settings.iconSize, default: AppSettings.defaultIconSize)
+                } label: {
+                    Text("Size")
+                        .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
+                        .onFrameChange { frame in
+                            maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
+                        }
+                }
             }
 
             BlinkLabeledContent {
@@ -68,11 +86,17 @@ struct MenuBarSettingsPane: View {
                 )
                 .frame(height: 20)
             } label: {
-                Text("Corner radius")
-                    .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
-                    .onFrameChange { frame in
-                        maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
-                    }
+                BlinkLabeledContent {
+                    resetButton(
+                        binding: $settings.iconCornerRadius,
+                        default: AppSettings.defaultIconCornerRadius)
+                } label: {
+                    Text("Corner radius")
+                        .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
+                        .onFrameChange { frame in
+                            maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
+                        }
+                }
             }
 
             BlinkLabeledContent {
@@ -84,11 +108,16 @@ struct MenuBarSettingsPane: View {
                 )
                 .frame(height: 20)
             } label: {
-                Text("Spacing")
-                    .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
-                    .onFrameChange { frame in
-                        maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
-                    }
+                BlinkLabeledContent {
+                    resetButton(
+                        binding: $settings.iconSpacing, default: AppSettings.defaultIconSpacing)
+                } label: {
+                    Text("Spacing")
+                        .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
+                        .onFrameChange { frame in
+                            maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
+                        }
+                }
             }
         }
     }
