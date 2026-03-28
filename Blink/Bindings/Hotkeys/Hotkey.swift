@@ -5,7 +5,6 @@
 //  Created by Ben on 3/25/26.
 //
 
-import Combine
 import Observation
 
 /// A combination of a key and modifiers that can be used to
@@ -22,7 +21,8 @@ final class Hotkey {
 
     var keyCombination: KeyCombination? {
         didSet {
-            enable()
+            guard oldValue != keyCombination else { return }
+            updateListener()
         }
     }
 
@@ -37,12 +37,24 @@ final class Hotkey {
 
     func assignAppState(_ appState: AppState) {
         self.appState = appState
-        enable()
+        updateListener()
     }
 
-    func enable() {
+    // MARK: - Listener lifecycle
+
+    func updateListener() {
         disable()
-        listener = Listener(hotkey: self, eventKind: .keyDown, appState: appState)
+
+        guard
+            keyCombination != nil,
+            let appState
+        else { return }
+
+        listener = Listener(
+            hotkey: self,
+            eventKind: .keyDown,
+            appState: appState
+        )
     }
 
     func disable() {
@@ -55,7 +67,6 @@ extension Hotkey {
     /// An object that manages the lifetime of a hotkey observation.
     private final class Listener {
         private weak var appState: AppState?
-
         private var id: UInt32?
 
         var isValid: Bool {
