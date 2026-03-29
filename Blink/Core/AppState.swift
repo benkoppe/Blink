@@ -21,7 +21,10 @@ final class AppState {
     private lazy var swipeCoordinator = SwipeGestureCoordinator(appState: self)
 
     @ObservationIgnored
-    private lazy var settingsManager = SettingsManager(appState: self)
+    private(set) lazy var permissionsManager = PermissionsManager(appState: self)
+
+    @ObservationIgnored
+    private(set) lazy var settingsManager = SettingsManager(appState: self)
 
     /// The app's delegate.
     @ObservationIgnored private(set) weak var appDelegate: AppDelegate?
