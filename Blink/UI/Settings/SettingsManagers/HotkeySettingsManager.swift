@@ -36,12 +36,10 @@ final class HotkeySettingsManager {
     // MARK: - Setup
 
     private func loadInitialState() {
-        guard
-            let dict = UserDefaults.standard.dictionary(forKey: "hotkeys") as? [String: Data]
-        else { return }
+        let dict = UserDefaults.standard.dictionary(forKey: "hotkeys") as? [String: Data]
 
         for hotkey in hotkeys {
-            if let data = dict[hotkey.action.rawValue] {
+            if let data = dict?[hotkey.action.rawValue] {
                 do {
                     hotkey.keyCombination = try decoder.decode(
                         KeyCombination.self,
@@ -50,6 +48,7 @@ final class HotkeySettingsManager {
                 } catch {
                     Logger.hotkeySettingsManager.error("Error decoding hotkey: \(error)")
                 }
+            } else {
             }
         }
     }

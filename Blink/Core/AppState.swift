@@ -20,6 +20,9 @@ final class AppState {
     @ObservationIgnored
     private lazy var swipeCoordinator = SwipeGestureCoordinator(appState: self)
 
+    @ObservationIgnored
+    private lazy var settingsManager = SettingsManager(appState: self)
+
     /// The app's delegate.
     @ObservationIgnored private(set) weak var appDelegate: AppDelegate?
 
@@ -30,7 +33,7 @@ final class AppState {
     @ObservationIgnored private(set) weak var permissionsWindow: NSWindow?
 
     /// The app's hotkey registry.
-    nonisolated let hotkeyRegistry = HotkeyRegistry()
+    let hotkeyRegistry = HotkeyRegistry()
 
     let isPreview: Bool = {
         #if DEBUG
@@ -41,6 +44,11 @@ final class AppState {
             return false
         #endif
     }()
+
+    /// Sets up the app state.
+    func performSetup() {
+        settingsManager.performSetup()
+    }
 
     /// Assigns the app delegate to the app state.
     func assignAppDelegate(_ appDelegate: AppDelegate) {
