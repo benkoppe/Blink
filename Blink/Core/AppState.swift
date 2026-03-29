@@ -50,6 +50,7 @@ final class AppState {
 
     /// Sets up the app state.
     func performSetup() {
+        permissionsManager.stopAllChecks()
         settingsManager.performSetup()
     }
 

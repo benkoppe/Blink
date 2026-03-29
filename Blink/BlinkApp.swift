@@ -36,5 +36,7 @@ struct BlinkApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 900, height: 625)
         .environment(appState)
+
+        PermissionsWindow(appState: appState)
     }
 }
