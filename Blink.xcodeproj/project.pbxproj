@@ -11,6 +11,7 @@
 		B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DFB2F72439E008FC353 /* Carbon.framework */; };
 		B54E4E542F744BD8008FC353 /* ObservableUserDefault in Frameworks */ = {isa = PBXBuildFile; productRef = B54E4E532F744BD8008FC353 /* ObservableUserDefault */; };
 		B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51772F74AF5B008FC353 /* CompactSlider */; };
+		B54E51952F79E09E008FC353 /* AXSwift in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51942F79E09E008FC353 /* AXSwift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +37,7 @@
 				B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */,
 				B54E4E542F744BD8008FC353 /* ObservableUserDefault in Frameworks */,
 				B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */,
+				B54E51952F79E09E008FC353 /* AXSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -90,6 +92,7 @@
 			packageProductDependencies = (
 				B54E4E532F744BD8008FC353 /* ObservableUserDefault */,
 				B54E51772F74AF5B008FC353 /* CompactSlider */,
+				B54E51942F79E09E008FC353 /* AXSwift */,
 			);
 			productName = Blink;
 			productReference = B54E4DEA2F7242F2008FC353 /* Blink.app */;
@@ -122,6 +125,7 @@
 			packageReferences = (
 				B54E4E522F744BD8008FC353 /* XCRemoteSwiftPackageReference "ObservableUserDefault" */,
 				B54E51762F74AF5B008FC353 /* XCRemoteSwiftPackageReference "CompactSlider" */,
+				B54E51932F79E09E008FC353 /* XCRemoteSwiftPackageReference "AXSwift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B54E4DEB2F7242F2008FC353 /* Products */;
@@ -382,6 +386,14 @@
 				minimumVersion = 2.1.0;
 			};
 		};
+		B54E51932F79E09E008FC353 /* XCRemoteSwiftPackageReference "AXSwift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tmandry/AXSwift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.3.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -394,6 +406,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B54E51762F74AF5B008FC353 /* XCRemoteSwiftPackageReference "CompactSlider" */;
 			productName = CompactSlider;
+		};
+		B54E51942F79E09E008FC353 /* AXSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B54E51932F79E09E008FC353 /* XCRemoteSwiftPackageReference "AXSwift" */;
+			productName = AXSwift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
