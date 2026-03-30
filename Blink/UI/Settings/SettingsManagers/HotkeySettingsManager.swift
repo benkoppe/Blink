@@ -36,9 +36,13 @@ final class HotkeySettingsManager {
     // MARK: - Setup
 
     private func loadInitialState() {
+        guard let appState else { return }
+
         let dict = UserDefaults.standard.dictionary(forKey: "hotkeys") as? [String: Data]
 
         for hotkey in hotkeys {
+            hotkey.assignAppState(appState)
+
             if let data = dict?[hotkey.action.rawValue] {
                 do {
                     hotkey.keyCombination = try decoder.decode(
@@ -49,6 +53,7 @@ final class HotkeySettingsManager {
                     Logger.hotkeySettingsManager.error("Error decoding hotkey: \(error)")
                 }
             } else {
+                hotkey.keyCombination = hotkey.action.defaultKeyCombination
             }
         }
     }
@@ -85,6 +90,8 @@ final class HotkeySettingsManager {
                 Logger.hotkeySettingsManager.error("Error encoding hotkey: \(error)")
             }
         }
+
+        UserDefaults.standard.set(dict, forKey: "hotkeys")
     }
 
     // MARK: - Public API
