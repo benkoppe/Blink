@@ -22,7 +22,7 @@ final class Hotkey {
     var keyCombination: KeyCombination? {
         didSet {
             guard oldValue != keyCombination else { return }
-            updateListener()
+            enable()
         }
     }
 
@@ -37,12 +37,12 @@ final class Hotkey {
 
     func assignAppState(_ appState: AppState) {
         self.appState = appState
-        updateListener()
+        enable()
     }
 
     // MARK: - Listener lifecycle
 
-    func updateListener() {
+    func enable() {
         disable()
 
         guard
