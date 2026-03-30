@@ -99,6 +99,16 @@ final class HotkeySettingsManager {
     func hotkey(withAction action: BoundAction) -> Hotkey? {
         hotkeys.first { $0.action == action }
     }
+
+    func resetHotkey(withAction action: BoundAction) {
+        hotkey(withAction: action)?.keyCombination = action.defaultKeyCombination
+    }
+
+    func resetAllHotkeys() {
+        for hotkey in hotkeys {
+            hotkey.keyCombination = hotkey.action.defaultKeyCombination
+        }
+    }
 }
 
 // MARK: - Logger
