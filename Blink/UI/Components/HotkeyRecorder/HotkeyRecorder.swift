@@ -14,8 +14,8 @@ struct HotkeyRecorder<Label: View>: View {
 
     init(
         hotkey: Hotkey,
-        @ViewBuilder label: () -> Label,
-        appState: AppState
+        appState: AppState?,
+        @ViewBuilder label: () -> Label
     ) {
         self.label = label()
         self.model = HotkeyRecorderModel(hotkey: hotkey, appState: appState)

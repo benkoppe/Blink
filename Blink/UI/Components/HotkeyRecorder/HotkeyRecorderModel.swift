@@ -24,7 +24,7 @@ final class HotkeyRecorderModel {
         return nil
     }
 
-    init(hotkey: Hotkey, appState: AppState) {
+    init(hotkey: Hotkey, appState: AppState?) {
         self.hotkey = hotkey
         self.appState = appState
     }
