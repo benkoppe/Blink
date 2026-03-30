@@ -16,8 +16,6 @@ final class AppState {
     let bindingStore = BindingStore()
 
     @ObservationIgnored
-    private lazy var hotkeyCoordinator = HotkeyCoordinator(appState: self)
-    @ObservationIgnored
     private lazy var swipeCoordinator = SwipeGestureCoordinator(appState: self)
 
     @ObservationIgnored
