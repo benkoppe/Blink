@@ -13,7 +13,6 @@ import SwiftUI
 final class AppState {
     let settings = AppSettings()
     let spaceSwitcher = SpaceSwitcher()
-    let bindingStore = BindingStore()
 
     @ObservationIgnored
     private(set) lazy var permissionsManager = PermissionsManager(appState: self)

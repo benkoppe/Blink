@@ -10,6 +10,13 @@ import Observation
 
 @MainActor @Observable
 final class GestureSettingsManager {
+    private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
+        SwipeGesture(id: $0, action: nil)
+    }
+
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
     @ObservationIgnored private(set) weak var appState: AppState?
     @ObservationIgnored private let monitor = SwipeGestureMonitor()
 
@@ -21,18 +28,38 @@ final class GestureSettingsManager {
     }
 
     func performSetup() {
-        trackAndReconfigure()
+        loadInitialState()
+        observeGestures()
+    }
+
+    // MARK - Setup
+    private func loadInitialState() {
+        let dict = UserDefaults.standard.dictionary(forKey: "swipeGestures") as? [String: Data]
+        for gesture in gestures {
+            if let data = dict?[gesture.id.defaultsKey] {
+                do {
+                    gesture.action = try decoder.decode(BoundAction?.self, from: data)
+                } catch {
+                    Logger.gestureSettingsManager.error("Error decoding gesture action: \(error)")
+                    gesture.action = gesture.id.defaultAction
+                }
+            } else {
+                gesture.action = gesture.id.defaultAction
+            }
+        }
     }
 
     // MARK - Observation
 
-    private func trackAndReconfigure() {
+    private func observeGestures() {
         withObservationTracking {
             reconfigure()
+            for gesture in gestures { _ = gesture.action }
         } onChange: { [weak self] in
             guard let self else { return }
-            Task { @MainActor [self] in
-                self.trackAndReconfigure()
+            Task { @MainActor [weak self] in
+                self?.persistGestures()
+                self?.observeGestures()
             }
         }
     }
@@ -48,19 +75,47 @@ final class GestureSettingsManager {
             return
         }
 
-        let anyEnabled = appState.bindingStore.swipeBindings.values.contains { $0.isEnabled }
+        let anyEnabled = gestures.contains { $0.action != nil }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()
+    }
+
+    // MARK - Persistence
+
+    private func persistGestures() {
+        var dict = [String: Data]()
+        for gesture in gestures {
+            do {
+                dict[gesture.id.defaultsKey] = try encoder.encode(gesture.action)
+            } catch {
+                Logger.gestureSettingsManager.error("Error encoding gesture action: \(error)")
+            }
+        }
+        UserDefaults.standard.set(dict, forKey: "swipeGestures")
     }
 
     // MARK - Swipe handling
 
     private func handleSwipe(direction: SwipeDirection, fingerCount: Int) {
         guard let appState else { return }
-        let id = SwipeBindingID(direction: direction, fingerCount: fingerCount)
-        guard let binding = appState.bindingStore.swipeBinding(for: id), binding.isEnabled else {
-            return
+        let id = SwipeGestureID(direction: direction, fingerCount: fingerCount)
+        guard let gesture = gesture(withID: id), let action = gesture.action else { return }
+        action.execute(appState: appState)
+    }
+
+    // MARK: - Public API
+
+    func gesture(withID id: SwipeGestureID) -> SwipeGesture? {
+        gestures.first { $0.id == id }
+    }
+
+    func resetGesture(withID id: SwipeGestureID) {
+        gesture(withID: id)?.action = id.defaultAction
+    }
+
+    func resetAllGestures() {
+        for gesture in gestures {
+            gesture.action = gesture.id.defaultAction
         }
-        binding.action.execute(appState: appState)
     }
 }
 
