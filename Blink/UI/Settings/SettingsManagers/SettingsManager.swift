@@ -10,6 +10,7 @@ import Observation
 
 @MainActor @Observable
 final class SettingsManager {
+    let generalSettingsManager: GeneralSettingsManager = .init()
     let hotkeySettingsManager: HotkeySettingsManager
     let gestureSettingsManager: GestureSettingsManager
     let menuBarSettingsManager: MenuBarSettingsManager = .init()

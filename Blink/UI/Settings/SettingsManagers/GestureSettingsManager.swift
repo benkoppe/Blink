@@ -70,7 +70,7 @@ final class GestureSettingsManager {
             return
         }
 
-        guard appState.settings.bindingsEnabled else {
+        guard appState.settingsManager.generalSettingsManager.bindingsEnabled else {
             monitor.stopMonitoring()
             return
         }

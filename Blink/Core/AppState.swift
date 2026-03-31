@@ -11,7 +11,6 @@ import SwiftUI
 
 @Observable @MainActor
 final class AppState {
-    let settings = AppSettings()
     let spaceSwitcher = SpaceSwitcher()
 
     @ObservationIgnored

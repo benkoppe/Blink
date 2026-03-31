@@ -88,7 +88,7 @@ final class HotkeySettingsManager {
 
     private func reconfigure() {
         guard let appState else { return }
-        if appState.settings.bindingsEnabled {
+        if appState.settingsManager.generalSettingsManager.bindingsEnabled {
             for hotkey in hotkeys { hotkey.enable() }
         } else {
             for hotkey in hotkeys { hotkey.disable() }

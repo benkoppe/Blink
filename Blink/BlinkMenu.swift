@@ -13,7 +13,7 @@ struct BlinkMenu: View {
     private var switcher: SpaceSwitcher { appState.spaceSwitcher }
 
     var body: some View {
-        @Bindable var settings = appState.settings
+        @Bindable var settings = appState.settingsManager.generalSettingsManager
 
         Toggle("Enable", isOn: $settings.bindingsEnabled)
 
