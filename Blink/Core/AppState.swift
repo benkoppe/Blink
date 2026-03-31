@@ -16,9 +16,6 @@ final class AppState {
     let bindingStore = BindingStore()
 
     @ObservationIgnored
-    private lazy var swipeCoordinator = SwipeGestureCoordinator(appState: self)
-
-    @ObservationIgnored
     private(set) lazy var permissionsManager = PermissionsManager(appState: self)
 
     @ObservationIgnored

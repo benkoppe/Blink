@@ -11,15 +11,18 @@ import Observation
 @MainActor @Observable
 final class SettingsManager {
     let hotkeySettingsManager: HotkeySettingsManager
+    let gestureSettingsManager: GestureSettingsManager
 
     @ObservationIgnored private(set) weak var appState: AppState?
 
     init(appState: AppState) {
         self.hotkeySettingsManager = .init(appState: appState)
+        self.gestureSettingsManager = .init(appState: appState)
         self.appState = appState
     }
 
     func performSetup() {
         hotkeySettingsManager.performSetup()
+        gestureSettingsManager.performSetup()
     }
 }

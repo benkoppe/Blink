@@ -30,8 +30,7 @@ final class SwipeGestureMonitor {
     /// Parameters: (direction, fingerCount)
     var onSwipe: ((SwipeDirection, Int) -> Void)?
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var eventTap: EventTap?
 
     private struct GestureState {
         var isActive = false
@@ -52,48 +51,31 @@ final class SwipeGestureMonitor {
 
     private var state = GestureState()
 
+    // MARK - Monitoring lifecycle
+
     func startMonitoring() {
         guard eventTap == nil else { return }
 
-        guard
-            let tap = CGEvent.tapCreate(
-                tap: .cghidEventTap,
-                place: .headInsertEventTap,
-                options: .defaultTap,
-                eventsOfInterest: NSEvent.EventTypeMask.gesture.rawValue,
-                callback: { _, _, cgEvent, userInfo -> Unmanaged<CGEvent>? in
-                    guard let userInfo else { return nil }
-                    let monitor = Unmanaged<SwipeGestureMonitor>
-                        .fromOpaque(userInfo)
-                        .takeUnretainedValue()
-                    if let event = NSEvent(cgEvent: cgEvent) {
-                        monitor.handleEvent(event)
-                    }
-                    return Unmanaged.passUnretained(cgEvent)
-                },
-                userInfo: Unmanaged.passUnretained(self).toOpaque()
-            )
-        else { return }
-
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-
-        eventTap = tap
-        runLoopSource = source
-        print("started monitoring...")
+        let tap = EventTap(
+            label: "SwipeGestureMonitor",
+            options: .defaultTap,
+            location: .hidEventTap,
+            place: .headInsertEventTap,
+            types: [.gesture],
+            callback: { [weak self] _, _, cgEvent in
+                if let nsEvent = NSEvent(cgEvent: cgEvent) {
+                    self?.handleEvent(nsEvent)
+                }
+                return cgEvent
+            }
+        )
+        tap.enable()
+        self.eventTap = tap
     }
 
     func stopMonitoring() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            CFMachPortInvalidate(tap)
-            eventTap = nil
-        }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-            runLoopSource = nil
-        }
+        eventTap?.disable()
+        eventTap = nil
         state.reset()
     }
 
@@ -102,8 +84,9 @@ final class SwipeGestureMonitor {
     private func handleEvent(_ event: NSEvent) {
         // Ignore synthetic events posted by SpaceSwitcher
         guard let cgEvent = event.cgEvent else { return }
+
+        // Ignore synthetic events posted by SpaceSwitcher
         if cgEvent.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue {
-            print("ignoring synthetic event")
             return
         }
 
