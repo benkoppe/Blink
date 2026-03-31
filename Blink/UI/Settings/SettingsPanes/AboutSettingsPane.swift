@@ -8,6 +8,20 @@
 import SwiftUI
 
 struct AboutSettingsPane: View {
+    @Environment(AppState.self) private var appState
+
+    private var updatesManager: UpdatesManager {
+        appState.updatesManager
+    }
+
+    private var lastUpdateCheckString: String {
+        if let date = updatesManager.lastUpdateCheckDate {
+            date.formatted(date: .abbreviated, time: .standard)
+        } else {
+            "Never"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             mainForm
@@ -26,8 +40,8 @@ struct AboutSettingsPane: View {
             Spacer(minLength: 0)
                 .frame(maxHeight: 20)
 
-            // updatesSection
-            //     .layoutPriority(1)
+            updatesSection
+                .layoutPriority(1)
         }
     }
 
@@ -56,6 +70,48 @@ struct AboutSettingsPane: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var updatesSection: some View {
+        BlinkSection(options: .hasDividers) {
+            automaticallyCheckForUpdates
+            automaticallyDownloadUpdates
+            if updatesManager.canCheckForUpdates {
+                checkForUpdates
+            }
+        }
+        .frame(maxWidth: 600)
+    }
+
+    @ViewBuilder
+    private var automaticallyCheckForUpdates: some View {
+        @Bindable var updatesManager = updatesManager
+        Toggle(
+            "Automatically check for updates",
+            isOn: $updatesManager.automaticallyChecksForUpdates
+        )
+    }
+
+    @ViewBuilder
+    private var automaticallyDownloadUpdates: some View {
+        @Bindable var updatesManager = updatesManager
+        Toggle(
+            "Automatically download updates",
+            isOn: $updatesManager.automaticallyDownloadsUpdates
+        )
+    }
+
+    @ViewBuilder
+    private var checkForUpdates: some View {
+        HStack {
+            Button("Check for Updates") {
+                updatesManager.checkForUpdates()
+            }
+            Spacer()
+            Text("Last checked: \(lastUpdateCheckString)")
+                .font(.caption)
         }
     }
 
