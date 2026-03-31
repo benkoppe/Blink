@@ -19,6 +19,12 @@ final class AppState {
     @ObservationIgnored
     private(set) lazy var settingsManager = SettingsManager(appState: self)
 
+    @ObservationIgnored
+    private(set) lazy var updatesManager = UpdatesManager(appState: self)
+
+    @ObservationIgnored
+    private(set) lazy var userNotificationManager = UserNotificationManager(appState: self)
+
     /// The app's delegate.
     @ObservationIgnored private(set) weak var appDelegate: AppDelegate?
 
