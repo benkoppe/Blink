@@ -51,6 +51,8 @@ final class AppState {
     func performSetup() {
         permissionsManager.stopAllChecks()
         settingsManager.performSetup()
+        updatesManager.performSetup()
+        userNotificationManager.performSetup()
     }
 
     /// Assigns the app delegate to the app state.
