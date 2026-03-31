@@ -31,6 +31,7 @@ final class HotkeySettingsManager {
     func performSetup() {
         loadInitialState()
         observeHotkeys()
+        observeEnabled()
     }
 
     // MARK: - Setup
@@ -71,6 +72,26 @@ final class HotkeySettingsManager {
                 self?.persistHotkeys()
                 self?.observeHotkeys()  // re-arm
             }
+        }
+    }
+
+    private func observeEnabled() {
+        withObservationTracking {
+            reconfigure()
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.reconfigure()
+                self?.observeEnabled()
+            }
+        }
+    }
+
+    private func reconfigure() {
+        guard let appState else { return }
+        if appState.settings.bindingsEnabled {
+            for hotkey in hotkeys { hotkey.enable() }
+        } else {
+            for hotkey in hotkeys { hotkey.disable() }
         }
     }
 
