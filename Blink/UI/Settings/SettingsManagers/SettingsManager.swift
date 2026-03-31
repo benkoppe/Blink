@@ -12,6 +12,7 @@ import Observation
 final class SettingsManager {
     let hotkeySettingsManager: HotkeySettingsManager
     let gestureSettingsManager: GestureSettingsManager
+    let menuBarSettingsManager: MenuBarSettingsManager = .init()
 
     @ObservationIgnored private(set) weak var appState: AppState?
 

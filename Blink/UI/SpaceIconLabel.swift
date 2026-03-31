@@ -15,11 +15,13 @@ struct SpaceIconImage {
         isSelected: Bool,
         appState: AppState
     ) {
+        let menuBarSettingsManager = appState.settingsManager.menuBarSettingsManager
+
         self.init(
             text: displayText,
             isSelected: isSelected,
-            iconSize: appState.settings.iconSize,
-            cornerRadius: appState.settings.iconCornerRadius
+            iconSize: menuBarSettingsManager.iconSize,
+            cornerRadius: menuBarSettingsManager.iconCornerRadius
         )
     }
 
@@ -94,7 +96,7 @@ struct SpaceIconImage {
 
 extension [SpaceIconImage] {
     func combine(appState: AppState) -> NSImage? {
-        return combine(spacing: appState.settings.iconSpacing)
+        return combine(spacing: appState.settingsManager.menuBarSettingsManager.iconSpacing)
     }
 
     func combine(spacing: Double) -> NSImage? {

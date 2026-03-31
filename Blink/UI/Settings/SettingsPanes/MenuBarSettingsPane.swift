@@ -43,7 +43,7 @@ struct MenuBarSettingsPane: View {
     }
 
     var barAppearanceEditor: some View {
-        @Bindable var settings = appState.settings
+        @Bindable var settings = appState.settingsManager.menuBarSettingsManager
 
         return VStack {
             Group {
@@ -67,7 +67,9 @@ struct MenuBarSettingsPane: View {
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(binding: $settings.iconSize, default: AppSettings.defaultIconSize)
+                    resetButton(
+                        binding: $settings.iconSize, default: MenuBarSettingsManager.defaultIconSize
+                    )
                 } label: {
                     Text("Size")
                         .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
@@ -89,7 +91,7 @@ struct MenuBarSettingsPane: View {
                 BlinkLabeledContent {
                     resetButton(
                         binding: $settings.iconCornerRadius,
-                        default: AppSettings.defaultIconCornerRadius)
+                        default: MenuBarSettingsManager.defaultIconCornerRadius)
                 } label: {
                     Text("Corner radius")
                         .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
@@ -110,7 +112,8 @@ struct MenuBarSettingsPane: View {
             } label: {
                 BlinkLabeledContent {
                     resetButton(
-                        binding: $settings.iconSpacing, default: AppSettings.defaultIconSpacing)
+                        binding: $settings.iconSpacing,
+                        default: MenuBarSettingsManager.defaultIconSpacing)
                 } label: {
                     Text("Spacing")
                         .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
