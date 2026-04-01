@@ -21,9 +21,22 @@
 		B54E4DFB2F72439E008FC353 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B50F231A2F7CA30D00538956 /* Exceptions for "Blink" folder in "Blink" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B54E4DE92F7242F2008FC353 /* Blink */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B54E4E112F726364008FC353 /* Blink */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B50F231A2F7CA30D00538956 /* Exceptions for "Blink" folder in "Blink" target */,
+			);
 			path = Blink;
 			sourceTree = "<group>";
 		};
@@ -296,6 +309,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Blink/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ben Koppe";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -330,6 +344,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Blink/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ben Koppe";
 				LD_RUNPATH_SEARCH_PATHS = (
