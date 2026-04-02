@@ -56,8 +56,11 @@ extension LocalEventMonitor {
 
         let mask: NSEvent.EventTypeMask
 
-        func receive<S: Subscriber<Output, Failure>>(subscriber: S) {
-            let subscription = LocalEventSubscription(mask: mask, subscriber: subscriber)
+        func receive<S: Subscriber>(subscriber: S) where S.Input == Output, S.Failure == Failure {
+            let subscription = LocalEventSubscription(
+                mask: mask,
+                subscriber: AnySubscriber(subscriber)
+            )
             subscriber.receive(subscription: subscription)
         }
     }
@@ -70,25 +73,24 @@ extension LocalEventMonitor {
     }
 }
 
-extension LocalEventMonitor.LocalEventPublisher {
-    private final class LocalEventSubscription<S: Subscriber<Output, Failure>>: Subscription {
-        var subscriber: S?
-        let monitor: LocalEventMonitor
+private final class LocalEventSubscription: Subscription {
+    private var subscriber: AnySubscriber<NSEvent, Never>?
+    private let monitor: LocalEventMonitor
 
-        init(mask: NSEvent.EventTypeMask, subscriber: S) {
-            self.subscriber = subscriber
-            self.monitor = LocalEventMonitor(mask: mask) { event in
-                _ = subscriber.receive(event)
-                return event
-            }
-            monitor.start()
+    init(mask: NSEvent.EventTypeMask, subscriber: AnySubscriber<NSEvent, Never>) {
+        self.subscriber = subscriber
+
+        self.monitor = LocalEventMonitor(mask: mask) { event in
+            _ = subscriber.receive(event)
+            return event
         }
+        monitor.start()
+    }
 
-        func request(_ demand: Subscribers.Demand) {}
+    func request(_ demand: Subscribers.Demand) {}
 
-        func cancel() {
-            monitor.stop()
-            subscriber = nil
-        }
+    func cancel() {
+        monitor.stop()
+        subscriber = nil
     }
 }
