@@ -10,9 +10,9 @@
 		B50F23122F7C839C00538956 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B50F23112F7C839C00538956 /* Sparkle */; };
 		B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DF92F724399008FC353 /* ApplicationServices.framework */; };
 		B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DFB2F72439E008FC353 /* Carbon.framework */; };
-		B54E4E542F744BD8008FC353 /* ObservableUserDefault in Frameworks */ = {isa = PBXBuildFile; productRef = B54E4E532F744BD8008FC353 /* ObservableUserDefault */; };
 		B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51772F74AF5B008FC353 /* CompactSlider */; };
 		B54E51952F79E09E008FC353 /* AXSwift in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51942F79E09E008FC353 /* AXSwift */; };
+		B58DCAB42F7CB90500BFFBFB /* ObservableUserDefault in Frameworks */ = {isa = PBXBuildFile; productRef = B58DCAB32F7CB90500BFFBFB /* ObservableUserDefault */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,7 +49,7 @@
 			files = (
 				B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */,
 				B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */,
-				B54E4E542F744BD8008FC353 /* ObservableUserDefault in Frameworks */,
+				B58DCAB42F7CB90500BFFBFB /* ObservableUserDefault in Frameworks */,
 				B50F23122F7C839C00538956 /* Sparkle in Frameworks */,
 				B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */,
 				B54E51952F79E09E008FC353 /* AXSwift in Frameworks */,
@@ -105,10 +105,10 @@
 			);
 			name = Blink;
 			packageProductDependencies = (
-				B54E4E532F744BD8008FC353 /* ObservableUserDefault */,
 				B54E51772F74AF5B008FC353 /* CompactSlider */,
 				B54E51942F79E09E008FC353 /* AXSwift */,
 				B50F23112F7C839C00538956 /* Sparkle */,
+				B58DCAB32F7CB90500BFFBFB /* ObservableUserDefault */,
 			);
 			productName = Blink;
 			productReference = B54E4DEA2F7242F2008FC353 /* Blink.app */;
@@ -139,10 +139,10 @@
 			mainGroup = B54E4DE12F7242F2008FC353;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				B54E4E522F744BD8008FC353 /* XCRemoteSwiftPackageReference "ObservableUserDefault" */,
 				B54E51762F74AF5B008FC353 /* XCRemoteSwiftPackageReference "CompactSlider" */,
 				B54E51932F79E09E008FC353 /* XCRemoteSwiftPackageReference "AXSwift" */,
 				B50F23102F7C839C00538956 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				B58DCAB22F7CB90500BFFBFB /* XCRemoteSwiftPackageReference "ObservableUserDefault" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B54E4DEB2F7242F2008FC353 /* Products */;
@@ -419,14 +419,6 @@
 				minimumVersion = 2.9.1;
 			};
 		};
-		B54E4E522F744BD8008FC353 /* XCRemoteSwiftPackageReference "ObservableUserDefault" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/davidsteppenbeck/ObservableUserDefault";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.1;
-			};
-		};
 		B54E51762F74AF5B008FC353 /* XCRemoteSwiftPackageReference "CompactSlider" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/buh/CompactSlider.git";
@@ -443,6 +435,14 @@
 				minimumVersion = 0.3.2;
 			};
 		};
+		B58DCAB22F7CB90500BFFBFB /* XCRemoteSwiftPackageReference "ObservableUserDefault" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/benkoppe/ObservableUserDefault.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.3.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -450,11 +450,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B50F23102F7C839C00538956 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
-		};
-		B54E4E532F744BD8008FC353 /* ObservableUserDefault */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B54E4E522F744BD8008FC353 /* XCRemoteSwiftPackageReference "ObservableUserDefault" */;
-			productName = ObservableUserDefault;
 		};
 		B54E51772F74AF5B008FC353 /* CompactSlider */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -465,6 +460,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B54E51932F79E09E008FC353 /* XCRemoteSwiftPackageReference "AXSwift" */;
 			productName = AXSwift;
+		};
+		B58DCAB32F7CB90500BFFBFB /* ObservableUserDefault */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B58DCAB22F7CB90500BFFBFB /* XCRemoteSwiftPackageReference "ObservableUserDefault" */;
+			productName = ObservableUserDefault;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
