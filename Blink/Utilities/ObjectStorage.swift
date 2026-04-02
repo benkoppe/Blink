@@ -12,7 +12,7 @@ import ObjectiveC
 /// A type that uses the Objective-C runtime to store values of a given
 /// type with an object.
 @MainActor
-final class ObjectStorage<Value> {
+struct ObjectStorage<Value> {
     /// The association policy to use for storage.
     ///
     /// - Note: Regardless of whether a value is stored with a strong or
@@ -23,8 +23,10 @@ final class ObjectStorage<Value> {
     /// The key used for value lookup.
     ///
     /// The key is unique to this instance.
-    private var key: UnsafeRawPointer {
-        UnsafeRawPointer(Unmanaged.passUnretained(self).toOpaque())
+    private let key: UnsafeRawPointer
+
+    init() {
+        key = UnsafeRawPointer(Unmanaged.passRetained(KeyToken()).toOpaque())
     }
 
     /// Sets the value for the given object.
@@ -51,6 +53,8 @@ final class ObjectStorage<Value> {
         }
     }
 }
+
+private final class KeyToken {}
 
 // MARK: - Weak Storage
 
