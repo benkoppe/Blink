@@ -27,6 +27,7 @@ platform :mac do
     increment_version_number(version_number: version)
     increment_build_number(build_number: build_number)
 
+    xcode_select("/Applications/Xcode_26.3.app")
     gym()
   end
 
