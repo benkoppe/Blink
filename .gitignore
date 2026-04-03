@@ -4,3 +4,6 @@ build/
 
 # lsp
 buildServer.json
+
+# nix
+.direnv
