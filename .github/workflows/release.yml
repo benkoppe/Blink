@@ -56,28 +56,69 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$CERT_PATH" -k build.keychain -P "$CERT_PASSWORD" -T /user/bin/codesign
+          security import "$CERT_PATH" -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Set project version
+        run: |
+          agvtool new-marketing-version "$VERSION"
+          agvtool new-version -all "$BUILD"
 
       - name: Build Blink.app
         run: |
-          xcodebuild archive \
+          xcodebuild \
             -scheme Blink \
             -configuration Release \
-            -archivePath /tmp/Blink.xcarchive \
+            -derivedDataPath build \
             -skipMacroValidation \
+            build
 
-      - name: Export archive
+      - name: Update built app Info.plist
         run: |
-          xcodebuild -exportArchive \
-            -archivePath /tmp/Blink.xcarchive \
-            -exportPath /tmp/BlinkExport \
-            -exportOptionsPlist ExportOptions.plist
+          APP_PATH="build/Build/Products/Release/Blink.app"
+          INFO_PLIST="$APP_PATH/Contents/Info.plist"
 
-      - name: Build DMG
-        run: bash make_dmg.sh /tmp/BlinkExport/Blink.app
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$INFO_PLIST"
 
-      - name: Notarize
+      - name: Codesign Sparkle helpers and app
+        run: |
+          APP_PATH="build/Build/Products/Release/Blink.app"
+          SPARKLE_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B"
+          if [ -d "$SPARKLE_PATH/XPCServices/Installer.xpc" ]; then
+            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/XPCServices/Installer.xpc"
+          fi
+          if [ -d "$SPARKLE_PATH/XPCServices/Downloader.xpc" ]; then
+            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime --preserve-metadata=entitlements "$SPARKLE_PATH/XPCServices/Downloader.xpc"
+          fi
+          if [ -f "$SPARKLE_PATH/Autoupdate" ]; then
+            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/Autoupdate"
+          fi
+          if [ -d "$SPARKLE_PATH/Updater.app" ]; then
+            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/Updater.app"
+          fi
+          if [ -d "$APP_PATH/Contents/Frameworks/Sparkle.framework" ]; then
+            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$APP_PATH/Contents/Frameworks/Sparkle.framework"
+          fi
+          /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime --entitlements "Blink/Blink.entitlements" "$APP_PATH"
+
+      - name: Verify code signing
+        run: |
+          codesign --verify --deep --strict --verbose=2 "build/Build/Products/Release/Blink.app"
+          spctl --assess --type execute --verbose=4 "build/Build/Products/Release/Blink.app"
+
+      - name: Create DMG
+        env:
+          CERT_NAME: ${{ secrets.DEVELOPER_ID_P12_NAME }}
+        run: |
+          npm install --global create-dmg
+          create-dmg \
+            --identity="$CERT_NAME" \
+            /tmp/BlinkExport/Blink.app \
+            ./
+          mv ./Blink*.dmg ./Blink.dmg
+
+      - name: Notarize DMG
         env:
           NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
@@ -89,8 +130,9 @@ jobs:
             --team-id "$NOTARIZATION_TEAM_ID" \
             --wait
 
-      - name: Staple
-        run: xcrun stapler staple Blink.dmg
+          echo "Attach staple"
+          xcrun stapler staple "Blink.dmg"
+          xcrun stapler staple "build/Build/Products/Release/Blink.app"
 
       - name: Setup Sparkle framework tools
         uses: jozefizso/setup-sparkle@v2
@@ -113,7 +155,7 @@ jobs:
               --link "https://github.com/benkoppe/Blink" \
               /tmp/appcast-staging/
 
-      - name: Inject releaseNotesLink
+      - name: Inject release notes link
         run: |
           perl -0777 -i -pe \
             's#</item># <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>\n </item>#' \
