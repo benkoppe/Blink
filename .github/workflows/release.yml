@@ -1,0 +1,140 @@
+name: "Create Release"
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Derive version variables
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BUILD=$(( $(agvtool what-version -terse) + 1 ))
+          echo "TAG=$TAG"         >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD=$BUILD"     >> "$GITHUB_ENV"
+
+      - name: Set version in project
+        run: |
+          agvtool new-marketing-version "$VERSION"
+          agvtool new-version -all "$BUILD"
+
+      - name: Install Developer ID certificate
+        env:
+          CERT_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/dev_id.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          echo "KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db" >> "$GITHUB_ENV"
+
+          echo "$CERT_BASE64" | base64 --decode > $CERT_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychains -d user -s $KEYCHAIN_PATH
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -scheme Blink \
+            -configuration Release \
+            -archivePath /tmp/Blink.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            "CODE_SIGN_IDENTITY=Developer ID Application" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+
+      - name: Export archive
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath /tmp/Blink.xcarchive \
+            -exportPath /tmp/BlinkExport \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Build DMG
+        run: bash make_dmg.sh /tmp/BlinkExport/Blink.app
+
+      - name: Notarize
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
+        run: |
+          xcrun notarytool submit Blink.dmg \
+            --apple-id "$NOTARIZATION_APPLE_ID" \
+            --password "$NOTARIZATION_PASSWORD" \
+            --team-id "$NOTARIZATION_TEAM_ID" \
+            --wait
+
+      - name: Staple
+        run: xcrun stapler staple Blink.dmg
+
+      - name: Setup Sparkle framework tools
+        uses: jozefizso/setup-sparkle@v2
+
+      - name: Set up Sparkle appcast staging
+        run: |
+          mkdir /tmp/appcast-staging
+          git show origin/gh-pages:appcast.xml > /tmp/appcast-staging/appcast.xml
+          cp Blink.dmg /tmp/appcast-staging/
+
+      - name: Generate appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          echo "$SPARKLE_PRIVATE_KEY" | \
+            generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix \
+                "https://github.com/benkoppe/Blink/releases/download/$TAG/" \
+              --link "https://github.com/benkoppe/Blink" \
+              /tmp/appcast-staging/
+
+      - name: Inject releaseNotesLink
+        run: |
+          perl -0777 -i -pe \
+            's#</item># <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>\n </item>#' \
+            /tmp/appcast-staging/appcast.xml
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "$TAG" Blink.dmg \
+            --title "Blink $VERSION" \
+            --notes-from-tag \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push appcast to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages
+          git checkout gh-pages
+          cp /tmp/appcast-staging/appcast.xml ./appcast.xml
+          git add appcast.xml
+          git commit -m "Update appcast for $TAG"
+          git push origin gh-pages
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain $KEYCHAIN_PATH
