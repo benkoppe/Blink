@@ -21,6 +21,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Magic Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Activate Nix direnv
+        uses: JRMurr/direnv-nix-action@v4
+        with:
+          install-nix: false
+
       - name: Derive version variables
         run: |
           TAG="${GITHUB_REF_NAME}"
