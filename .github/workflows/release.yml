@@ -28,7 +28,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
       - name: Activate Nix direnv
-        uses: JRMurr/direnv-nix-action@v4
+        uses: JRMurr/direnv-nix-action@v4.2.0
         with:
           install-nix: false
 
