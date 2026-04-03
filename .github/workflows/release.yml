@@ -71,6 +71,8 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             build
 
       - name: Update built app Info.plist
