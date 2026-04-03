@@ -51,6 +51,7 @@ jobs:
         env:
           CERT_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           CERT_PATH=$RUNNER_TEMP/dev_id.p12
           echo "$CERT_BASE64" | base64 --decode > $CERT_PATH

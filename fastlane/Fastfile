@@ -38,7 +38,8 @@ platform :mac do
       name: "CertKeychain",
       default_keychain: true,
       unlock: true,
-      timeout: 0
+      timeout: 0,
+      password: ENV["KEYCHAIN_PASSWORD"] || "default"
     )
     import_certificate(
       certificate_path: cert_path,
