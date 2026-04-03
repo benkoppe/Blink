@@ -1,5 +1,5 @@
 {
-  "originHash" : "6602487446652eb8003a7fbf5ed03e830642ec9bf7e65c31aa886b47fb37863a",
+  "originHash" : "52ba53f2793232e25144b4d631d5fe8abfcfcadc4480499247a1ddada821c719",
   "pins" : [
     {
       "identity" : "axswift",
@@ -20,12 +20,12 @@
       }
     },
     {
-      "identity" : "observableuserdefault",
+      "identity" : "observabledefaults",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/benkoppe/ObservableUserDefault.git",
+      "location" : "https://github.com/fatbobman/ObservableDefaults",
       "state" : {
-        "revision" : "14be262b383d509c83640adb0ae8979c7a616c03",
-        "version" : "1.3.3"
+        "revision" : "29edb909f2492d54a33e48c4fb75c23304aa7597",
+        "version" : "1.8.6"
       }
     },
     {
@@ -40,10 +40,10 @@
     {
       "identity" : "swift-syntax",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "location" : "https://github.com/swiftlang/swift-syntax",
       "state" : {
-        "revision" : "2b59c0c741e9184ab057fd22950b491076d42e91",
-        "version" : "603.0.0"
+        "revision" : "4799286537280063c85a32f09884cfbca301b1a1",
+        "version" : "602.0.0"
       }
     }
   ],

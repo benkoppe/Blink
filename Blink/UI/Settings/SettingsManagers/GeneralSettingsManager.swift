@@ -6,13 +6,11 @@
 //
 
 import Foundation
-import ObservableUserDefault
+import ObservableDefaults
 import Observation
 
-@MainActor @Observable
+@MainActor @ObservableDefaults
 final class GeneralSettingsManager {
-    @ObservableUserDefault(
-        .init(key: "settings.bindingsEnabled", defaultValue: true, store: .standard))
-    @ObservationIgnored
-    var bindingsEnabled: Bool
+    @DefaultsKey(userDefaultsKey: "settings.bindingsEnabled")
+    var bindingsEnabled: Bool = true
 }

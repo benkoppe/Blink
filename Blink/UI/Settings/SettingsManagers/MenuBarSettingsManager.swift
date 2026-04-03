@@ -6,38 +6,20 @@
 //
 
 import Foundation
-import ObservableUserDefault
+import ObservableDefaults
 import Observation
 
-@MainActor @Observable
+@MainActor @ObservableDefaults
 final class MenuBarSettingsManager {
-    @ObservableUserDefault(
-        .init(
-            key: "settings.iconSize",
-            defaultValue: MenuBarSettingsManager.defaultIconSize,
-            store: .standard
-        ))
-    @ObservationIgnored
-    var iconSize: Double
+    @DefaultsKey(userDefaultsKey: "settings.iconSize")
+    var iconSize: Double = defaultIconSize
     static let defaultIconSize = 20.0
 
-    @ObservableUserDefault(
-        .init(
-            key: "settings.iconSpacing",
-            defaultValue: MenuBarSettingsManager.defaultIconSpacing,
-            store: .standard
-        ))
-    @ObservationIgnored
-    var iconSpacing: Double
+    @DefaultsKey(userDefaultsKey: "settings.iconSpacing")
+    var iconSpacing: Double = defaultIconSpacing
     static let defaultIconSpacing = 2.0
 
-    @ObservableUserDefault(
-        .init(
-            key: "settings.iconCornerRadius",
-            defaultValue: MenuBarSettingsManager.defaultIconCornerRadius,
-            store: .standard
-        ))
-    @ObservationIgnored
-    var iconCornerRadius: Double
+    @DefaultsKey(userDefaultsKey: "settings.iconCornerRadius")
+    var iconCornerRadius: Double = defaultIconCornerRadius
     static let defaultIconCornerRadius = 6.0
 }
