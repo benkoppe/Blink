@@ -84,6 +84,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$INFO_PLIST"
 
       - name: Codesign Sparkle helpers and app
+        env:
+          CERT_NAME: ${{ secrets.DEVELOPER_ID_P12_NAME }}
         run: |
           APP_PATH="build/Build/Products/Release/Blink.app"
           SPARKLE_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B"
