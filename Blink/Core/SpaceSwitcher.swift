@@ -124,12 +124,6 @@ final class SpaceSwitcher {
     private var appObserver: NSObjectProtocol?
 
     init() {
-        // Prompt for Accessibility permission on first launch.
-        let opts: NSDictionary = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ]
-        AXIsProcessTrustedWithOptions(opts)
-
         symbols = CGSSymbols.load()
 
         // guard installEventTap() else {
