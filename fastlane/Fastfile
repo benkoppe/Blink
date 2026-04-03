@@ -17,7 +17,35 @@ default_platform(:mac)
 
 platform :mac do
   desc "Build mac app"
-  lane :build do
+  lane :ci_build do |options|
+    version = options[:version]
+    UI.user_error!("No version found") unless version
+
+    build_number = options[:build]
+    UI.user_error!("No build number found") unless build_number
+
+    increment_version_number(version_number: version)
+    increment_build_number(build_number: build_number)
+
     gym()
+  end
+
+  lane :cert_keychain do |options|
+    cert_path = options[:path] 
+
+    create_keychain(
+      name: "CertKeychain",
+      default_keychain: true,
+      unlock: true,
+      timeout: 0
+    )
+    import_certificate(
+      certificate_path: cert_path,
+      certificate_password: ENV["CERT_PASSWORD"] || "default"
+    )
+  end
+
+  lane :delete_cert_keychain do
+    delete_keychain(name: "CertKeychain")
   end
 end

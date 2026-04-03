@@ -30,12 +30,6 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD"     >> "$GITHUB_ENV"
 
-      - name: Xcode Select
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
-
-      - name: Xcode Version
-        run: xcodebuild -version
-
       - name: Xcode Cache
         uses: irgaly/xcode-cache@v1
         with:
@@ -46,63 +40,15 @@ jobs:
         env:
           CERT_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           CERT_PATH=$RUNNER_TEMP/dev_id.p12
           echo "$CERT_BASE64" | base64 --decode > $CERT_PATH
 
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$CERT_PATH" -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-
-      - name: Set project version
-        run: |
-          agvtool new-marketing-version "$VERSION"
-          agvtool new-version -all "$BUILD"
+          fastlane cert_keychain path:"$CERT_PATH"
 
       - name: Build Blink.app
         run: |
-          xcodebuild \
-            -scheme Blink \
-            -configuration Release \
-            -derivedDataPath build \
-            -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
-
-      - name: Update built app Info.plist
-        run: |
-          APP_PATH="build/Build/Products/Release/Blink.app"
-          INFO_PLIST="$APP_PATH/Contents/Info.plist"
-
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$INFO_PLIST"
-
-      - name: Codesign Sparkle helpers and app
-        env:
-          CERT_NAME: ${{ secrets.DEVELOPER_ID_P12_NAME }}
-        run: |
-          APP_PATH="build/Build/Products/Release/Blink.app"
-          SPARKLE_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B"
-          if [ -d "$SPARKLE_PATH/XPCServices/Installer.xpc" ]; then
-            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/XPCServices/Installer.xpc"
-          fi
-          if [ -d "$SPARKLE_PATH/XPCServices/Downloader.xpc" ]; then
-            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime --preserve-metadata=entitlements "$SPARKLE_PATH/XPCServices/Downloader.xpc"
-          fi
-          if [ -f "$SPARKLE_PATH/Autoupdate" ]; then
-            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/Autoupdate"
-          fi
-          if [ -d "$SPARKLE_PATH/Updater.app" ]; then
-            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$SPARKLE_PATH/Updater.app"
-          fi
-          if [ -d "$APP_PATH/Contents/Frameworks/Sparkle.framework" ]; then
-            /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime "$APP_PATH/Contents/Frameworks/Sparkle.framework"
-          fi
-          /usr/bin/codesign --force --sign "$CERT_NAME" -o runtime --entitlements "Blink/Blink.entitlements" "$APP_PATH"
+          fastlane ci_build version:"$VERSION" build:"$BUILD"
 
       - name: Verify code signing
         run: |
@@ -116,7 +62,7 @@ jobs:
           npm install --global create-dmg
           create-dmg \
             --identity="$CERT_NAME" \
-            build/Build/Products/Release/Blink.app \
+            build/Blink.app \
             ./
           mv ./Blink*.dmg ./Blink.dmg
 
@@ -134,7 +80,7 @@ jobs:
 
           echo "Attach staple"
           xcrun stapler staple "Blink.dmg"
-          xcrun stapler staple "build/Build/Products/Release/Blink.app"
+          xcrun stapler staple "build/Blink.app"
 
       - name: Setup Sparkle framework tools
         uses: jozefizso/setup-sparkle@v2
@@ -185,4 +131,4 @@ jobs:
 
       - name: Cleanup keychain
         if: always()
-        run: security delete-keychain $KEYCHAIN_PATH
+        run: fastlane delete_cert_keychain
