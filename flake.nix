@@ -24,7 +24,7 @@
         {
           devShells.default = pkgs.mkShell {
             packages = [
-              pkgs.ruby
+              pkgs.fastlane
             ];
           };
         };
