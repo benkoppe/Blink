@@ -22,7 +22,7 @@
           ...
         }:
         {
-          devShells.default = pkgs.mkShell {
+          devShells.default = pkgs.mkShellNoCC {
             packages = [
               pkgs.fastlane
             ];
