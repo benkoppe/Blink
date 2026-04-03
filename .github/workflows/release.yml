@@ -1,4 +1,5 @@
 name: "Create Release"
+
 on:
   push:
     tags:
@@ -8,8 +9,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-release-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -29,29 +30,11 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD"     >> "$GITHUB_ENV"
 
-      - name: Set version in project
-        run: |
-          agvtool new-marketing-version "$VERSION"
-          agvtool new-version -all "$BUILD"
+      - name: XCode Select
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
-      - name: Install Developer ID certificate
-        env:
-          CERT_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          CERT_PATH=$RUNNER_TEMP/dev_id.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
-          echo "KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db" >> "$GITHUB_ENV"
-
-          echo "$CERT_BASE64" | base64 --decode > $CERT_PATH
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychains -d user -s $KEYCHAIN_PATH $(security list-keychains -d user | tr -d '"')
+      - name: Xcode Version
+        run: xcodebuild -version
 
       - name: Cache SPM packages
         uses: actions/cache@v5
@@ -61,16 +44,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-spm-
 
-      - name: Archive
+      - name: Install Developer ID certificate
+        env:
+          CERT_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/dev_id.p12
+          echo "$CERT_BASE64" | base64 --decode > $CERT_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$CERT_PATH" -k build.keychain -P "$CERT_PASSWORD" -T /user/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Build Blink.app
         run: |
           xcodebuild archive \
             -scheme Blink \
             -configuration Release \
             -archivePath /tmp/Blink.xcarchive \
             -skipMacroValidation \
-            CODE_SIGN_STYLE=Manual \
-            "CODE_SIGN_IDENTITY=Developer ID Application" \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
 
       - name: Export archive
         run: |
