@@ -26,7 +26,7 @@ if command -v npx >/dev/null 2>&1; then
   npx --yes create-dmg \
     --overwrite \
     --no-version-in-filename \
-    --dmg-title "head.surf" \
+    --dmg-title "$APP_NAME" \
     --no-code-sign \
     "$APP_PATH" \
     .
