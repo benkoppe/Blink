@@ -116,7 +116,7 @@ jobs:
           npm install --global create-dmg
           create-dmg \
             --identity="$CERT_NAME" \
-            /tmp/BlinkExport/Blink.app \
+            build/Build/Products/Release/Blink.app \
             ./
           mv ./Blink*.dmg ./Blink.dmg
 
