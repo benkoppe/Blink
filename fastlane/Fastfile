@@ -24,7 +24,7 @@ platform :mac do
     build_number = options[:build]
     UI.user_error!("No build number found") unless build_number
 
-    increment_version_number(version_number: version)
+    bump_version(version_number: version)
     increment_build_number(build_number: build_number)
 
     xcode_select("/Applications/Xcode_26.3.app")
@@ -53,5 +53,17 @@ platform :mac do
   desc "Delete the keychain created for code signing"
   lane :delete_cert_keychain do
     delete_keychain(name: "CertKeychain")
+  end
+
+  desc "Bump version"
+  lane :bump_version do |options|
+    version_number = options[:version_number]
+    UI.user_error!("No version found") unless version_number
+    path = "../Blink.xcodeproj/project.pbxproj"
+    if `sed --version 2>&1`.include?("GNU")
+      sh(%Q(sed -i -e 's/MARKETING_VERSION \\= [^\\;]*\\;/MARKETING_VERSION = #{version_number};/' #{path}))
+    else
+      sh(%Q(sed -i '' -e 's/MARKETING_VERSION \\= [^\\;]*\\;/MARKETING_VERSION = #{version_number};/' #{path}))
+    end
   end
 end
