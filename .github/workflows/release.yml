@@ -62,11 +62,6 @@ jobs:
         run: |
           fastlane ci_build version:"$VERSION" build:"$BUILD"
 
-      - name: Verify code signing
-        run: |
-          codesign --verify --deep --strict --verbose=2 "build/Blink.app"
-          spctl --assess --type execute --verbose=4 "build/Blink.app"
-
       - name: Create DMG
         env:
           CERT_NAME: ${{ secrets.DEVELOPER_ID_P12_NAME }}
@@ -93,6 +88,21 @@ jobs:
           echo "Attach staple"
           xcrun stapler staple "Blink.dmg"
           xcrun stapler staple "build/Blink.app"
+
+      - name: Verify code signing / notarization
+        run: |
+          # Verify signature structure
+          codesign --verify --deep --strict --verbose=2 "build/Blink.app"
+          # Show signing identity (debugging / audit)
+          codesign -dv --verbose=4 "build/Blink.app"
+
+          # Gatekeeper checks
+          spctl --assess --type execute --verbose=4 "build/Blink.app"
+          spctl --assess --type execute --verbose=4 "Blink.dmg"
+
+          # Verify notarization stapling
+          xcrun stapler validate "Blink.dmg"
+          xcrun stapler validate "build/Blink.app"
 
       - name: Setup Sparkle framework tools
         uses: jozefizso/setup-sparkle@v2
