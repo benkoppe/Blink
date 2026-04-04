@@ -16,6 +16,9 @@ struct BlinkMenu: View {
     @Binding var isMenuPresented: Bool
 
     @State private var keyDispatcher = MenuKeyDispatcher()
+    @State private var shortcutModifierColumnCount: Int = 0
+    @State private var shortcutModifierSymbolWidth: CGFloat?
+    @State private var shortcutKeyWidth: CGFloat?
 
     private var isEnabled: Binding<Bool> {
         Binding(
@@ -44,6 +47,26 @@ struct BlinkMenu: View {
         }
         .environment(keyDispatcher)
         .environment(\.menuIsPresented, $isMenuPresented)
+        .environment(\.menuShortcutModifierColumnCount, shortcutModifierColumnCount)
+        .environment(\.menuShortcutModifierSymbolWidth, shortcutModifierSymbolWidth)
+        .environment(\.menuShortcutKeyWidth, shortcutKeyWidth)
+        .onPreferenceChange(MenuShortcutModifierCountPreferenceKey.self) { count in
+            if count > shortcutModifierColumnCount {
+                shortcutModifierColumnCount = count
+            }
+        }
+        .onPreferenceChange(MenuShortcutModifierSymbolWidthPreferenceKey.self) { width in
+            guard width > 0 else { return }
+            if shortcutModifierSymbolWidth.map({ abs($0 - width) > 0.5 }) ?? true {
+                shortcutModifierSymbolWidth = width
+            }
+        }
+        .onPreferenceChange(MenuShortcutKeyWidthPreferenceKey.self) { width in
+            guard width > 0 else { return }
+            if shortcutKeyWidth.map({ abs($0 - width) > 0.5 }) ?? true {
+                shortcutKeyWidth = width
+            }
+        }
         .onChange(of: isMenuPresented) { _, newValue in
             keyDispatcher.isMenuPresented = newValue
         }

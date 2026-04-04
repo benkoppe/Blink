@@ -21,6 +21,9 @@ struct MenuKeyboardCommand<Label: View>: View {
     @Environment(\.menuIsPresented) private var isMenuPresented
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.menuShortcutModifierColumnCount) private var shortcutModifierColumnCount
+    @Environment(\.menuShortcutModifierSymbolWidth) private var shortcutModifierSymbolWidth
+    @Environment(\.menuShortcutKeyWidth) private var shortcutKeyWidth
 
     @State private var isHovering = false
     @State private var forcedHighlight: Bool?
@@ -43,6 +46,14 @@ struct MenuKeyboardCommand<Label: View>: View {
         modifiers.symbolicValue + key.stringValue.uppercased()
     }
 
+    private var modifierSymbols: [String] {
+        modifiers.symbolicValue.map(String.init)
+    }
+
+    private var keyLabel: String {
+        key.stringValue.uppercased()
+    }
+
     private func register() {
         dispatcher.register(
             .init(
@@ -59,7 +70,6 @@ struct MenuKeyboardCommand<Label: View>: View {
     var body: some View {
         itemBody
             .padding([.top, .bottom], -4)
-            .fixedSize(horizontal: false, vertical: true)
             .contentShape(Rectangle())
             .allowsHitTesting(isEnabled)
             .onHover { isHovering = $0 }
@@ -83,23 +93,47 @@ struct MenuKeyboardCommand<Label: View>: View {
     }
 
     private var itemBody: some View {
-        ZStack {
+        HStack {
+            label
+            Spacer(minLength: 0)
+
+            HStack(spacing: 0) {
+                ForEach(0..<shortcutModifierColumnCount, id: \.self) { index in
+                    if index < modifierSymbols.count {
+                        Text(modifierSymbols[index])
+                            .frame(width: shortcutModifierSymbolWidth, alignment: .center)
+                    } else {
+                        Text(" ")
+                            .opacity(0)
+                            .frame(width: shortcutModifierSymbolWidth, alignment: .center)
+                    }
+                }
+
+                Text(keyLabel)
+                    .frame(width: shortcutKeyWidth, alignment: .center)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
+        .background {
             backgroundShape
                 .fill(isHighlighted ? highlightColor : .clear)
                 .padding([.leading, .trailing], -(14 - highlightInset))
+        }
+        .background {
+            HStack(spacing: 0) {
+                // Measure a single modifier symbol cell (all modifier symbols are
+                // the same glyph width in SF Pro, so one measurement covers all).
+                Text("⌘")
+                    .reportMenuShortcutModifierSymbolWidth()
+                    .hidden()
 
-            HStack {
-                label
-                Spacer()
-                HStack(spacing: 0) {
-                    Text(modifiers.symbolicValue)
-                    Text(key.stringValue.uppercased())
-                        .frame(width: 16, alignment: .leading)
-                }
-                Text(shortcutLabel)
-                    .foregroundStyle(.secondary)
+                Text(keyLabel)
+                    .reportMenuShortcutKeyWidth()
+                    .hidden()
             }
-            .frame(height: 22)
+            .reportMenuShortcutModifierCount(modifierSymbols.count)
+            .hidden()
         }
     }
 
