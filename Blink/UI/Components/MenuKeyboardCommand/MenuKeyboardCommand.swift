@@ -106,6 +106,7 @@ struct MenuKeyboardCommand<Label: View>: View {
                 visibleShortcutText
             }
             .frame(height: 22)
+            .opacity(isEnabled ? 1.0 : 0.4)
         }
     }
 
