@@ -93,48 +93,55 @@ struct MenuKeyboardCommand<Label: View>: View {
     }
 
     private var itemBody: some View {
-        HStack {
-            label
-            Spacer(minLength: 0)
+        ZStack {
+            invisibleShortcutText
 
-            HStack(spacing: 0) {
-                ForEach(0..<shortcutModifierColumnCount, id: \.self) { index in
-                    if index < modifierSymbols.count {
-                        Text(modifierSymbols[index])
-                            .frame(width: shortcutModifierSymbolWidth, alignment: .center)
-                    } else {
-                        Text(" ")
-                            .opacity(0)
-                            .frame(width: shortcutModifierSymbolWidth, alignment: .center)
-                    }
-                }
-
-                Text(keyLabel)
-                    .frame(width: shortcutKeyWidth, alignment: .center)
-            }
-            .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
-        .background {
             backgroundShape
                 .fill(isHighlighted ? highlightColor : .clear)
                 .padding([.leading, .trailing], -(14 - highlightInset))
-        }
-        .background {
-            HStack(spacing: 0) {
-                // Measure a single modifier symbol cell (all modifier symbols are
-                // the same glyph width in SF Pro, so one measurement covers all).
-                Text("⌘")
-                    .reportMenuShortcutModifierSymbolWidth()
-                    .hidden()
 
-                Text(keyLabel)
-                    .reportMenuShortcutKeyWidth()
-                    .hidden()
+            HStack {
+                label
+                Spacer(minLength: 0)
+                visibleShortcutText
             }
-            .reportMenuShortcutModifierCount(modifierSymbols.count)
-            .hidden()
+            .frame(height: 22)
         }
+    }
+
+    private var visibleShortcutText: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<shortcutModifierColumnCount, id: \.self) { index in
+                if index < modifierSymbols.count {
+                    Text(modifierSymbols[index])
+                        .frame(width: shortcutModifierSymbolWidth, alignment: .center)
+                } else {
+                    Text(" ")
+                        .opacity(0)
+                        .frame(width: shortcutModifierSymbolWidth, alignment: .center)
+                }
+            }
+
+            Text(keyLabel)
+                .frame(width: shortcutKeyWidth, alignment: .center)
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    private var invisibleShortcutText: some View {
+        HStack(spacing: 0) {
+            // Measure a single modifier symbol cell (all modifier symbols are
+            // the same glyph width in SF Pro, so one measurement covers all).
+            Text("⌘")
+                .reportMenuShortcutModifierSymbolWidth()
+                .hidden()
+
+            Text(keyLabel)
+                .reportMenuShortcutKeyWidth()
+                .hidden()
+        }
+        .reportMenuShortcutModifierCount(modifierSymbols.count)
+        .hidden()
     }
 
     private var backgroundShape: some Shape {
