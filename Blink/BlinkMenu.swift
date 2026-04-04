@@ -15,6 +15,8 @@ struct BlinkMenu: View {
 
     @Binding var isMenuPresented: Bool
 
+    @State private var keyDispatcher = MenuKeyDispatcher()
+
     private var isEnabled: Binding<Bool> {
         Binding(
             get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
@@ -39,6 +41,11 @@ struct BlinkMenu: View {
             swipeSection
 
             appInfoSection
+        }
+        .environment(keyDispatcher)
+        .environment(\.menuIsPresented, $isMenuPresented)
+        .onChange(of: isMenuPresented) { _, newValue in
+            keyDispatcher.isMenuPresented = newValue
         }
         // Button("Switch Left") {
         //     switcher.switchLeft()
@@ -128,12 +135,20 @@ struct BlinkMenu: View {
 
     private var appInfoSection: some View {
         MenuSection("\(Constants.appName) \(Constants.versionString)", divider: true) {
-            MenuCommand("Settings") {
-                appState.appDelegate?.openSettingsWindow()
+            MenuKeyboardCommand(
+                key: .comma,
+                modifiers: .command,
+                action: { appState.appDelegate?.openSettingsWindow() }
+            ) {
+                Text("Settings")
             }
 
-            MenuCommand("Quit") {
-                quit()
+            MenuKeyboardCommand(
+                key: .q,
+                modifiers: .command,
+                action: { quit() }
+            ) {
+                Text("Quit")
             }
         }
     }
