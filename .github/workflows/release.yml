@@ -27,10 +27,8 @@ jobs:
       - name: Magic Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: Activate Nix direnv
-        uses: JRMurr/direnv-nix-action@v4.2.0
-        with:
-          install-nix: false
+      - name: Install Nix direnv
+        run: nix develop .
 
       - name: Derive version variables
         run: |
@@ -56,11 +54,11 @@ jobs:
           CERT_PATH=$RUNNER_TEMP/dev_id.p12
           echo "$CERT_BASE64" | base64 --decode > $CERT_PATH
 
-          fastlane cert_keychain path:"$CERT_PATH"
+          nix develop . --command fastlane cert_keychain path:"$CERT_PATH"
 
       - name: Build Blink.app
         run: |
-          fastlane ci_build version:"$VERSION" build:"$BUILD"
+          nix develop . --command fastlane ci_build version:"$VERSION" build:"$BUILD"
 
       - name: Create DMG
         env:
@@ -169,4 +167,4 @@ jobs:
 
       - name: Cleanup keychain
         if: always()
-        run: fastlane delete_cert_keychain
+        run: nix develop . --command fastlane delete_cert_keychain
