@@ -158,8 +158,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git reset --hard
+          git clean -fd
+
           git fetch origin gh-pages
           git checkout gh-pages
+
           cp /tmp/appcast-staging/appcast.xml ./appcast.xml
           git add appcast.xml
           git commit -m "Update appcast for $TAG"
