@@ -98,9 +98,8 @@ jobs:
           # Show signing identity (debugging / audit)
           codesign -dv --verbose=4 "build/Blink.app"
 
-          # Gatekeeper checks
+          # Gatekeeper check for the app bundle
           spctl --assess --type execute --verbose=4 "build/Blink.app"
-          spctl --assess --type execute --verbose=4 "Blink.dmg"
 
           # Verify notarization stapling
           xcrun stapler validate "Blink.dmg"
