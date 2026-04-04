@@ -31,6 +31,7 @@ platform :mac do
     gym()
   end
 
+  desc "Create a keychain and import the certificate for code signing"
   lane :cert_keychain do |options|
     cert_path = options[:path] 
 
@@ -49,6 +50,7 @@ platform :mac do
     )
   end
 
+  desc "Delete the keychain created for code signing"
   lane :delete_cert_keychain do
     delete_keychain(name: "CertKeychain")
   end
