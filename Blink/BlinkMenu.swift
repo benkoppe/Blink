@@ -33,11 +33,7 @@ struct BlinkMenu: View {
 
     var body: some View {
         MacControlCenterMenu(isPresented: $isMenuPresented, width: .custom(200)) {
-            MenuHeader("Enabled") {
-                Toggle("", isOn: isEnabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-            }
+            enableToggle
 
             disabledSection
 
@@ -71,6 +67,14 @@ struct BlinkMenu: View {
         }
         .onChange(of: isMenuPresented) { _, newValue in
             keyDispatcher.isMenuPresented = newValue
+        }
+    }
+
+    private var enableToggle: some View {
+        MenuHeader("Enabled") {
+            Toggle("", isOn: isEnabled)
+                .toggleStyle(.switch)
+                .labelsHidden()
         }
     }
 
