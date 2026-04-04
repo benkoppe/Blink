@@ -41,6 +41,8 @@ struct BlinkMenu: View {
 
             disabledSection
 
+            switchSection
+
             swipeSection
 
             appInfoSection
@@ -70,28 +72,6 @@ struct BlinkMenu: View {
         .onChange(of: isMenuPresented) { _, newValue in
             keyDispatcher.isMenuPresented = newValue
         }
-        // Button("Switch Left") {
-        //     switcher.switchLeft()
-        // }
-        // .disabled(!switcher.canMoveLeft())
-        //
-        // Button("Switch Right") {
-        //     switcher.switchRight()
-        // }
-        // .disabled(!switcher.canMoveRight())
-        //
-        // Divider()
-        //
-        // if let info = switcher.spaceInfo, info.spaceCount > 0 {
-        //     ForEach(0..<info.spaceCount, id: \.self) { index in
-        //         Button("Space \(index + 1)\(index == info.currentIndex ? " ✓" : "")") {
-        //             switcher.switchToIndex(index)
-        //         }
-        //     }
-        // } else {
-        //     Text("No space info available")
-        //         .foregroundStyle(.secondary)
-        // }
     }
 
     private var disabledSection: some View {
@@ -105,6 +85,48 @@ struct BlinkMenu: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    private func hotkey(for action: BoundAction) -> KeyCombination? {
+        appState.settingsManager
+            .hotkeySettingsManager
+            .hotkey(withAction: action)?
+            .keyCombination
+    }
+
+    @ViewBuilder private func actionButton(
+        title: String,
+        action boundAction: BoundAction,
+    ) -> some View {
+        if let combo = hotkey(for: boundAction) {
+            MenuKeyboardCommand(
+                key: combo.key,
+                modifiers: combo.modifiers,
+                action: { boundAction.execute(appState: appState) }
+            ) {
+                Text(title)
+            }
+        } else {
+            MenuCommand(action: { boundAction.execute(appState: appState) }) {
+                Text(title)
+            }
+        }
+    }
+
+    private var switchSection: some View {
+        MenuSection("Switch", divider: true) {
+            actionButton(
+                title: "Left",
+                action: .left
+            )
+            .disabled(!switcher.canMoveLeft())
+
+            actionButton(
+                title: "Right",
+                action: .right
+            )
+            .disabled(!switcher.canMoveRight())
         }
     }
 
