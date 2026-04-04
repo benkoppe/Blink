@@ -110,7 +110,7 @@ struct PermissionsView: View {
     @ViewBuilder
     private var quitButton: some View {
         Button {
-            NSApp.terminate(nil)
+            quit()
         } label: {
             Text("Quit")
                 .frame(maxWidth: .infinity)

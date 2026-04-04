@@ -119,7 +119,7 @@ struct AboutSettingsPane: View {
     private var bottomBar: some View {
         HStack {
             Button("Quit \(Constants.appName)") {
-                NSApp.terminate(nil)
+                quit()
             }
             Spacer()
         }

@@ -5,57 +5,136 @@
 //  Created by Ben on 3/24/26.
 //
 
+import MacControlCenterUI
+import MenuBarExtraAccess
 import SwiftUI
 
 struct BlinkMenu: View {
     @Environment(AppState.self) private var appState
-
     private var switcher: SpaceSwitcher { appState.spaceSwitcher }
 
-    var body: some View {
-        @Bindable var settings = appState.settingsManager.generalSettingsManager
+    @Binding var isMenuPresented: Bool
 
-        Toggle("Enable", isOn: $settings.bindingsEnabled)
-
-        Divider()
-
-        Button("Switch Left") {
-            switcher.switchLeft()
-        }
-        .disabled(!switcher.canMoveLeft())
-
-        Button("Switch Right") {
-            switcher.switchRight()
-        }
-        .disabled(!switcher.canMoveRight())
-
-        Divider()
-
-        if let info = switcher.spaceInfo, info.spaceCount > 0 {
-            ForEach(0..<info.spaceCount, id: \.self) { index in
-                Button("Space \(index + 1)\(index == info.currentIndex ? " ✓" : "")") {
-                    switcher.switchToIndex(index)
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
+            set: { newValue in
+                withAnimation(.macControlCenterMenuResize) {
+                    appState.settingsManager.generalSettingsManager.bindingsEnabled = newValue
                 }
             }
-        } else {
-            Text("No space info available")
-                .foregroundStyle(.secondary)
+        )
+    }
+
+    var body: some View {
+        MacControlCenterMenu(isPresented: $isMenuPresented, width: .custom(200)) {
+            MenuHeader("Enabled") {
+                Toggle("", isOn: isEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            disabledSection
+
+            swipeSection
+
+            appInfoSection
         }
+        // Button("Switch Left") {
+        //     switcher.switchLeft()
+        // }
+        // .disabled(!switcher.canMoveLeft())
+        //
+        // Button("Switch Right") {
+        //     switcher.switchRight()
+        // }
+        // .disabled(!switcher.canMoveRight())
+        //
+        // Divider()
+        //
+        // if let info = switcher.spaceInfo, info.spaceCount > 0 {
+        //     ForEach(0..<info.spaceCount, id: \.self) { index in
+        //         Button("Space \(index + 1)\(index == info.currentIndex ? " ✓" : "")") {
+        //             switcher.switchToIndex(index)
+        //         }
+        //     }
+        // } else {
+        //     Text("No space info available")
+        //         .foregroundStyle(.secondary)
+        // }
+    }
 
-        Divider()
-
-        Button("Settings...") {
-            appState.appDelegate?.openSettingsWindow()
-        }
-
-        Divider()
-
-        Button("Quit Blink") {
-            NSApplication.shared.terminate(nil)
+    private var disabledSection: some View {
+        // dissapearing menu content should always go inside a MenuSection to prevent glitching
+        MenuSection(divider: false) {
+            if !isEnabled.wrappedValue {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text("The engine is disabled.")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
-}
 
-#Preview {
-    BlinkMenu()
+    private func swipeBinding(for fingerCount: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                let gestureSettings = appState.settingsManager.gestureSettingsManager
+                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
+                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
+
+                let leftEnabled = gestureSettings.gesture(withID: leftID)?.action == .left
+                let rightEnabled = gestureSettings.gesture(withID: rightID)?.action == .right
+
+                return leftEnabled && rightEnabled
+            },
+            set: { newValue in
+                let gestureSettings = appState.settingsManager.gestureSettingsManager
+                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
+                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
+
+                gestureSettings.gesture(withID: leftID)?.action = newValue ? .left : nil
+                gestureSettings.gesture(withID: rightID)?.action = newValue ? .right : nil
+            }
+        )
+    }
+
+    private var swipeSection: some View {
+        MenuSection("Swipe", divider: true) {
+            HStack {
+                MenuCircleToggle(
+                    isOn: swipeBinding(for: 3),
+                    controlSize: .prominent,
+                    style: .init(
+                        image: Image(systemName: "3.circle.fill"),
+                        color: .blue
+                    )
+                ) { Text("3 Fingers") }
+
+                MenuCircleToggle(
+                    isOn: swipeBinding(for: 4),
+                    controlSize: .prominent,
+                    style: .init(
+                        image: Image(systemName: "4.circle.fill"),
+                        color: .blue
+                    )
+                ) { Text("4 Fingers") }
+            }
+            .frame(height: 70)
+        }
+    }
+
+    private var appInfoSection: some View {
+        MenuSection("\(Constants.appName) \(Constants.versionString)", divider: true) {
+            MenuCommand("Settings") {
+                appState.appDelegate?.openSettingsWindow()
+            }
+
+            MenuCommand("Quit") {
+                quit()
+            }
+        }
+    }
 }
