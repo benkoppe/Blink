@@ -44,7 +44,8 @@ platform :mac do
     import_certificate(
       certificate_path: cert_path,
       certificate_password: ENV["CERT_PASSWORD"] || "default",
-      keychain_name: "CertKeychain"
+      keychain_name: "CertKeychain",
+      keychain_password: ENV["KEYCHAIN_PASSWORD"] || "default"
     )
   end
 
