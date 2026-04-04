@@ -155,6 +155,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Cleanup keychain
+        if: always()
+        run: nix develop . --command fastlane delete_cert_keychain
+
       - name: Push appcast to gh-pages
         run: |
           git config user.name "github-actions[bot]"
@@ -170,7 +174,3 @@ jobs:
           git add appcast.xml
           git commit -m "Update appcast for $TAG"
           git push origin gh-pages
-
-      - name: Cleanup keychain
-        if: always()
-        run: nix develop . --command fastlane delete_cert_keychain
