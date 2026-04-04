@@ -122,7 +122,10 @@ final class SpaceSwitcher {
     private var tapSource: CFRunLoopSource?
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
+    private var screensWakeObserver: NSObjectProtocol?
     private var windowObserver: NSObjectProtocol?
+    private var windowScreenObserver: NSObjectProtocol?
+    private var screenParamsObserver: NSObjectProtocol?
 
     init() {
         symbols = CGSSymbols.load()
@@ -138,10 +141,15 @@ final class SpaceSwitcher {
 
     deinit {
         // removeEventTap()
-        let nc = NSWorkspace.shared.notificationCenter
-        [spaceObserver, appObserver, windowObserver].compactMap { $0 }.forEach {
-            nc.removeObserver($0)
+        let workspaceNC = NSWorkspace.shared.notificationCenter
+        [spaceObserver, appObserver, screensWakeObserver].compactMap { $0 }.forEach {
+            workspaceNC.removeObserver($0)
         }
+        let defaultNC = NotificationCenter.default
+        [windowObserver, windowScreenObserver, screenParamsObserver].compactMap { $0 }
+            .forEach {
+                defaultNC.removeObserver($0)
+            }
     }
 
     // MARK: - Public interface
@@ -178,21 +186,40 @@ final class SpaceSwitcher {
     // MARK - Workspace notifications
 
     private func subscribeToWorkspaceNotifications() {
-        let nc = NSWorkspace.shared.notificationCenter
-        spaceObserver = nc.addObserver(
+        let workspaceNC = NSWorkspace.shared.notificationCenter
+        spaceObserver = workspaceNC.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
 
-        appObserver = nc.addObserver(
+        appObserver = workspaceNC.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
 
-        windowObserver = nc.addObserver(
+        screensWakeObserver = workspaceNC.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.refreshSpaceInfo() }
+
+        let defaultNC = NotificationCenter.default
+        windowObserver = defaultNC.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.refreshSpaceInfo() }
+
+        windowScreenObserver = defaultNC.addObserver(
+            forName: NSWindow.didChangeScreenNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.refreshSpaceInfo() }
+
+        screenParamsObserver = defaultNC.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
