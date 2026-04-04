@@ -1,0 +1,16 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Blink</title>
+        <item>
+            <title>0.0.1</title>
+            <pubDate>Sat, 04 Apr 2026 20:22:09 +0000</pubDate>
+            <link>https://github.com/benkoppe/Blink</link>
+            <sparkle:version>154</sparkle:version>
+            <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/benkoppe/Blink/releases/download/v0.0.1/Blink.dmg" length="1922322" type="application/octet-stream" sparkle:edSignature="fbmbBV+F1/jXEZR6xg4/IqL5eCbQLzdsqKAWW0+fhlaLNZpELWEp0p+8ndIBqFCZDfkGkIGXSDvruyBQRgw2Ag=="/>
+         <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>
+ </item>
+    </channel>
+</rss>
