@@ -113,7 +113,22 @@ jobs:
       - name: Set up Sparkle appcast staging
         run: |
           mkdir /tmp/appcast-staging
-          git show origin/gh-pages:appcast.xml > /tmp/appcast-staging/appcast.xml
+
+          if git ls-remote --exit-code origin gh-pages >/dev/null 2>&1; then
+            echo "gh-pages exists"
+
+            if git show origin/gh-pages:appcast.xml >/dev/null 2>&1; then
+              echo "appcast.xml exists, reusing"
+              git show origin/gh-pages:appcast.xml > /tmp/appcast-staging/appcast.xml
+            else
+              echo "No appcast.xml yet, starting fresh"
+              touch /tmp/appcast-staging/appcast.xml
+            fi
+          else
+            echo "No gh-pages branch yet, starting fresh"
+            touch /tmp/appcast-staging/appcast.xml
+          fi
+
           cp Blink.dmg /tmp/appcast-staging/
 
       - name: Generate appcast
