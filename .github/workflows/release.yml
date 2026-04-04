@@ -79,10 +79,12 @@ jobs:
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
-          xcrun notarytool submit Blink.dmg \
+          xcrun notarytool store-credentials "AC_PROFILE" \
             --apple-id "$NOTARIZATION_APPLE_ID" \
-            --password "$NOTARIZATION_PASSWORD" \
             --team-id "$NOTARIZATION_TEAM_ID" \
+            --password "$NOTARIZATION_PASSWORD"
+          xcrun notarytool submit Blink.dmg \
+            --keychain-profile "AC_PROFILE" \
             --wait
 
           echo "Attach staple"
