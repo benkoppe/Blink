@@ -34,7 +34,8 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          BUILD=$(( $(agvtool what-version -terse) + 1 ))
+          # We inject the "build number" as simply the number of commits since HEAD.
+          BUILD=$(git rev-list --count HEAD)
           echo "TAG=$TAG"         >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD"     >> "$GITHUB_ENV"
