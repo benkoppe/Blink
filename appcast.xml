@@ -3,6 +3,16 @@
     <channel>
         <title>Blink</title>
         <item>
+            <title>0.0.2</title>
+            <pubDate>Sat, 04 Apr 2026 23:49:25 +0000</pubDate>
+            <link>https://github.com/benkoppe/Blink</link>
+            <sparkle:version>168</sparkle:version>
+            <sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/benkoppe/Blink/releases/download/v0.0.2/Blink.dmg" length="2450882" type="application/octet-stream" sparkle:edSignature="bTe9OD+YA0lYciTIWSTn1Hu/xKzd/ay7q56cC3U8ZTSRF0BzzgJmdXdtcRzXgUrRJyW9GWZbB77ODR7MBoyJAQ=="/>
+         <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>
+ </item>
+        <item>
             <title>0.0.1</title>
             <pubDate>Sat, 04 Apr 2026 20:22:09 +0000</pubDate>
             <link>https://github.com/benkoppe/Blink</link>
@@ -10,7 +20,7 @@
             <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/benkoppe/Blink/releases/download/v0.0.1/Blink.dmg" length="1922322" type="application/octet-stream" sparkle:edSignature="fbmbBV+F1/jXEZR6xg4/IqL5eCbQLzdsqKAWW0+fhlaLNZpELWEp0p+8ndIBqFCZDfkGkIGXSDvruyBQRgw2Ag=="/>
-         <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>
- </item>
+            <sparkle:releaseNotesLink>https://benkoppe.github.io/Blink/ReleaseNotes.md</sparkle:releaseNotesLink>
+        </item>
     </channel>
 </rss>
