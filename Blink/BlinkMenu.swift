@@ -39,6 +39,10 @@ struct BlinkMenu: View {
 
             switchSection
 
+            if let info = switcher.spaceInfo, info.spaceCount > 0 {
+                jumpToIndexSection(spaceInfo: info)
+            }
+
             swipeSection
 
             appInfoSection
@@ -131,6 +135,47 @@ struct BlinkMenu: View {
                 action: .right
             )
             .disabled(!switcher.canMoveRight())
+        }
+    }
+
+    private struct JumpSpaceItem: Identifiable, Hashable {
+        let id: Int
+        let name: String
+        let imageName: String
+    }
+
+    private func jumpItems(for info: SpaceInfo) -> [JumpSpaceItem] {
+        (0..<info.spaceCount).map { index in
+            JumpSpaceItem(
+                id: index,
+                name: "Space \(index + 1)",
+                imageName: "\(index + 1).circle.fill"
+            )
+        }
+    }
+
+    private var jumpSelection: Binding<Int?> {
+        Binding(
+            get: { switcher.spaceInfo?.currentIndex },
+            set: { newValue in
+                guard let index = newValue else { return }
+                _ = switcher.switchToIndex(index)
+            }
+        )
+    }
+
+    @State private var isJumpToIndexExpanded = false
+    private func jumpToIndexSection(spaceInfo info: SpaceInfo) -> some View {
+        MenuDisclosureSection(
+            "Jump to Index",
+            divider: true,
+            isExpanded: $isJumpToIndexExpanded
+        ) {
+            MenuList(jumpItems(for: info), selection: jumpSelection) { item in
+                MenuToggle(image: Image(systemName: item.imageName)) {
+                    Text(item.name)
+                }
+            }
         }
     }
 
