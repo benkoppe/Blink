@@ -64,8 +64,8 @@ jobs:
 
       - name: Verify code signing
         run: |
-          codesign --verify --deep --strict --verbose=2 "build/Build/Products/Release/Blink.app"
-          spctl --assess --type execute --verbose=4 "build/Build/Products/Release/Blink.app"
+          codesign --verify --deep --strict --verbose=2 "build/Blink.app"
+          spctl --assess --type execute --verbose=4 "build/Blink.app"
 
       - name: Create DMG
         env:
