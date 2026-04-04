@@ -62,11 +62,24 @@ final class SwipeGestureMonitor {
             location: .hidEventTap,
             place: .headInsertEventTap,
             types: [.gesture],
-            callback: { [weak self] _, _, cgEvent in
-                if let nsEvent = NSEvent(cgEvent: cgEvent) {
-                    self?.handleEvent(nsEvent)
+            callback: { [weak self] proxy, type, cgEvent in
+                guard let self else { return cgEvent }
+
+                switch type {
+                case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                    self.state.reset()
+                    proxy.enable()
+                    return cgEvent
+
+                case .gesture:
+                    if let nsEvent = NSEvent(cgEvent: cgEvent) {
+                        self.handleEvent(nsEvent)
+                    }
+                    return cgEvent
+
+                default:
+                    return cgEvent
                 }
-                return cgEvent
             }
         )
         tap.enable()
