@@ -111,9 +111,12 @@ struct MenuKeyboardCommand<Label: View>: View {
 
     private var visibleShortcutText: some View {
         HStack(spacing: 0) {
+            let padding = shortcutModifierColumnCount - modifierSymbols.count
+
             ForEach(0..<shortcutModifierColumnCount, id: \.self) { index in
-                if index < modifierSymbols.count {
-                    Text(modifierSymbols[index])
+                if index >= padding {
+                    let symbolIndex = index - padding
+                    Text(modifierSymbols[symbolIndex])
                         .frame(width: shortcutModifierSymbolWidth, alignment: .center)
                 } else {
                     Text(" ")
