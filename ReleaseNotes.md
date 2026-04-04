@@ -6,6 +6,7 @@
 
 ## Bug Fixes
 * Fixed a fatal crash when certain unexpected events were caught by the SpaceSwitcher.
+* Added more event observers to ensure space details are accurate more often.
 
 # Blink 0.0.1
 
