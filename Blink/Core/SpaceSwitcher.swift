@@ -122,6 +122,7 @@ final class SpaceSwitcher {
     private var tapSource: CFRunLoopSource?
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
+    private var windowObserver: NSObjectProtocol?
 
     init() {
         symbols = CGSSymbols.load()
@@ -138,7 +139,7 @@ final class SpaceSwitcher {
     deinit {
         // removeEventTap()
         let nc = NSWorkspace.shared.notificationCenter
-        [spaceObserver, appObserver].compactMap { $0 }.forEach {
+        [spaceObserver, appObserver, windowObserver].compactMap { $0 }.forEach {
             nc.removeObserver($0)
         }
     }
@@ -186,6 +187,12 @@ final class SpaceSwitcher {
 
         appObserver = nc.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.refreshSpaceInfo() }
+
+        windowObserver = nc.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.refreshSpaceInfo() }
