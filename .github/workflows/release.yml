@@ -122,11 +122,9 @@ jobs:
               git show origin/gh-pages:appcast.xml > /tmp/appcast-staging/appcast.xml
             else
               echo "No appcast.xml yet, starting fresh"
-              touch /tmp/appcast-staging/appcast.xml
             fi
           else
             echo "No gh-pages branch yet, starting fresh"
-            touch /tmp/appcast-staging/appcast.xml
           fi
 
           cp Blink.dmg /tmp/appcast-staging/
