@@ -72,6 +72,18 @@ jobs:
             ./
           mv ./Blink*.dmg ./Blink.dmg
 
+      - name: Codesign Sparkle
+        env:
+          CERT_NAME: ${{ secrets.DEVELOPER_ID_P12_NAME }}
+        run: |
+          APP_PATH="./build/Blink.app"
+
+          /usr/bin/codesign --verbose -f -s "$CERT_NAME" -o runtime --timestamp "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"
+          /usr/bin/codesign --verbose -f -s "$CERT_NAME" -o runtime --timestamp "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
+          /usr/bin/codesign --verbose -f -s "$CERT_NAME" -o runtime --timestamp "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
+          /usr/bin/codesign --verbose -f -s "$CERT_NAME" -o runtime --timestamp "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app"
+          /usr/bin/codesign --verbose -f -s "$CERT_NAME" -o runtime --timestamp "$APP_PATH/Contents/Frameworks/Sparkle.framework"
+
       - name: Notarize DMG
         env:
           NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
