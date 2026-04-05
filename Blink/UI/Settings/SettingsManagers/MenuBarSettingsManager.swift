@@ -22,4 +22,15 @@ final class MenuBarSettingsManager {
     @DefaultsKey(userDefaultsKey: "settings.iconCornerRadius")
     var iconCornerRadius: Double = defaultIconCornerRadius
     static let defaultIconCornerRadius = 6.0
+
+    @DefaultsKey(userDefaultsKey: "settings.iconStyle")
+    var iconStyle: MenuBarIconStyle = defaultIconStyle
+    static let defaultIconStyle: MenuBarIconStyle = .currDisplayAllSpaces
+
+    func resetAll() {
+        self.iconSize = Self.defaultIconSize
+        self.iconSpacing = Self.defaultIconSpacing
+        self.iconCornerRadius = Self.defaultIconCornerRadius
+        self.iconStyle = Self.defaultIconStyle
+    }
 }

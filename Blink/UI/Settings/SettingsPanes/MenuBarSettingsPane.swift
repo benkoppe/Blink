@@ -13,50 +13,80 @@ struct MenuBarSettingsPane: View {
 
     @State private var maxSliderLabelWidth: CGFloat = 0
 
+    @State private var resetAllConfirmationPresented = false
+
+    private var menuBarSettingsManager: MenuBarSettingsManager {
+        appState.settingsManager.menuBarSettingsManager
+    }
+
     var body: some View {
         BlinkForm {
+            previewSection
+
             BlinkSection("Style") {
-                barStyleToggle
+                stylePicker
             }
+
             BlinkSection("Appearance") {
                 barAppearanceEditor
             }
+
+            BlinkSection {
+                Button("Reset All to Defaults") {
+                    resetAllConfirmationPresented = true
+                }
+            }
+        }
+        .confirmationDialog(
+            "Reset menu bar appearance to default?",
+            isPresented: $resetAllConfirmationPresented
+        ) {
+            Button("Reset", role: .destructive) {
+                menuBarSettingsManager.resetAll()
+            }
+        } message: {
+            Text("This will replace every menu bar setting with its default.")
         }
     }
 
-    var barStyleToggle: some View {
-        Text("Hello")
+    var previewSection: some View {
+        return BlinkSection("Preview") {
+            PreviewSpaceIconLabel(appState: appState, style: menuBarSettingsManager.iconStyle)
+                .frame(height: 30)
+        }
     }
 
-    @ViewBuilder
-    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
-        -> some View
-    {
-        Button {
-            binding.wrappedValue = defaultValue
+    var stylePicker: some View {
+        @Bindable var settings = menuBarSettingsManager
+
+        return BlinkLabeledContent {
+            Picker("Display", selection: $settings.iconStyle) {
+                ForEach(MenuBarIconStyle.allCases, id: \.self) { style in
+                    HStack(spacing: 7) {
+                        PreviewSpaceIconLabel(appState: appState, style: style)
+                        Text(style.displayName)
+                        Spacer()
+                    }
+                    .padding(.leading, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 5)
+                    .tag(style)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.radioGroup)
         } label: {
-            Image(systemName: "arrow.counterclockwise.circle.fill")
+            HStack {
+                Text("Display")
+                Spacer()
+            }
         }
-        .buttonStyle(.borderless)
-        .help("Reset to default")
-        .disabled(binding.wrappedValue == defaultValue)
     }
 
     var barAppearanceEditor: some View {
-        @Bindable var settings = appState.settingsManager.menuBarSettingsManager
+        @Bindable var settings = menuBarSettingsManager
 
         return VStack {
-            Group {
-                if let image = SpaceIconImage(text: "1", isSelected: true, appState: appState) {
-                    Image(nsImage: image.image)
-                } else {
-                    Image(systemName: "questionmark.app")
-                }
-            }
-            .frame(height: 30)
-
-            Divider()
-
             BlinkLabeledContent {
                 BlinkSlider(
                     LocalizedStringKey(settings.iconSize.formatted()),
@@ -123,6 +153,20 @@ struct MenuBarSettingsPane: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
+        -> some View
+    {
+        Button {
+            binding.wrappedValue = defaultValue
+        } label: {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+        }
+        .buttonStyle(.borderless)
+        .help("Reset to default")
+        .disabled(binding.wrappedValue == defaultValue)
     }
 }
 

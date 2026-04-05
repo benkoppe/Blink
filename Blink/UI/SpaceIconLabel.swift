@@ -7,7 +7,19 @@
 
 import SwiftUI
 
-struct SpaceIconImage {
+enum MenuBarIconStyle: String, CaseIterable {
+    case currDisplaySpace
+    case currDisplayAllSpaces
+
+    var displayName: String {
+        switch self {
+        case .currDisplaySpace: "Current active space"
+        case .currDisplayAllSpaces: "All display spaces"
+        }
+    }
+}
+
+private struct SpaceIconImage {
     let image: NSImage
 
     init?(
@@ -95,11 +107,11 @@ struct SpaceIconImage {
 }
 
 extension [SpaceIconImage] {
-    func combine(appState: AppState) -> NSImage? {
+    fileprivate func combine(appState: AppState) -> NSImage? {
         return combine(spacing: appState.settingsManager.menuBarSettingsManager.iconSpacing)
     }
 
-    func combine(spacing: Double) -> NSImage? {
+    fileprivate func combine(spacing: Double) -> NSImage? {
         guard !self.isEmpty else { return nil }
 
         let height = self.map { $0.image.size.height }.max() ?? 0
@@ -135,38 +147,187 @@ extension [SpaceIconImage] {
     }
 }
 
-struct SpaceIconLabel: View {
+struct SingleSpaceIconLabel: View {
     @Environment(\.colorScheme) var colorScheme
 
-    let appState: AppState
+    let text: String
+    let isSelected: Bool
+    let iconSize: Double
+    let cornerRadius: Double
+
+    init(
+        text: String,
+        isSelected: Bool,
+        iconSize: Double,
+        cornerRadius: Double
+    ) {
+        self.text = text
+        self.isSelected = isSelected
+        self.iconSize = iconSize
+        self.cornerRadius = cornerRadius
+    }
+
+    init(
+        text: String,
+        isSelected: Bool,
+        appState: AppState
+    ) {
+        let settings = appState.settingsManager.menuBarSettingsManager
+        self.init(
+            text: text,
+            isSelected: isSelected,
+            iconSize: settings.iconSize,
+            cornerRadius: settings.iconCornerRadius
+        )
+    }
+
+    init(
+        appState: AppState,
+        spaceInfo info: SpaceInfo
+    ) {
+        self.init(
+            text: String(info.currentIndex + 1),
+            isSelected: true,
+            appState: appState
+        )
+    }
 
     var iconColor: Color { colorScheme == .dark ? .white : .black }
 
-    func combinedSpacesImage(info: SpaceInfo) -> NSImage? {
-        let images: [SpaceIconImage] = (0..<info.spaceCount).compactMap {
-            let isSelected = $0 == info.currentIndex
-            return .init(text: String($0 + 1), isSelected: isSelected, appState: appState)
-        }
-
-        guard images.count == info.spaceCount else { return nil }
-
-        return images.combine(appState: appState)
-    }
-
-    @ViewBuilder
-    func fallbackInfoTextView(info: SpaceInfo) -> some View {
-        Text("\(info.displayNumber)")
+    fileprivate var iconImage: SpaceIconImage? {
+        .init(text: text, isSelected: isSelected, iconSize: iconSize, cornerRadius: cornerRadius)
     }
 
     var body: some View {
-        if let info = appState.spaceSwitcher.spaceInfo {
-            if let combined = combinedSpacesImage(info: info) {
-                Image(nsImage: combined)
+        Group {
+            if let iconImage {
+                Image(nsImage: iconImage.image)
             } else {
-                fallbackInfoTextView(info: info)
+                fallback
+            }
+        }
+    }
+
+    var fallback: some View {
+        Text(text)
+    }
+}
+
+struct MultiSpaceIconLabel: View {
+    @Environment(\.colorScheme) var colorScheme
+
+    struct Value {
+        let text: String
+        let isSelected: Bool
+    }
+
+    let values: [Value]
+    let iconSize: Double
+    let cornerRadius: Double
+    let spacing: Double
+
+    init(
+        values: [Value],
+        iconSize: Double,
+        cornerRadius: Double,
+        spacing: Double
+    ) {
+        self.values = values
+        self.iconSize = iconSize
+        self.cornerRadius = cornerRadius
+        self.spacing = spacing
+    }
+
+    init(
+        values: [Value],
+        appState: AppState
+    ) {
+        let settings = appState.settingsManager.menuBarSettingsManager
+        self.init(
+            values: values,
+            iconSize: settings.iconSize,
+            cornerRadius: settings.iconCornerRadius,
+            spacing: settings.iconSpacing
+        )
+    }
+
+    init(
+        appState: AppState,
+        spaceInfo info: SpaceInfo
+    ) {
+        let values = (0..<info.spaceCount).compactMap {
+            let isSelected = $0 == info.currentIndex
+            return Value(text: String($0 + 1), isSelected: isSelected)
+        }
+        self.init(values: values, appState: appState)
+    }
+
+    var iconColor: Color { colorScheme == .dark ? .white : .black }
+
+    var iconImage: NSImage? {
+        let images: [SpaceIconImage] = values.compactMap {
+            return .init(
+                text: $0.text,
+                isSelected: $0.isSelected,
+                iconSize: self.iconSize,
+                cornerRadius: self.cornerRadius
+            )
+        }
+        guard images.count == values.count else { return nil }
+        return images.combine(spacing: self.spacing)
+    }
+
+    var body: some View {
+        Group {
+            if let iconImage {
+                Image(nsImage: iconImage)
+            } else {
+                fallback
+            }
+        }
+    }
+
+    var fallback: some View {
+        let selectedValue = values.first { $0.isSelected }
+        return Text(selectedValue?.text ?? "?")
+    }
+}
+
+struct SpaceIconLabel: View {
+    let appState: AppState
+
+    var body: some View {
+        if let info = appState.spaceSwitcher.spaceInfo {
+            switch appState.settingsManager.menuBarSettingsManager.iconStyle {
+            case .currDisplayAllSpaces:
+                MultiSpaceIconLabel(appState: appState, spaceInfo: info)
+            case .currDisplaySpace:
+                SingleSpaceIconLabel(appState: appState, spaceInfo: info)
             }
         } else {
             Image(systemName: "rectangle.3.group")
+        }
+    }
+}
+
+struct PreviewSpaceIconLabel: View {
+    let appState: AppState
+    let style: MenuBarIconStyle
+
+    var body: some View {
+        switch style {
+        case .currDisplayAllSpaces:
+            MultiSpaceIconLabel(
+                values: [
+                    .init(text: "1", isSelected: false),
+                    .init(text: "2", isSelected: true),
+                    .init(text: "3", isSelected: false),
+                    .init(text: "4", isSelected: false),
+                ],
+                appState: appState
+            )
+        case .currDisplaySpace:
+            SingleSpaceIconLabel(text: "2", isSelected: true, appState: appState)
         }
     }
 }
