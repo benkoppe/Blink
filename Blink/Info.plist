@@ -10,5 +10,9 @@
 	<string>https://benkoppe.github.io/Blink/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>6xxI2s/N+aF1a1dLrR/pXwg7zVBLigU2Gu197WqKga4=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
 </dict>
 </plist>
