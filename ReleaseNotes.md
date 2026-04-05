@@ -1,3 +1,13 @@
+# Blink 0.0.3
+
+## What's New
+- General settings pane now has options.
+- Added "Launch at login" toggle.
+
+## Bug Fixes
+- Menu Bar button targets are now easier to press.
+- Auto-updates and auto-update-checks are now automatically enabled.
+
 # Blink 0.0.2
 
 ## What's New
