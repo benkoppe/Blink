@@ -70,7 +70,7 @@ struct MenuKeyboardCommand<Label: View>: View {
     var body: some View {
         itemBody
             .padding([.top, .bottom], -4)
-            .contentShape(Rectangle())
+            .contentShape(Rectangle().inset(by: -4))
             .allowsHitTesting(isEnabled)
             .onHover { isHovering = $0 }
             .onTapGesture {
