@@ -10,6 +10,7 @@
 		B50F23122F7C839C00538956 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B50F23112F7C839C00538956 /* Sparkle */; };
 		B514C7CC2F80325800169633 /* ObservableDefaults in Frameworks */ = {isa = PBXBuildFile; productRef = B514C7CB2F80325800169633 /* ObservableDefaults */; };
 		B53866F52F81B01400BD863F /* MacControlCenterUI in Frameworks */ = {isa = PBXBuildFile; productRef = B53866F42F81B01400BD863F /* MacControlCenterUI */; };
+		B53867132F827CE400BD863F /* LaunchAtLogin in Frameworks */ = {isa = PBXBuildFile; productRef = B53867122F827CE400BD863F /* LaunchAtLogin */; };
 		B54E4DFA2F724399008FC353 /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DF92F724399008FC353 /* ApplicationServices.framework */; };
 		B54E4DFC2F72439E008FC353 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B54E4DFB2F72439E008FC353 /* Carbon.framework */; };
 		B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51772F74AF5B008FC353 /* CompactSlider */; };
@@ -54,6 +55,7 @@
 				B53866F52F81B01400BD863F /* MacControlCenterUI in Frameworks */,
 				B50F23122F7C839C00538956 /* Sparkle in Frameworks */,
 				B54E51782F74AF5B008FC353 /* CompactSlider in Frameworks */,
+				B53867132F827CE400BD863F /* LaunchAtLogin in Frameworks */,
 				B54E51952F79E09E008FC353 /* AXSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -112,6 +114,7 @@
 				B50F23112F7C839C00538956 /* Sparkle */,
 				B514C7CB2F80325800169633 /* ObservableDefaults */,
 				B53866F42F81B01400BD863F /* MacControlCenterUI */,
+				B53867122F827CE400BD863F /* LaunchAtLogin */,
 			);
 			productName = Blink;
 			productReference = B54E4DEA2F7242F2008FC353 /* Blink Dev.app */;
@@ -147,6 +150,7 @@
 				B50F23102F7C839C00538956 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				B514C7CA2F80325800169633 /* XCRemoteSwiftPackageReference "ObservableDefaults" */,
 				B53866F32F81B01400BD863F /* XCRemoteSwiftPackageReference "MacControlCenterUI" */,
+				B53867112F827CE400BD863F /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B54E4DEB2F7242F2008FC353 /* Products */;
@@ -421,6 +425,15 @@
 				minimumVersion = 2.7.3;
 			};
 		};
+		B53867112F827CE400BD863F /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/LaunchAtLogin-Modern";
+			requirement = {
+				kind = versionRange;
+				maximumVersion = 2.0.0;
+				minimumVersion = 1.0.0;
+			};
+		};
 		B54E51762F74AF5B008FC353 /* XCRemoteSwiftPackageReference "CompactSlider" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/buh/CompactSlider.git";
@@ -454,6 +467,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B53866F32F81B01400BD863F /* XCRemoteSwiftPackageReference "MacControlCenterUI" */;
 			productName = MacControlCenterUI;
+		};
+		B53867122F827CE400BD863F /* LaunchAtLogin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B53867112F827CE400BD863F /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */;
+			productName = LaunchAtLogin;
 		};
 		B54E51772F74AF5B008FC353 /* CompactSlider */ = {
 			isa = XCSwiftPackageProductDependency;
