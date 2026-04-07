@@ -1,3 +1,8 @@
+# Blink 0.0.4
+
+## What's New
+- Added app icon.
+
 # Blink 0.0.3
 
 ## What's New
