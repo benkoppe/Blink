@@ -128,6 +128,9 @@ struct SpaceInfo: Equatable {
 
 @Observable
 final class SpaceSwitcher {
+    /// The shared app state.
+    private(set) weak var appState: AppState?
+
     private(set) var spaceInfo: SpaceInfo?
 
     private let symbols: CGSSymbols?
@@ -139,7 +142,9 @@ final class SpaceSwitcher {
     private var windowScreenObserver: NSObjectProtocol?
     private var screenParamsObserver: NSObjectProtocol?
 
-    init() {
+    init(appState: AppState) {
+        self.appState = appState
+
         symbols = CGSSymbols.load()
 
         refreshSpaceInfo()

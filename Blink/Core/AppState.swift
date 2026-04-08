@@ -11,7 +11,8 @@ import SwiftUI
 
 @Observable @MainActor
 final class AppState {
-    let spaceSwitcher = SpaceSwitcher()
+    @ObservationIgnored
+    private(set) lazy var spaceSwitcher = SpaceSwitcher(appState: self)
 
     @ObservationIgnored
     private(set) lazy var permissionsManager = PermissionsManager(appState: self)
