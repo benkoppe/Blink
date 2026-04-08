@@ -43,8 +43,6 @@ struct BlinkMenu: View {
                 jumpToIndexSection(spaceInfo: info)
             }
 
-            swipeSection
-
             appInfoSection
         }
         .environment(keyDispatcher)
@@ -176,54 +174,6 @@ struct BlinkMenu: View {
                     Text(item.name)
                 }
             }
-        }
-    }
-
-    private func swipeBinding(for fingerCount: Int) -> Binding<Bool> {
-        Binding(
-            get: {
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
-                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
-                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
-
-                let leftEnabled = gestureSettings.gesture(withID: leftID)?.action == .left
-                let rightEnabled = gestureSettings.gesture(withID: rightID)?.action == .right
-
-                return leftEnabled && rightEnabled
-            },
-            set: { newValue in
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
-                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
-                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
-
-                gestureSettings.gesture(withID: leftID)?.action = newValue ? .left : nil
-                gestureSettings.gesture(withID: rightID)?.action = newValue ? .right : nil
-            }
-        )
-    }
-
-    private var swipeSection: some View {
-        MenuSection("Swipe", divider: true) {
-            HStack {
-                MenuCircleToggle(
-                    isOn: swipeBinding(for: 3),
-                    controlSize: .prominent,
-                    style: .init(
-                        image: Image(systemName: "3.circle.fill"),
-                        color: .blue
-                    )
-                ) { Text("3 Fingers") }
-
-                MenuCircleToggle(
-                    isOn: swipeBinding(for: 4),
-                    controlSize: .prominent,
-                    style: .init(
-                        image: Image(systemName: "4.circle.fill"),
-                        color: .blue
-                    )
-                ) { Text("4 Fingers") }
-            }
-            .frame(height: 70)
         }
     }
 
