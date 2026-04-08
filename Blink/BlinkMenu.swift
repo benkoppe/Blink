@@ -105,27 +105,4 @@ struct BlinkMenu: View {
             .keyboardShortcut("q")
         }
     }
-
-    // private var enableToggle: some View {
-    //     MenuHeader("Enabled") {
-    //         Toggle("", isOn: isEnabled)
-    //             .toggleStyle(.switch)
-    //             .labelsHidden()
-    //     }
-    // }
-    //
-    // private var disabledSection: some View {
-    //     // dissapearing menu content should always go inside a MenuSection to prevent glitching
-    //     MenuSection(divider: false) {
-    //         if !isEnabled.wrappedValue {
-    //             HStack(spacing: 3) {
-    //                 Image(systemName: "exclamationmark.triangle.fill")
-    //                     .foregroundStyle(.red)
-    //                 Text("The engine is disabled.")
-    //                     .foregroundStyle(.secondary)
-    //             }
-    //         }
-    //     }
-    // }
-    //
 }
