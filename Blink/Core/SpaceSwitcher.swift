@@ -399,6 +399,21 @@ final class SpaceSwitcher {
     // Much appreciation to the people that figured out this method.
     // (See the README)
 
+    private struct GestureProfile {
+        let progress: Double
+        let velocityX: Double
+    }
+
+    private func gestureProfile(for direction: Direction) -> GestureProfile {
+        let sign = direction == .right ? 1.0 : -1.0
+
+        if isMissionControlActive() {
+            return GestureProfile(progress: 2.0 * sign, velocityX: 400.0 * sign)
+        }
+
+        return GestureProfile(progress: 2.0 * sign, velocityX: 400.0 * sign)
+    }
+
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
         refreshSpaceInfo()
@@ -408,10 +423,12 @@ final class SpaceSwitcher {
             if direction == .right && info.isAtRightEdge { return false }
         }
 
+        let profile = gestureProfile(for: direction)
+        let progress = profile.progress
+        let velocity = profile.velocityX
+
         let isRight = direction == .right
         let flagDir = isRight ? Int64(1) : Int64(0)
-        let progress = isRight ? 2.0 : -2.0
-        let velocity = isRight ? 400.0 : -400.0
 
         // -- Begin gesture --
         guard let beginGesture = CGEvent(source: nil),
