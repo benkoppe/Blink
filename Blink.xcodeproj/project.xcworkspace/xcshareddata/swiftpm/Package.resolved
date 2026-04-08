@@ -1,5 +1,5 @@
 {
-  "originHash" : "de321f451daf4cd1dd0c0d77e6c4d789d3cf99fe4f7175ef11c9aa6fdf41ce90",
+  "originHash" : "2ce2fbc850b000ade21e2bb1885f027af7e02b8bfa262d332a7f43311015c3ad",
   "pins" : [
     {
       "identity" : "axswift",
@@ -26,24 +26,6 @@
       "state" : {
         "revision" : "a04ec1c363be3627734f6dad757d82f5d4fa8fcc",
         "version" : "1.1.0"
-      }
-    },
-    {
-      "identity" : "maccontrolcenterui",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/orchetect/MacControlCenterUI",
-      "state" : {
-        "revision" : "dea72a51feaae72ca2d88a7af24d86110e002eaa",
-        "version" : "2.7.3"
-      }
-    },
-    {
-      "identity" : "menubarextraaccess",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/orchetect/MenuBarExtraAccess",
-      "state" : {
-        "revision" : "33bb0e4b1e407feac791e047dcaaf9c69b25fd26",
-        "version" : "1.3.0"
       }
     },
     {
