@@ -55,7 +55,10 @@ struct BlinkMenu: View {
         Group {
             if let info = switcher.spaceInfo, info.spaceCount > 0 {
                 Divider()
-                Picker("Jump to...", selection: jumpSelection) {
+                Picker(
+                    "Jump to...", systemImage: "pointer.arrow.and.square.on.square.dashed",
+                    selection: jumpSelection
+                ) {
                     ForEach(0..<info.spaceCount, id: \.self) { index in
                         Label(
                             "Space \(index + 1)",
