@@ -434,3 +434,9 @@ final class SpaceSwitcher {
         return true
     }
 }
+
+// MARK: - Logger
+
+extension Logger {
+    fileprivate static let spaceSwitcher = Logger(category: "SpaceSwitcher")
+}
