@@ -109,6 +109,18 @@ struct SpaceInfo: Equatable {
     var displayNumber: Int { currentIndex + 1 }
     var isAtLeftEdge: Bool { currentIndex == 0 }
     var isAtRightEdge: Bool { currentIndex + 1 >= spaceCount }
+
+    let currentSpaceID: UInt64?
+    let currentSpaceType: Int?
+    let displayIdentifier: String?
+    let frontmostBundleID: String?
+
+    var isNormalDesktopSpace: Bool { currentSpaceType == 0 }
+    var isFullscreenSpace: Bool { currentSpaceType == 2 }
+
+    var isKnownStandardSpace: Bool {
+        isNormalDesktopSpace || isFullscreenSpace
+    }
 }
 
 // MARK: - SpaceSwitcher
@@ -181,6 +193,7 @@ final class SpaceSwitcher {
     func refreshSpaceInfo() {
         // Use the menu-bar display for the icon (always correct on multi-monitor)
         spaceInfo = loadSpaceInfo(useCursorDisplay: false)
+        debugLogSpaceInfo()
     }
 
     // MARK - Workspace notifications
@@ -229,6 +242,24 @@ final class SpaceSwitcher {
 
     private enum Direction { case left, right }
 
+    private func debugLogSpaceInfo() {
+        guard let info = spaceInfo else {
+            Logger.spaceSwitcher.info("SpaceInfo: <nil>")
+            return
+        }
+        Logger.spaceSwitcher.info(
+            """
+            SpaceInfo:
+              displayIdentifier: \(info.displayIdentifier ?? "nil")
+              currentSpaceID: \(info.currentSpaceID.map(String.init) ?? "nil")
+              currentSpaceType: \(info.currentSpaceType.map(String.init) ?? "nil")
+              frontmostBundleID: \(info.frontmostBundleID ?? "nil")
+              currentIndex: \(info.currentIndex)
+              spaceCount: \(info.spaceCount)
+            """
+        )
+
+    }
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
         guard let cgs = symbols else { return nil }
 
@@ -272,13 +303,17 @@ final class SpaceSwitcher {
         guard let displayDict = target ?? fallback else { return nil }
         return extractSpaceInfo(
             from: displayDict,
-            globalActiveSpaceID: activeSpaceID
+            globalActiveSpaceID: activeSpaceID,
+            displayIdentifier: displayDict["Display Identifier"] as? String,
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         )
     }
 
     private func extractSpaceInfo(
         from displayDict: NSDictionary,
-        globalActiveSpaceID: UInt64
+        globalActiveSpaceID: UInt64,
+        displayIdentifier: String?,
+        frontmostBundleID: String?
     )
         -> SpaceInfo?
     {
@@ -288,9 +323,10 @@ final class SpaceSwitcher {
 
         // Prefer the per-display active space ID
         var activeID = globalActiveSpaceID
-        if let currentSpaceDict = displayDict["Current Space"] as? NSDictionary,
-            let id = (currentSpaceDict["id64"] as? NSNumber)?.uint64Value
-        {
+        let currentSpaceDict = displayDict["Current Space"] as? NSDictionary
+        let currentSpaceID = (currentSpaceDict?["id64"] as? NSNumber)?.uint64Value
+        let currentSpaceType = (currentSpaceDict?["type"] as? NSNumber)?.intValue
+        if let id = currentSpaceID {
             activeID = id
         }
 
@@ -312,7 +348,11 @@ final class SpaceSwitcher {
         guard count > 0 else { return nil }
         return SpaceInfo(
             currentIndex: foundActive ? activeIndex : 0,
-            spaceCount: count
+            spaceCount: count,
+            currentSpaceID: currentSpaceID,
+            currentSpaceType: currentSpaceType,
+            displayIdentifier: displayIdentifier,
+            frontmostBundleID: frontmostBundleID
         )
     }
 
@@ -339,6 +379,8 @@ final class SpaceSwitcher {
 
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
+        refreshSpaceInfo()
+
         if let info = spaceInfo {
             if direction == .left && info.isAtLeftEdge { return false }
             if direction == .right && info.isAtRightEdge { return false }
