@@ -120,7 +120,7 @@ struct SettingsView: View {
         case .general: .systemSymbol("gearshape")
         case .menuBar: .systemSymbol("swatchpalette")
         case .hotkeys: .systemSymbol("keyboard")
-        case .about: .systemSymbol("app")
+        case .about: .systemSymbol(Constants.sfSymbol)
         }
     }
 }
