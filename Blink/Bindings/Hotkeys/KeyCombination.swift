@@ -7,6 +7,7 @@
 
 import Carbon.HIToolbox
 import Cocoa
+import SwiftUI
 
 struct KeyCombination: Hashable {
     let key: KeyCode
@@ -83,6 +84,31 @@ extension KeyCombination: Codable {
         var container = encoder.unkeyedContainer()
         try container.encode(key.rawValue)
         try container.encode(modifiers.rawValue)
+    }
+}
+
+// MARK - SwiftUI
+
+extension KeyCombination {
+    /// The SwiftUI key equivalent and modifier flags for this combination,
+    /// or `nil` if the key cannot be represented as a SwiftUI keyboard shortcut.
+    var swiftUIShortcut: (KeyEquivalent, SwiftUI.EventModifiers)? {
+        guard let keyEquivalent = key.swiftUIKeyEquivalent else { return nil }
+        return (keyEquivalent, modifiers.eventModifiers)
+    }
+}
+
+extension View {
+    /// Applies `.keyboardShortcut` using the given `KeyCombination`,
+    /// or returns the view unchanged if the combination is `nil` or cannot
+    /// be expressed as a SwiftUI shortcut.
+    @ViewBuilder
+    func keyboardShortcut(from combo: KeyCombination?) -> some View {
+        if let (key, modifiers) = combo?.swiftUIShortcut {
+            self.keyboardShortcut(key, modifiers: modifiers)
+        } else {
+            self
+        }
     }
 }
 

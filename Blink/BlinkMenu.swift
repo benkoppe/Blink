@@ -23,17 +23,21 @@ struct BlinkMenu: View {
         appInfoSection
     }
 
+    private func hotkey(for action: BoundAction) -> KeyCombination? {
+        appState.settingsManager.hotkeySettingsManager.hotkey(withAction: action)?.keyCombination
+    }
+
     private var switchSection: some View {
         VStack {
             Button("Switch left", systemImage: "arrow.left") {
                 BoundAction.left.execute(appState: appState)
             }
-            .keyboardShortcut(.leftArrow, modifiers: .command)
+            .keyboardShortcut(from: hotkey(for: .left))
 
             Button("Switch right", systemImage: "arrow.right") {
                 BoundAction.right.execute(appState: appState)
             }
-            .keyboardShortcut(.rightArrow, modifiers: .command)
+            .keyboardShortcut(from: hotkey(for: .right))
         }
     }
 
@@ -57,7 +61,11 @@ struct BlinkMenu: View {
                             "Space \(index + 1)",
                             systemImage: "\(index + 1).circle.fill"
                         )
-                        // .keyboardShortcut("p")
+                        .keyboardShortcut(
+                            from: BoundAction.indexedSpaceActions.indices.contains(index)
+                                ? hotkey(for: BoundAction.indexedSpaceActions[index])
+                                : nil
+                        )
                         .tag(Optional(index))
                     }
                 }
