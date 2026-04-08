@@ -40,7 +40,7 @@ final class SwipeGestureMonitor {
         var previousPositions: [String: CGPoint] = [:]
 
         mutating func reset() {
-            print("reset state")
+            // print("reset state")
             isActive = false
             lastFiredDirection = nil
             accumulatedDeltaX = 0
@@ -105,7 +105,7 @@ final class SwipeGestureMonitor {
 
         let touches = event.allTouches()
         guard !touches.isEmpty else {
-            print("touches empty")
+            // print("touches empty")
             state.reset()
             return
         }
@@ -113,7 +113,7 @@ final class SwipeGestureMonitor {
         let activeFingerCount =
             touches.allSatisfy { $0.phase == .ended || $0.phase == .cancelled } ? 0 : touches.count
         if activeFingerCount == 0 {
-            print("fingerCount 0")
+            // print("fingerCount 0")
             state.reset()
             return
         }
@@ -152,7 +152,7 @@ final class SwipeGestureMonitor {
 
         state.lastFiredDirection = direction
         state.accumulatedDeltaX = 0
-        print("firing with \(direction)")
+        // print("firing with \(direction)")
         onSwipe?(direction, activeFingerCount)
     }
 }
