@@ -5,8 +5,6 @@
 //  Created by Ben on 3/24/26.
 //
 
-import MacControlCenterUI
-import MenuBarExtraAccess
 import SwiftUI
 
 struct BlinkMenu: View {
