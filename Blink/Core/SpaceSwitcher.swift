@@ -131,8 +131,7 @@ final class SpaceSwitcher {
     private(set) var spaceInfo: SpaceInfo?
 
     private let symbols: CGSSymbols?
-    private var eventTap: CFMachPort?
-    private var tapSource: CFRunLoopSource?
+
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
     private var screensWakeObserver: NSObjectProtocol?
@@ -143,17 +142,11 @@ final class SpaceSwitcher {
     init() {
         symbols = CGSSymbols.load()
 
-        // guard installEventTap() else {
-        //     print("SpaceSwitcher: event tap failed - grant Accessibility access and relaunch.")
-        //     return
-        // }
-
         refreshSpaceInfo()
         subscribeToWorkspaceNotifications()
     }
 
     deinit {
-        // removeEventTap()
         let workspaceNC = NSWorkspace.shared.notificationCenter
         [spaceObserver, appObserver, screensWakeObserver].compactMap { $0 }.forEach {
             workspaceNC.removeObserver($0)
