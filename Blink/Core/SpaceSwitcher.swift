@@ -258,8 +258,30 @@ final class SpaceSwitcher {
               spaceCount: \(info.spaceCount)
             """
         )
-
+        Logger.spaceSwitcher.info("Mission control: \(isMissionControlActive())")
     }
+
+    func isMissionControlActive() -> Bool {
+        let windowList =
+            CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
+        for window in windowList {
+            if  // window must be owned by "Dock" process
+            (window["kCGWindowOwnerName"] as? String) == "Dock",
+
+                // ensure the owner is not some other process named "Dock" (seems unlikely though)
+                let windowOwnerPID = window["kCGWindowOwnerPID"] as? pid_t,
+                let app = NSRunningApplication(processIdentifier: windowOwnerPID),
+                app.bundleIdentifier == "com.apple.dock",
+
+                // window must have no title
+                window["kCGWindowName"] == nil
+            {
+                return true
+            }
+        }
+        return false
+    }
+
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
         guard let cgs = symbols else { return nil }
 
