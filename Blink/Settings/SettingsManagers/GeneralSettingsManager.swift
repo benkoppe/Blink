@@ -11,6 +11,5 @@ import Observation
 
 @MainActor @ObservableDefaults
 final class GeneralSettingsManager {
-    @DefaultsKey(userDefaultsKey: "settings.bindingsEnabled")
     var bindingsEnabled: Bool = true
 }
