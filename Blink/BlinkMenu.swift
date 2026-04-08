@@ -73,6 +73,15 @@ struct BlinkMenu: View {
         }
     }
 
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
+            set: { newValue in
+                appState.settingsManager.generalSettingsManager.bindingsEnabled = newValue
+            }
+        )
+    }
+
     private var appInfoSection: some View {
         VStack {
             Text("\(Constants.appName) \(Constants.versionString)")
@@ -81,6 +90,14 @@ struct BlinkMenu: View {
                 appState.appDelegate?.openSettingsWindow()
             }
             .keyboardShortcut(",")
+
+            Button(
+                isEnabled.wrappedValue ? "Disable" : "Enable",
+                systemImage: isEnabled.wrappedValue ? "pause.circle" : "play.circle"
+            ) {
+                isEnabled.wrappedValue.toggle()
+            }
+            .keyboardShortcut("e")
 
             Button("Quit") {
                 quit()
