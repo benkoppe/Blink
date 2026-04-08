@@ -521,7 +521,8 @@ final class SpaceSwitcher {
             changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
             changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
             changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
-            changedDock.setDoubleValueField(GestureField.swipeProgress, value: isRight ? step : -step)
+            changedDock.setDoubleValueField(
+                GestureField.swipeProgress, value: isRight ? step : -step)
             changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
             changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
             changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
