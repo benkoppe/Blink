@@ -275,6 +275,29 @@ extension KeyCode {
     var stringValue: String {
         customStringMappings[self, default: keyEquivalent]
     }
+
+    /// Whether NSMenu can handle this key as a native key equivalent.
+    ///
+    /// Non-character navigation and function keys need local event handling
+    /// while a menu is open because NSMenu reserves them for its own behavior.
+    var isNSMenuKeyEquivalent: Bool {
+        switch self {
+        case .leftArrow, .rightArrow, .upArrow, .downArrow,
+             .forwardDelete,
+             .keypadClear, .keypadEnter,
+             .help,
+             .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10,
+             .f11, .f12, .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20,
+             .home, .end, .pageUp, .pageDown,
+             .control, .option, .shift, .command,
+             .rightControl, .rightOption, .rightShift, .rightCommand,
+             .capsLock, .function,
+             .volumeUp, .volumeDown, .mute:
+            return false
+        default:
+            return true
+        }
+    }
 }
 
 // MARK: SwiftUI Key Equivalent

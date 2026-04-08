@@ -63,6 +63,8 @@ final class HotkeyRegistry {
 
     private var cancellables = Set<AnyCancellable>()
 
+    private var menuKeyEventTap: EventTap?
+
     /// Installs the global event handler reference, if it isn't already
     private func installIfNeeded() -> OSStatus {
         guard eventHandlerRef == nil else {
@@ -73,12 +75,14 @@ final class HotkeyRegistry {
             .publisher(for: NSMenu.didBeginTrackingNotification)
             .sink { [weak self] _ in
                 self?.unregisterAndRetainAll()
+                self?.installMenuKeyEventTapIfNeeded()
             }
             .store(in: &cancellables)
 
         NotificationCenter.default
             .publisher(for: NSMenu.didEndTrackingNotification)
             .sink { [weak self] _ in
+                self?.removeMenuKeyEventTap()
                 self?.registerAllRetained()
             }
             .store(in: &cancellables)
@@ -245,6 +249,62 @@ final class HotkeyRegistry {
 
             registration.hotKeyRef = hotKeyRef
         }
+    }
+
+    private func installMenuKeyEventTapIfNeeded() {
+        guard menuKeyEventTap == nil else {
+            return
+        }
+
+        let tap = EventTap(
+            label: "MenuHotkeyEventTap",
+            options: .defaultTap,
+            location: .annotatedSessionEventTap,
+            place: .headInsertEventTap,
+            types: [.keyDown],
+            callback: { [weak self] proxy, type, event in
+                guard let self else { return event }
+
+                switch type {
+                case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                    proxy.enable()
+                    return event
+
+                case .keyDown:
+                    let key = KeyCode(
+                        rawValue: Int(event.getIntegerValueField(.keyboardEventKeycode))
+                    )
+                    let modifiers = Modifiers(cgEventFlags: event.flags)
+
+                    guard let registration = self.registrations.values.first(where: {
+                        $0.eventKind == .keyDown && $0.key == key && $0.modifiers == modifiers
+                    }) else {
+                        return event
+                    }
+
+                    guard !registration.key.isNSMenuKeyEquivalent else {
+                        return event
+                    }
+
+                    registration.handler()
+                    return nil
+
+                default:
+                    return event
+                }
+            }
+        )
+        tap.enable()
+        menuKeyEventTap = tap
+    }
+
+    private func removeMenuKeyEventTap() {
+        guard let menuKeyEventTap else {
+            return
+        }
+
+        menuKeyEventTap.disable()
+        self.menuKeyEventTap = nil
     }
 
     /// Retrieves and performs the event handler stored under the
