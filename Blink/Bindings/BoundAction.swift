@@ -67,4 +67,9 @@ extension BoundAction {
         case .space10: return KeyCombination(key: .zero, modifiers: modifiers)
         }
     }
+
+    static let indexedSpaceActions: [BoundAction] = [
+        .space1, .space2, .space3, .space4, .space5,
+        .space6, .space7, .space8, .space9, .space10,
+    ]
 }

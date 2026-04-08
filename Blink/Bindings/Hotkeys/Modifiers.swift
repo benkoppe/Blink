@@ -7,6 +7,7 @@
 
 import Carbon.HIToolbox
 import Cocoa
+import SwiftUI
 
 /// A bit mask containing the modifier keys for a hotkey.
 struct Modifiers: OptionSet, Codable, Hashable {
@@ -117,6 +118,16 @@ extension Modifiers {
         if contains(.command) {
             result |= cmdKey
         }
+        return result
+    }
+
+    /// SwiftUI EventModifiers
+    var eventModifiers: SwiftUI.EventModifiers {
+        var result: SwiftUI.EventModifiers = []
+        if contains(.control) { result.insert(.control) }
+        if contains(.option) { result.insert(.option) }
+        if contains(.shift) { result.insert(.shift) }
+        if contains(.command) { result.insert(.command) }
         return result
     }
 

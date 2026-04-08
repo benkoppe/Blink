@@ -6,6 +6,7 @@
 //
 
 import Carbon.HIToolbox
+import SwiftUI
 
 /// Representation of a physical key on a keyboard.
 struct KeyCode: Codable, Hashable, RawRepresentable {
@@ -273,5 +274,91 @@ extension KeyCode {
     /// Custom string representation.
     var stringValue: String {
         customStringMappings[self, default: keyEquivalent]
+    }
+
+    /// Whether NSMenu can handle this key as a native key equivalent.
+    ///
+    /// Non-character navigation and function keys need local event handling
+    /// while a menu is open because NSMenu reserves them for its own behavior.
+    var isNSMenuKeyEquivalent: Bool {
+        switch self {
+        case .leftArrow, .rightArrow, .upArrow, .downArrow,
+             .forwardDelete,
+             .keypadClear, .keypadEnter,
+             .help,
+             .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10,
+             .f11, .f12, .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20,
+             .home, .end, .pageUp, .pageDown,
+             .control, .option, .shift, .command,
+             .rightControl, .rightOption, .rightShift, .rightCommand,
+             .capsLock, .function,
+             .volumeUp, .volumeDown, .mute:
+            return false
+        default:
+            return true
+        }
+    }
+}
+
+// MARK: SwiftUI Key Equivalent
+extension KeyCode {
+    var swiftUIKeyEquivalent: KeyEquivalent? {
+        switch self {
+        // Arrow keys — named SwiftUI static members
+        case .leftArrow: return .leftArrow
+        case .rightArrow: return .rightArrow
+        case .upArrow: return .upArrow
+        case .downArrow: return .downArrow
+        // Editing — named SwiftUI static members
+        case .delete: return .delete
+        case .forwardDelete: return .deleteForward
+        case .tab: return .tab
+        case .return: return .return
+        case .space: return .space
+        // Navigation — named SwiftUI static members
+        case .escape: return .escape
+        case .home: return .home
+        case .end: return .end
+        case .pageUp: return .pageUp
+        case .pageDown: return .pageDown
+        // Keypad special keys — named SwiftUI static member / raw character
+        case .keypadClear: return .clear
+        case .keypadEnter: return KeyEquivalent(Character(Unicode.Scalar(0x0003)!))  // NSEnterCharacter
+        // Help key
+        case .help: return KeyEquivalent(Character(Unicode.Scalar(0xF746)!))
+        // F1–F20 — AppKit private-use Unicode scalars
+        case .f1: return KeyEquivalent(Character(Unicode.Scalar(0xF704)!))
+        case .f2: return KeyEquivalent(Character(Unicode.Scalar(0xF705)!))
+        case .f3: return KeyEquivalent(Character(Unicode.Scalar(0xF706)!))
+        case .f4: return KeyEquivalent(Character(Unicode.Scalar(0xF707)!))
+        case .f5: return KeyEquivalent(Character(Unicode.Scalar(0xF708)!))
+        case .f6: return KeyEquivalent(Character(Unicode.Scalar(0xF709)!))
+        case .f7: return KeyEquivalent(Character(Unicode.Scalar(0xF70A)!))
+        case .f8: return KeyEquivalent(Character(Unicode.Scalar(0xF70B)!))
+        case .f9: return KeyEquivalent(Character(Unicode.Scalar(0xF70C)!))
+        case .f10: return KeyEquivalent(Character(Unicode.Scalar(0xF70D)!))
+        case .f11: return KeyEquivalent(Character(Unicode.Scalar(0xF70E)!))
+        case .f12: return KeyEquivalent(Character(Unicode.Scalar(0xF70F)!))
+        case .f13: return KeyEquivalent(Character(Unicode.Scalar(0xF710)!))
+        case .f14: return KeyEquivalent(Character(Unicode.Scalar(0xF711)!))
+        case .f15: return KeyEquivalent(Character(Unicode.Scalar(0xF712)!))
+        case .f16: return KeyEquivalent(Character(Unicode.Scalar(0xF713)!))
+        case .f17: return KeyEquivalent(Character(Unicode.Scalar(0xF714)!))
+        case .f18: return KeyEquivalent(Character(Unicode.Scalar(0xF715)!))
+        case .f19: return KeyEquivalent(Character(Unicode.Scalar(0xF716)!))
+        case .f20: return KeyEquivalent(Character(Unicode.Scalar(0xF717)!))
+        // Modifier-only keys and media keys — not valid shortcut keys
+        case .control, .option, .shift, .command,
+            .rightControl, .rightOption, .rightShift, .rightCommand,
+            .capsLock, .function,
+            .volumeUp, .volumeDown, .mute:
+            return nil
+        default:
+            // All printable keys (letters, numbers, symbols, keypad operators)
+            // are handled via UCKeyTranslate
+            let s = keyEquivalent
+            guard let first = s.first else { return nil }
+            return KeyEquivalent(first)
+        }
     }
 }

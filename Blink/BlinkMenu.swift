@@ -5,150 +5,37 @@
 //  Created by Ben on 3/24/26.
 //
 
-import MacControlCenterUI
-import MenuBarExtraAccess
 import SwiftUI
 
 struct BlinkMenu: View {
     @Environment(AppState.self) private var appState
     private var switcher: SpaceSwitcher { appState.spaceSwitcher }
 
-    @Binding var isMenuPresented: Bool
-
-    @State private var keyDispatcher = MenuKeyDispatcher()
-    @State private var shortcutModifierColumnCount: Int = 0
-    @State private var shortcutModifierSymbolWidth: CGFloat?
-    @State private var shortcutKeyWidth: CGFloat?
-
-    private var isEnabled: Binding<Bool> {
-        Binding(
-            get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
-            set: { newValue in
-                withAnimation(.macControlCenterMenuResize) {
-                    appState.settingsManager.generalSettingsManager.bindingsEnabled = newValue
-                }
-            }
-        )
-    }
-
     var body: some View {
-        MacControlCenterMenu(isPresented: $isMenuPresented, width: .custom(200)) {
-            enableToggle
+        switchSection
 
-            disabledSection
+        jumpToSpaceSection
 
-            switchSection
+        Divider()
 
-            if let info = switcher.spaceInfo, info.spaceCount > 0 {
-                jumpToIndexSection(spaceInfo: info)
-            }
-
-            appInfoSection
-        }
-        .environment(keyDispatcher)
-        .environment(\.menuIsPresented, $isMenuPresented)
-        .environment(\.menuShortcutModifierColumnCount, shortcutModifierColumnCount)
-        .environment(\.menuShortcutModifierSymbolWidth, shortcutModifierSymbolWidth)
-        .environment(\.menuShortcutKeyWidth, shortcutKeyWidth)
-        .onPreferenceChange(MenuShortcutModifierCountPreferenceKey.self) { count in
-            if count > shortcutModifierColumnCount {
-                shortcutModifierColumnCount = count
-            }
-        }
-        .onPreferenceChange(MenuShortcutModifierSymbolWidthPreferenceKey.self) { width in
-            guard width > 0 else { return }
-            if shortcutModifierSymbolWidth.map({ abs($0 - width) > 0.5 }) ?? true {
-                shortcutModifierSymbolWidth = width
-            }
-        }
-        .onPreferenceChange(MenuShortcutKeyWidthPreferenceKey.self) { width in
-            guard width > 0 else { return }
-            if shortcutKeyWidth.map({ abs($0 - width) > 0.5 }) ?? true {
-                shortcutKeyWidth = width
-            }
-        }
-        .onChange(of: isMenuPresented) { _, newValue in
-            keyDispatcher.isMenuPresented = newValue
-        }
-    }
-
-    private var enableToggle: some View {
-        MenuHeader("Enabled") {
-            Toggle("", isOn: isEnabled)
-                .toggleStyle(.switch)
-                .labelsHidden()
-        }
-    }
-
-    private var disabledSection: some View {
-        // dissapearing menu content should always go inside a MenuSection to prevent glitching
-        MenuSection(divider: false) {
-            if !isEnabled.wrappedValue {
-                HStack(spacing: 3) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text("The engine is disabled.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
+        appInfoSection
     }
 
     private func hotkey(for action: BoundAction) -> KeyCombination? {
-        appState.settingsManager
-            .hotkeySettingsManager
-            .hotkey(withAction: action)?
-            .keyCombination
-    }
-
-    @ViewBuilder private func actionButton(
-        title: String,
-        action boundAction: BoundAction,
-    ) -> some View {
-        if let combo = hotkey(for: boundAction) {
-            MenuKeyboardCommand(
-                key: combo.key,
-                modifiers: combo.modifiers,
-                action: { boundAction.execute(appState: appState) }
-            ) {
-                Text(title)
-            }
-        } else {
-            MenuCommand(action: { boundAction.execute(appState: appState) }) {
-                Text(title)
-            }
-        }
+        appState.settingsManager.hotkeySettingsManager.hotkey(withAction: action)?.keyCombination
     }
 
     private var switchSection: some View {
-        MenuSection("Switch", divider: true) {
-            actionButton(
-                title: "Left",
-                action: .left
-            )
-            .disabled(!switcher.canMoveLeft())
+        VStack {
+            Button("Switch left", systemImage: "arrow.left") {
+                BoundAction.left.execute(appState: appState)
+            }
+            .keyboardShortcut(from: hotkey(for: .left))
 
-            actionButton(
-                title: "Right",
-                action: .right
-            )
-            .disabled(!switcher.canMoveRight())
-        }
-    }
-
-    private struct JumpSpaceItem: Identifiable, Hashable {
-        let id: Int
-        let name: String
-        let imageName: String
-    }
-
-    private func jumpItems(for info: SpaceInfo) -> [JumpSpaceItem] {
-        (0..<info.spaceCount).map { index in
-            JumpSpaceItem(
-                id: index,
-                name: "Space \(index + 1)",
-                imageName: "\(index + 1).circle.fill"
-            )
+            Button("Switch right", systemImage: "arrow.right") {
+                BoundAction.right.execute(appState: appState)
+            }
+            .keyboardShortcut(from: hotkey(for: .right))
         }
     }
 
@@ -162,38 +49,61 @@ struct BlinkMenu: View {
         )
     }
 
-    @State private var isJumpToIndexExpanded = false
-    private func jumpToIndexSection(spaceInfo info: SpaceInfo) -> some View {
-        MenuDisclosureSection(
-            "Jump to Index",
-            divider: true,
-            isExpanded: $isJumpToIndexExpanded
-        ) {
-            MenuList(jumpItems(for: info), selection: jumpSelection) { item in
-                MenuToggle(image: Image(systemName: item.imageName)) {
-                    Text(item.name)
+    private var jumpToSpaceSection: some View {
+        Group {
+            if let info = switcher.spaceInfo, info.spaceCount > 0 {
+                Divider()
+                Picker(
+                    "Jump to...", systemImage: "pointer.arrow.and.square.on.square.dashed",
+                    selection: jumpSelection
+                ) {
+                    ForEach(0..<info.spaceCount, id: \.self) { index in
+                        Label(
+                            "Space \(index + 1)",
+                            systemImage: "\(index + 1).circle.fill"
+                        )
+                        .keyboardShortcut(
+                            from: BoundAction.indexedSpaceActions.indices.contains(index)
+                                ? hotkey(for: BoundAction.indexedSpaceActions[index])
+                                : nil
+                        )
+                        .tag(Optional(index))
+                    }
                 }
             }
         }
     }
 
-    private var appInfoSection: some View {
-        MenuSection("\(Constants.appName) \(Constants.versionString)", divider: true) {
-            MenuKeyboardCommand(
-                key: .comma,
-                modifiers: .command,
-                action: { appState.appDelegate?.openSettingsWindow() }
-            ) {
-                Text("Settings")
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
+            set: { newValue in
+                appState.settingsManager.generalSettingsManager.bindingsEnabled = newValue
             }
+        )
+    }
 
-            MenuKeyboardCommand(
-                key: .q,
-                modifiers: .command,
-                action: { quit() }
-            ) {
-                Text("Quit")
+    private var appInfoSection: some View {
+        VStack {
+            Text("\(Constants.appName) \(Constants.versionString)")
+
+            Button("Settings...", systemImage: "gearshape.fill") {
+                appState.appDelegate?.openSettingsWindow()
             }
+            .keyboardShortcut(",")
+
+            Button(
+                isEnabled.wrappedValue ? "Disable" : "Enable",
+                systemImage: isEnabled.wrappedValue ? "pause.circle" : "play.circle"
+            ) {
+                isEnabled.wrappedValue.toggle()
+            }
+            .keyboardShortcut("e")
+
+            Button("Quit") {
+                quit()
+            }
+            .keyboardShortcut("q")
         }
     }
 }

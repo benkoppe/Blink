@@ -5,7 +5,6 @@
 //  Created by Ben on 3/23/26.
 //
 
-import MenuBarExtraAccess
 import SwiftUI
 
 @main
@@ -13,22 +12,17 @@ struct BlinkApp: App {
     @NSApplicationDelegateAdaptor var appDelegate: AppDelegate
     @State private var appState = AppState()
 
-    @State private var isMenuPresented: Bool = false
-
     init() {
         appDelegate.assignAppState(appState)
     }
 
     var body: some Scene {
         MenuBarExtra {
-            BlinkMenu(isMenuPresented: $isMenuPresented)
+            BlinkMenu()
                 .environment(appState)
         } label: {
             SpaceIconLabel(appState: appState)
         }
-        .menuBarExtraAccess(isPresented: $isMenuPresented)
-        .menuBarExtraStyle(.window)
-        .windowResizability(.contentSize)
 
         Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
             SettingsView()
