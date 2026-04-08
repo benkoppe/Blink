@@ -488,7 +488,12 @@ final class SpaceSwitcher {
         // scrollFlags values matching actual DockSwipe events:
         // 1 = swipe right (toward higher-indexed space), 4 = swipe left
         let flagDir = isRight ? Int64(1) : Int64(4)
-        let sign = isRight ? 1.0 : -1.0
+        // Progress steps from 0 toward ±1.0. Mission Control uses these to
+        // track the gesture and determine which space to land on.
+        let progressSteps: [Double] = [0.25, 0.5, 0.75]
+        // swipeProgress slightly past ±1.0 commits the switch.
+        let progress = isRight ? 1.05 : -1.05
+        let velocity = isRight ? 200.0 : -200.0
 
         // -- Begin --
         guard let beginGesture = CGEvent(source: nil),
@@ -511,19 +516,16 @@ final class SpaceSwitcher {
         beginDock.post(tap: .cgSessionEventTap)
 
         // -- Intermediate changed frames --
-        // Progress steps from 0 toward ±1.0. Mission Control uses these to
-        // track the gesture and determine which space to land on.
-        let steps: [Double] = [0.25, 0.5, 0.75]
-        for step in steps {
+        for step in progressSteps {
             guard let changedDock = CGEvent(source: nil) else { return false }
             changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
             changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
             changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
-            changedDock.setDoubleValueField(GestureField.swipeProgress, value: step * sign)
+            changedDock.setDoubleValueField(GestureField.swipeProgress, value: isRight ? step : -step)
             changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
             changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
             changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
-            changedDock.setDoubleValueField(GestureField.velocityX, value: 200.0 * sign)
+            changedDock.setDoubleValueField(GestureField.velocityX, value: velocity)
             changedDock.setDoubleValueField(GestureField.velocityY, value: 0)
             changedDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
             changedDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
@@ -531,7 +533,6 @@ final class SpaceSwitcher {
         }
 
         // -- End --
-        // swipeProgress slightly past ±1.0 to commit the switch.
         guard let endGesture = CGEvent(source: nil),
             let endDock = CGEvent(source: nil)
         else { return false }
@@ -542,11 +543,11 @@ final class SpaceSwitcher {
         endDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
         endDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
         endDock.setIntegerValueField(GestureField.phase, value: Phase.ended)
-        endDock.setDoubleValueField(GestureField.swipeProgress, value: 1.05 * sign)
+        endDock.setDoubleValueField(GestureField.swipeProgress, value: progress)
         endDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
         endDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
         endDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        endDock.setDoubleValueField(GestureField.velocityX, value: 200.0 * sign)
+        endDock.setDoubleValueField(GestureField.velocityX, value: velocity)
         endDock.setDoubleValueField(GestureField.velocityY, value: 0)
         endDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
         endDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
