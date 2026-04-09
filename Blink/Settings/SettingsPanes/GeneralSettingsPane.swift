@@ -11,7 +11,7 @@ import SwiftUI
 struct GeneralSettingsPane: View {
     @Environment(AppState.self) private var appState
 
-    var manager: GeneralSettingsManager {
+    private var manager: GeneralSettingsManager {
         appState.settingsManager.generalSettingsManager
     }
 
@@ -31,21 +31,22 @@ struct GeneralSettingsPane: View {
         }
     }
 
-    var launchAtLogin: some View {
+    @ViewBuilder
+    private var launchAtLogin: some View {
         LaunchAtLogin.Toggle()
     }
 
-    var enableBindings: some View {
+    @ViewBuilder
+    private var enableBindings: some View {
         @Bindable var manager = manager
-
-        return Toggle("Enable bindings", isOn: $manager.bindingsEnabled)
+        Toggle("Enable bindings", isOn: $manager.bindingsEnabled)
             .annotation("Fully disable all gestures and hotkeys")
     }
 
-    var wrapSpaceSwitching: some View {
+    @ViewBuilder
+    private var wrapSpaceSwitching: some View {
         @Bindable var manager = manager
-
-        return Toggle("Wrap spaces", isOn: $manager.wrapSpaceSwitching)
+        Toggle("Wrap spaces", isOn: $manager.wrapSpaceSwitching)
             .annotation(
                 "Going left from Space 1 jumps to the last space, and vice versa (a little clunky)")
     }

@@ -50,15 +50,15 @@ struct GestureSettingsPane: View {
         )
     }
 
-    func gestures(for fingerCount: Int) -> some View {
+    private func gestures(for fingerCount: Int) -> some View {
         Toggle("\(fingerCount)-finger Swipes", isOn: swipeBinding(for: fingerCount))
             .annotation("Switch spaces with \(fingerCount) fingers")
     }
 
-    var allowSameDirectionRepeat: some View {
+    @ViewBuilder
+    private var allowSameDirectionRepeat: some View {
         @Bindable var manager = manager
-
-        return Toggle(isOn: $manager.allowSameDirectionRepeat) {
+        Toggle(isOn: $manager.allowSameDirectionRepeat) {
             HStack {
                 Text("Allow repeated swipe direction")
                 BetaBadge()
@@ -67,10 +67,10 @@ struct GestureSettingsPane: View {
         .annotation("Swipe the same direction multiple times within a single gesture")
     }
 
-    var sameDirectionRepeatSensitivity: some View {
+    @ViewBuilder
+    private var sameDirectionRepeatSensitivity: some View {
         @Bindable var manager = manager
-
-        return BlinkLabeledContent {
+        BlinkLabeledContent {
             BlinkSlider(
                 LocalizedStringKey(manager.sameDirectionRepeatSensitivity.formatted()),
                 value: $manager.sameDirectionRepeatSensitivity,

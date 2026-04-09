@@ -49,17 +49,18 @@ struct MenuBarSettingsPane: View {
         }
     }
 
-    var previewSection: some View {
-        return BlinkSection("Preview") {
+    @ViewBuilder
+    private var previewSection: some View {
+        BlinkSection("Preview") {
             PreviewSpaceIconLabel(appState: appState, style: menuBarSettingsManager.iconStyle)
                 .frame(height: 30)
         }
     }
 
-    var stylePicker: some View {
+    @ViewBuilder
+    private var stylePicker: some View {
         @Bindable var settings = menuBarSettingsManager
-
-        return BlinkLabeledContent {
+        BlinkLabeledContent {
             Picker("Display", selection: $settings.iconStyle) {
                 ForEach(MenuBarIconStyle.allCases, id: \.self) { style in
                     HStack(spacing: 7) {
@@ -83,10 +84,10 @@ struct MenuBarSettingsPane: View {
         }
     }
 
-    var barAppearanceEditor: some View {
+    @ViewBuilder
+    private var barAppearanceEditor: some View {
         @Bindable var settings = menuBarSettingsManager
-
-        return VStack {
+        VStack {
             BlinkLabeledContent {
                 BlinkSlider(
                     LocalizedStringKey(settings.iconSize.formatted()),
