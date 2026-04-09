@@ -10,7 +10,7 @@ import SwiftUI
 struct HotkeysSettingsPane: View {
     @Environment(AppState.self) private var appState
 
-    private var hotkeySettingsManager: HotkeySettingsManager {
+    private var manager: HotkeySettingsManager {
         appState.settingsManager.hotkeySettingsManager
     }
 
@@ -46,7 +46,7 @@ struct HotkeysSettingsPane: View {
             isPresented: $resetAllConfirmationPresented
         ) {
             Button("Reset All", role: .destructive) {
-                hotkeySettingsManager.resetAllHotkeys()
+                manager.resetAllHotkeys()
             }
         } message: {
             Text("This will replace every hotkey with its default binding.")
@@ -60,7 +60,7 @@ struct HotkeysSettingsPane: View {
             presenting: resetActionConfirmationTarget
         ) { action in
             Button("Reset", role: .destructive) {
-                hotkeySettingsManager.resetHotkey(withAction: action)
+                manager.resetHotkey(withAction: action)
             }
         } message: { action in
             if let combo = action.defaultKeyCombination {
@@ -71,7 +71,7 @@ struct HotkeysSettingsPane: View {
 
     @ViewBuilder
     private func hotkeyRecorder(forAction action: BoundAction) -> some View {
-        if let hotkey = hotkeySettingsManager.hotkey(withAction: action) {
+        if let hotkey = manager.hotkey(withAction: action) {
             HotkeyRecorder(hotkey: hotkey, appState: appState) {
                 HStack {
                     Text(action.displayName)
