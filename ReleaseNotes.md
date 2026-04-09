@@ -1,3 +1,12 @@
+# Blink 0.0.5
+
+## What's New
+- Instant space switches now work properly in Mission Control.
+- New "Wrap spaces" option wraps around the space edges (from 1 to n and n to 1).
+- Gesture settings are now on their own settings pane.
+  - New "Multiswipe" option allows swiping the same direction multiple times with a configured sensitivity. (experimental)
+- Menu Bar now uses native macOS menu appearance.
+
 # Blink 0.0.4
 
 ## What's New
