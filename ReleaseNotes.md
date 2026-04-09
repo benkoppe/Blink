@@ -5,7 +5,8 @@
   - Default keybinds have been adjusted to simpler variants
 
 ## Bug Fixes
-- Instant space switches once again work in fullscreen apps.
+- Instant space switches once again works in fullscreen apps.
+- Jumping to a nonexistent space index now does nothing.
 
 # Blink 0.0.5
 
