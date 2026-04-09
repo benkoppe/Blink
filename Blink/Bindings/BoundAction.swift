@@ -51,20 +51,21 @@ enum BoundAction: String, Codable, CaseIterable {
 
 extension BoundAction {
     var defaultKeyCombination: KeyCombination? {
-        let modifiers: Modifiers = [.control, .option, .command]
+        let swipeModifiers: Modifiers = [.control]
+        let jumpModifiers: Modifiers = [.control, .option]
         switch self {
-        case .left: return .init(key: .leftArrow, modifiers: modifiers)
-        case .right: return .init(key: .rightArrow, modifiers: modifiers)
-        case .space1: return .init(key: .one, modifiers: modifiers)
-        case .space2: return .init(key: .two, modifiers: modifiers)
-        case .space3: return KeyCombination(key: .three, modifiers: modifiers)
-        case .space4: return KeyCombination(key: .four, modifiers: modifiers)
-        case .space5: return KeyCombination(key: .five, modifiers: modifiers)
-        case .space6: return KeyCombination(key: .six, modifiers: modifiers)
-        case .space7: return KeyCombination(key: .seven, modifiers: modifiers)
-        case .space8: return KeyCombination(key: .eight, modifiers: modifiers)
-        case .space9: return KeyCombination(key: .nine, modifiers: modifiers)
-        case .space10: return KeyCombination(key: .zero, modifiers: modifiers)
+        case .left: return .init(key: .leftArrow, modifiers: swipeModifiers)
+        case .right: return .init(key: .rightArrow, modifiers: swipeModifiers)
+        case .space1: return .init(key: .one, modifiers: jumpModifiers)
+        case .space2: return .init(key: .two, modifiers: jumpModifiers)
+        case .space3: return KeyCombination(key: .three, modifiers: jumpModifiers)
+        case .space4: return KeyCombination(key: .four, modifiers: jumpModifiers)
+        case .space5: return KeyCombination(key: .five, modifiers: jumpModifiers)
+        case .space6: return KeyCombination(key: .six, modifiers: jumpModifiers)
+        case .space7: return KeyCombination(key: .seven, modifiers: jumpModifiers)
+        case .space8: return KeyCombination(key: .eight, modifiers: jumpModifiers)
+        case .space9: return KeyCombination(key: .nine, modifiers: jumpModifiers)
+        case .space10: return KeyCombination(key: .zero, modifiers: jumpModifiers)
         }
     }
 
