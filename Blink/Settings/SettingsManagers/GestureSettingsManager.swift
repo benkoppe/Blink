@@ -6,28 +6,32 @@
 //
 
 import Foundation
-import Observation
+import ObservableDefaults
 
-@MainActor @Observable
+@MainActor @ObservableDefaults(autoInit: false)
 final class GestureSettingsManager {
-    private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
+    @ObservableOnly private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
         SwipeGesture(id: $0, action: nil)
     }
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    @ObservationIgnored private(set) weak var appState: AppState?
-    @ObservationIgnored private let monitor = SwipeGestureMonitor()
+    @Ignore private(set) weak var appState: AppState?
+    @Ignore private let monitor = SwipeGestureMonitor()
 
+    @DefaultsKey(userDefaultsKey: "settings.allowSameDirectionRepeat")
     var allowSameDirectionRepeat: Bool = false
-    var sameDirectionRepeatSensitivity: Double = 0.04
+    @DefaultsKey(userDefaultsKey: "settings.sameDirectionRepeatSensitivity")
+    var sameDirectionRepeatSensitivity: Double = defaultSameDirectionRepeatSensitivity
+    static let defaultSameDirectionRepeatSensitivity: Double = 0.06
 
     init(appState: AppState) {
         self.appState = appState
         monitor.onSwipe = { [weak self] direction, fingerCount in
             self?.handleSwipe(direction: direction, fingerCount: fingerCount)
         }
+        observerStarter()
     }
 
     func performSetup() {

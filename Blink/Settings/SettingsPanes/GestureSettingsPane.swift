@@ -22,7 +22,7 @@ struct GestureSettingsPane: View {
             }
             BlinkSection("Multiswipes") {
                 allowSameDirectionRepeat
-                if appState.settingsManager.gestureSettingsManager.allowSameDirectionRepeat {
+                if manager.allowSameDirectionRepeat {
                     sameDirectionRepeatSensitivity
                 }
             }
@@ -32,22 +32,20 @@ struct GestureSettingsPane: View {
     private func swipeBinding(for fingerCount: Int) -> Binding<Bool> {
         Binding(
             get: {
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
                 let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
                 let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
 
-                let leftEnabled = gestureSettings.gesture(withID: leftID)?.action == .left
-                let rightEnabled = gestureSettings.gesture(withID: rightID)?.action == .right
+                let leftEnabled = manager.gesture(withID: leftID)?.action == .left
+                let rightEnabled = manager.gesture(withID: rightID)?.action == .right
 
                 return leftEnabled && rightEnabled
             },
             set: { newValue in
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
                 let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
                 let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
 
-                gestureSettings.gesture(withID: leftID)?.action = newValue ? .left : nil
-                gestureSettings.gesture(withID: rightID)?.action = newValue ? .right : nil
+                manager.gesture(withID: leftID)?.action = newValue ? .left : nil
+                manager.gesture(withID: rightID)?.action = newValue ? .right : nil
             }
         )
     }
@@ -79,7 +77,7 @@ struct GestureSettingsPane: View {
             BlinkLabeledContent {
                 resetButton(
                     binding: $manager.sameDirectionRepeatSensitivity,
-                    default: 0.06
+                    default: GestureSettingsManager.defaultSameDirectionRepeatSensitivity
                 )
             } label: {
                 Text("Sensitivity")
