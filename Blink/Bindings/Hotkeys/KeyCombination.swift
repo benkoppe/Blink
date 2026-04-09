@@ -30,6 +30,8 @@ struct KeyCombination: Hashable {
 }
 
 private func getSystemReservedKeyCombinations() -> [KeyCombination] {
+    let supportedModifierMask = controlKey | optionKey | shiftKey | cmdKey
+
     var symbolicHotkeys: Unmanaged<CFArray>?
     let status = CopySymbolicHotKeys(&symbolicHotkeys)
 
@@ -46,7 +48,8 @@ private func getSystemReservedKeyCombinations() -> [KeyCombination] {
         guard
             hotkey[kHISymbolicHotKeyEnabled] as? Bool == true,
             let keyCode = hotkey[kHISymbolicHotKeyCode] as? Int,
-            let modifiers = hotkey[kHISymbolicHotKeyModifiers] as? Int
+            let modifiers = hotkey[kHISymbolicHotKeyModifiers] as? Int,
+            modifiers & ~supportedModifierMask == 0
         else {
             return nil
         }
