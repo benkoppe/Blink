@@ -263,6 +263,7 @@ final class SpaceSwitcher {
             Logger.spaceSwitcher.info("SpaceInfo: <nil>")
             return
         }
+        let missionControlReport = missionControlWindowReport()
         Logger.spaceSwitcher.info(
             """
             SpaceInfo:
@@ -272,9 +273,12 @@ final class SpaceSwitcher {
               frontmostBundleID: \(info.frontmostBundleID ?? "nil")
               currentIndex: \(info.currentIndex)
               spaceCount: \(info.spaceCount)
+              targetDisplayBounds: \(missionControlReport.displayBounds.map(String.init(describing:)) ?? "nil")
             """
         )
-        Logger.spaceSwitcher.info("Mission control: \(isMissionControlActive())")
+        Logger.spaceSwitcher.info(
+            "Mission control: \(missionControlReport.isActive)\n\(missionControlReport.debugDescription)"
+        )
     }
 
     private func displayBounds(for displayIdentifier: String?) -> CGRect? {
@@ -313,44 +317,183 @@ final class SpaceSwitcher {
         return CGRect(dictionaryRepresentation: bounds)
     }
 
-    private func isMissionControlWindow(
-        _ window: [String: Any],
-        displayBounds: CGRect?
-    ) -> Bool {
+    // Layers of interest in Dock's window list
+    private enum DockLayer {
+        static let thumbnail: Int = 17  // Space thumbnail cards (normal desktops)
+        static let overlay: Int = 20  // Fullscreen overlay / label strip
+        static let spaceBacking: Int = -2_147_483_622  // Fullscreen-space preview backing
+        static let wallpaper: Int = -2_147_483_624  // Wallpaper window
+    }
+
+    private func isDockWindow(_ window: [String: Any]) -> Bool {
         guard
             (window[kCGWindowOwnerName as String] as? String) == "Dock",
             let windowOwnerPID = window[kCGWindowOwnerPID as String] as? pid_t,
             let app = NSRunningApplication(processIdentifier: windowOwnerPID),
-            app.bundleIdentifier == "com.apple.dock",
-            window[kCGWindowName as String] == nil,
-            let layer = window[kCGWindowLayer as String] as? Int,
-            layer != 20,
-            let bounds = windowBounds(from: window)
+            app.bundleIdentifier == "com.apple.dock"
         else { return false }
 
-        guard let displayBounds else {
-            return true
+        return true
+    }
+
+    /// Returns true if the supplied Dock window is inset from the display.
+    /// Most always-on Dock helper windows are fullscreen, so the inset is the
+    /// first gate for all Mission Control-specific signals.
+    private func isDockWindowInset(_ window: [String: Any], displayBounds: CGRect) -> Bool {
+        guard isDockWindow(window), let bounds = windowBounds(from: window) else {
+            return false
         }
 
         let widthDelta = displayBounds.width - bounds.width
         let heightDelta = displayBounds.height - bounds.height
-
-        // Fullscreen helper windows cover the entire display even when Mission
-        // Control is not open. The actual Mission Control space strip shrinks
-        // those Dock windows inward, so require a meaningful inset.
         return widthDelta > 40 && heightDelta > 40
     }
 
-    func isMissionControlActive() -> Bool {
+    /// Checks all three known Mission Control window signatures across the full
+    /// on-screen window list for the given display bounds.
+    ///
+    /// Pattern 1 – Desktop thumbnail cards (layer 17)
+    ///   Dock renders a small thumbnail per space when Mission Control is open.
+    ///   These are significantly inset from the display.
+    ///
+    /// Pattern 2 – Empty-space label strip (layer 20, short height)
+    ///   When a desktop space has no windows, Mission Control shows a small
+    ///   label/control strip (≈177×30) instead of a thumbnail card.
+    ///
+    /// Pattern 3 – Fullscreen-space preview (layer -2147483622 + wallpaper pair)
+    ///   For fullscreen/special spaces Mission Control shows an inset backing
+    ///   window at layer -2147483622 paired with a matching inset wallpaper at
+    ///   layer -2147483624. Both are inset from the display by a matching amount.
+    private func isMissionControlActive(
+        in windowList: [[String: Any]],
+        displayBounds: CGRect
+    ) -> Bool {
+        // Collect inset Dock windows grouped by layer for pattern matching
+        var hasInsetThumbnail = false  // Pattern 1
+        var hasInsetLabelStrip = false  // Pattern 2
+        var insetSpaceBackingBounds: [CGRect] = []  // Pattern 3 – backing
+        var insetWallpaperBounds: [CGRect] = []  // Pattern 3 – wallpaper pair
+
+        for window in windowList {
+            guard isDockWindowInset(window, displayBounds: displayBounds),
+                let layer = window[kCGWindowLayer as String] as? Int,
+                let bounds = windowBounds(from: window)
+            else { continue }
+
+            let isUnnamedWindow = window[kCGWindowName as String] == nil
+
+            switch layer {
+            case DockLayer.thumbnail where isUnnamedWindow:
+                hasInsetThumbnail = true
+            case DockLayer.overlay where isUnnamedWindow && bounds.height < 80:
+                hasInsetLabelStrip = true
+            case DockLayer.spaceBacking:
+                insetSpaceBackingBounds.append(bounds)
+            case DockLayer.wallpaper:
+                insetWallpaperBounds.append(bounds)
+            default:
+                break
+            }
+        }
+
+        if hasInsetThumbnail || hasInsetLabelStrip { return true }
+
+        // Pattern 3: require at least one inset backing with a matching inset wallpaper
+        for backingBounds in insetSpaceBackingBounds {
+            for wallpaperBounds in insetWallpaperBounds {
+                let dx = abs(backingBounds.width - wallpaperBounds.width)
+                let dy = abs(backingBounds.height - wallpaperBounds.height)
+                if dx < 10 && dy < 10 { return true }
+            }
+        }
+
+        return false
+    }
+
+    // Kept for per-window debug description in missionControlWindowReport()
+    private func isMissionControlWindow(
+        _ window: [String: Any],
+        displayBounds: CGRect?
+    ) -> Bool {
+        guard let displayBounds else { return false }
+        return isMissionControlActive(in: [window], displayBounds: displayBounds)
+    }
+
+    private func describeMissionControlWindow(
+        _ window: [String: Any],
+        displayBounds: CGRect?
+    ) -> String? {
+        guard (window[kCGWindowOwnerName as String] as? String) == "Dock" else {
+            return nil
+        }
+
+        let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t
+        let bundleID: String
+        if let ownerPID, let app = NSRunningApplication(processIdentifier: ownerPID) {
+            bundleID = app.bundleIdentifier ?? "nil"
+        } else {
+            bundleID = "nil"
+        }
+        let name = window[kCGWindowName as String] as? String ?? "nil"
+        let layer = (window[kCGWindowLayer as String] as? Int).map(String.init) ?? "nil"
+        let bounds = windowBounds(from: window)
+        let widthDelta =
+            bounds.map { bounds in
+                displayBounds.map { $0.width - bounds.width }
+            } ?? nil
+        let heightDelta =
+            bounds.map { bounds in
+                displayBounds.map { $0.height - bounds.height }
+            } ?? nil
+
+        return """
+              ownerPID: \(ownerPID.map(String.init) ?? "nil")
+              bundleID: \(bundleID)
+              name: \(name)
+              layer: \(layer)
+              bounds: \(bounds.map(String.init(describing:)) ?? "nil")
+              widthDelta: \(widthDelta.map(String.init) ?? "nil")
+              heightDelta: \(heightDelta.map(String.init) ?? "nil")
+              matchesMissionControl: \(isMissionControlWindow(window, displayBounds: displayBounds))
+            """
+    }
+
+    private func missionControlWindowReport() -> (
+        isActive: Bool,
+        displayBounds: CGRect?,
+        debugDescription: String
+    ) {
         let targetDisplayBounds = displayBounds(for: spaceInfo?.displayIdentifier)
         let windowList =
             CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
+
+        let isActive =
+            targetDisplayBounds.map {
+                isMissionControlActive(in: windowList, displayBounds: $0)
+            } ?? false
+
+        var dockWindowDescriptions: [String] = []
         for window in windowList {
-            if isMissionControlWindow(window, displayBounds: targetDisplayBounds) {
-                return true
+            if let description = describeMissionControlWindow(
+                window,
+                displayBounds: targetDisplayBounds
+            ) {
+                dockWindowDescriptions.append(description)
             }
         }
-        return false
+
+        let debugDescription =
+            if dockWindowDescriptions.isEmpty {
+                "Detected Dock windows: <none>"
+            } else {
+                "Detected Dock windows:\n" + dockWindowDescriptions.joined(separator: "\n")
+            }
+
+        return (isActive, targetDisplayBounds, debugDescription)
+    }
+
+    func isMissionControlActive() -> Bool {
+        missionControlWindowReport().isActive
     }
 
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
