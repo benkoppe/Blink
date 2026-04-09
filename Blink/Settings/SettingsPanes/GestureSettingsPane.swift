@@ -58,8 +58,13 @@ struct GestureSettingsPane: View {
     var allowSameDirectionRepeat: some View {
         @Bindable var manager = manager
 
-        return Toggle("Allow repeated swipe direction", isOn: $manager.allowSameDirectionRepeat)
-            .annotation("Swipe the same direction multiple times within a single gesture")
+        return Toggle(isOn: $manager.allowSameDirectionRepeat) {
+            HStack {
+                Text("Allow repeated swipe direction")
+                BetaBadge()
+            }
+        }
+        .annotation("Swipe the same direction multiple times within a single gesture")
     }
 
     var sameDirectionRepeatSensitivity: some View {
