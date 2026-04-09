@@ -1,3 +1,12 @@
+# Blink 0.0.7
+
+## What's New
+- Faster & more reliable "jump to index" actions.
+
+## Bug Fixes
+- Holding a keyboard shortcut no longer also triggers the system action after a delay.
+- Properly detect when Mission Control is active in all cases.
+
 # Blink 0.0.6
 
 ## What's New
