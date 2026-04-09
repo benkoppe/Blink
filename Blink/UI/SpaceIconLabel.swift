@@ -305,7 +305,7 @@ struct SpaceIconLabel: View {
                 SingleSpaceIconLabel(appState: appState, spaceInfo: info)
             }
         } else {
-            Image(systemName: "rectangle.3.group")
+            Image(systemName: Constants.sfSymbol)
         }
     }
 }
