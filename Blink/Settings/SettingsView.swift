@@ -23,6 +23,7 @@ extension NavigationIdentifier where RawValue == String {
 
 enum SettingsNavigationIdentifier: String, NavigationIdentifier {
     case general = "General"
+    case gestures = "Gestures"
     case hotkeys = "Hotkeys"
     case menuBar = "Menu Bar"
     case about = "About"
@@ -94,6 +95,8 @@ struct SettingsView: View {
         switch navigationIdentifier {
         case .general:
             GeneralSettingsPane()
+        case .gestures:
+            GestureSettingsPane()
         case .menuBar:
             MenuBarSettingsPane()
         case .hotkeys:
@@ -118,6 +121,7 @@ struct SettingsView: View {
     private func icon(for identifier: SettingsNavigationIdentifier) -> IconResource {
         switch identifier {
         case .general: .systemSymbol("gearshape")
+        case .gestures: .systemSymbol("hand.draw.fill")
         case .menuBar: .systemSymbol("swatchpalette")
         case .hotkeys: .systemSymbol("keyboard")
         case .about: .systemSymbol(Constants.sfSymbol)

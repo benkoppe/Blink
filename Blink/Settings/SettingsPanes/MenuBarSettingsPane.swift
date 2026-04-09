@@ -15,7 +15,7 @@ struct MenuBarSettingsPane: View {
 
     @State private var resetAllConfirmationPresented = false
 
-    private var menuBarSettingsManager: MenuBarSettingsManager {
+    private var manager: MenuBarSettingsManager {
         appState.settingsManager.menuBarSettingsManager
     }
 
@@ -42,25 +42,26 @@ struct MenuBarSettingsPane: View {
             isPresented: $resetAllConfirmationPresented
         ) {
             Button("Reset", role: .destructive) {
-                menuBarSettingsManager.resetAll()
+                manager.resetAll()
             }
         } message: {
             Text("This will replace every menu bar setting with its default.")
         }
     }
 
-    var previewSection: some View {
-        return BlinkSection("Preview") {
-            PreviewSpaceIconLabel(appState: appState, style: menuBarSettingsManager.iconStyle)
+    @ViewBuilder
+    private var previewSection: some View {
+        BlinkSection("Preview") {
+            PreviewSpaceIconLabel(appState: appState, style: manager.iconStyle)
                 .frame(height: 30)
         }
     }
 
-    var stylePicker: some View {
-        @Bindable var settings = menuBarSettingsManager
-
-        return BlinkLabeledContent {
-            Picker("Display", selection: $settings.iconStyle) {
+    @ViewBuilder
+    private var stylePicker: some View {
+        @Bindable var manager = manager
+        BlinkLabeledContent {
+            Picker("Display", selection: $manager.iconStyle) {
                 ForEach(MenuBarIconStyle.allCases, id: \.self) { style in
                     HStack(spacing: 7) {
                         PreviewSpaceIconLabel(appState: appState, style: style)
@@ -83,22 +84,22 @@ struct MenuBarSettingsPane: View {
         }
     }
 
-    var barAppearanceEditor: some View {
-        @Bindable var settings = menuBarSettingsManager
-
-        return VStack {
+    @ViewBuilder
+    private var barAppearanceEditor: some View {
+        @Bindable var manager = manager
+        VStack {
             BlinkLabeledContent {
                 BlinkSlider(
-                    LocalizedStringKey(settings.iconSize.formatted()),
-                    value: $settings.iconSize,
+                    LocalizedStringKey(manager.iconSize.formatted()),
+                    value: $manager.iconSize,
                     in: 10...40,
                     step: 1
                 )
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
-                        binding: $settings.iconSize, default: MenuBarSettingsManager.defaultIconSize
+                    ResetButton(
+                        binding: $manager.iconSize, default: MenuBarSettingsManager.defaultIconSize
                     )
                 } label: {
                     Text("Size")
@@ -111,16 +112,16 @@ struct MenuBarSettingsPane: View {
 
             BlinkLabeledContent {
                 BlinkSlider(
-                    LocalizedStringKey(settings.iconCornerRadius.formatted()),
-                    value: $settings.iconCornerRadius,
+                    LocalizedStringKey(manager.iconCornerRadius.formatted()),
+                    value: $manager.iconCornerRadius,
                     in: 0...20,
                     step: 1
                 )
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
-                        binding: $settings.iconCornerRadius,
+                    ResetButton(
+                        binding: $manager.iconCornerRadius,
                         default: MenuBarSettingsManager.defaultIconCornerRadius)
                 } label: {
                     Text("Corner radius")
@@ -133,16 +134,16 @@ struct MenuBarSettingsPane: View {
 
             BlinkLabeledContent {
                 BlinkSlider(
-                    LocalizedStringKey(settings.iconSpacing.formatted()),
-                    value: $settings.iconSpacing,
+                    LocalizedStringKey(manager.iconSpacing.formatted()),
+                    value: $manager.iconSpacing,
                     in: 0...10,
                     step: 0.5
                 )
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
-                        binding: $settings.iconSpacing,
+                    ResetButton(
+                        binding: $manager.iconSpacing,
                         default: MenuBarSettingsManager.defaultIconSpacing)
                 } label: {
                     Text("Spacing")
@@ -153,20 +154,6 @@ struct MenuBarSettingsPane: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
-        -> some View
-    {
-        Button {
-            binding.wrappedValue = defaultValue
-        } label: {
-            Image(systemName: "arrow.counterclockwise.circle.fill")
-        }
-        .buttonStyle(.borderless)
-        .help("Reset to default")
-        .disabled(binding.wrappedValue == defaultValue)
     }
 }
 

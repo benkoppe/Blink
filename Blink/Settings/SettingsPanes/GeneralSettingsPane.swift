@@ -11,7 +11,7 @@ import SwiftUI
 struct GeneralSettingsPane: View {
     @Environment(AppState.self) private var appState
 
-    var manager: GeneralSettingsManager {
+    private var manager: GeneralSettingsManager {
         appState.settingsManager.generalSettingsManager
     }
 
@@ -25,62 +25,30 @@ struct GeneralSettingsPane: View {
                 enableBindings
             }
 
-            BlinkSection {
+            BlinkSection("Behavior") {
                 wrapSpaceSwitching
-            }
-
-            BlinkSection("Gestures") {
-                gestures(for: 3)
-                gestures(for: 4)
             }
         }
     }
 
-    var launchAtLogin: some View {
+    @ViewBuilder
+    private var launchAtLogin: some View {
         LaunchAtLogin.Toggle()
     }
 
-    var enableBindings: some View {
+    @ViewBuilder
+    private var enableBindings: some View {
         @Bindable var manager = manager
-
-        return Toggle("Enable bindings", isOn: $manager.bindingsEnabled)
+        Toggle("Enable bindings", isOn: $manager.bindingsEnabled)
             .annotation("Fully disable all gestures and hotkeys")
     }
 
-    var wrapSpaceSwitching: some View {
+    @ViewBuilder
+    private var wrapSpaceSwitching: some View {
         @Bindable var manager = manager
-
-        return Toggle("Wrap spaces", isOn: $manager.wrapSpaceSwitching)
+        Toggle("Wrap spaces", isOn: $manager.wrapSpaceSwitching)
             .annotation(
                 "Going left from Space 1 jumps to the last space, and vice versa (a little clunky)")
-    }
-
-    private func swipeBinding(for fingerCount: Int) -> Binding<Bool> {
-        Binding(
-            get: {
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
-                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
-                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
-
-                let leftEnabled = gestureSettings.gesture(withID: leftID)?.action == .left
-                let rightEnabled = gestureSettings.gesture(withID: rightID)?.action == .right
-
-                return leftEnabled && rightEnabled
-            },
-            set: { newValue in
-                let gestureSettings = appState.settingsManager.gestureSettingsManager
-                let leftID = SwipeGestureID(direction: .left, fingerCount: fingerCount)
-                let rightID = SwipeGestureID(direction: .right, fingerCount: fingerCount)
-
-                gestureSettings.gesture(withID: leftID)?.action = newValue ? .left : nil
-                gestureSettings.gesture(withID: rightID)?.action = newValue ? .right : nil
-            }
-        )
-    }
-
-    func gestures(for fingerCount: Int) -> some View {
-        Toggle("\(fingerCount)-finger Swipes", isOn: swipeBinding(for: fingerCount))
-            .annotation("Switch spaces with \(fingerCount) fingers")
     }
 }
 
