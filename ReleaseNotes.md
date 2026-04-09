@@ -1,3 +1,12 @@
+# Blink 0.0.6
+
+## What's New
+- Blink can now override system hotkeys like ctrl + left / right
+  - Default keybinds have been adjusted to simpler variants
+
+## Bug Fixes
+- Instant space switches once again work in fullscreen apps.
+
 # Blink 0.0.5
 
 ## What's New
