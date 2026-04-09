@@ -46,12 +46,17 @@ final class HotkeySettingsManager {
 
             if let data = dict?[hotkey.action.rawValue] {
                 do {
-                    hotkey.keyCombination = try decoder.decode(
-                        KeyCombination.self,
+                    let keyCombination = try decoder.decode(
+                        KeyCombination?.self,
                         from: data
                     )
+                    hotkey.keyCombination =
+                        keyCombination == hotkey.action.defaultKeyCombination
+                        ? hotkey.action.defaultKeyCombination
+                        : keyCombination
                 } catch {
                     Logger.hotkeySettingsManager.error("Error decoding hotkey: \(error)")
+                    hotkey.keyCombination = hotkey.action.defaultKeyCombination
                 }
             } else {
                 hotkey.keyCombination = hotkey.action.defaultKeyCombination
@@ -105,6 +110,10 @@ final class HotkeySettingsManager {
         for hotkey in hotkeys {
             hotkey.assignAppState(appState)
 
+            guard hotkey.keyCombination != hotkey.action.defaultKeyCombination else {
+                continue
+            }
+
             do {
                 dict[hotkey.action.rawValue] = try encoder.encode(hotkey.keyCombination)
             } catch {
@@ -112,7 +121,11 @@ final class HotkeySettingsManager {
             }
         }
 
-        UserDefaults.standard.set(dict, forKey: "hotkeys")
+        if dict.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "hotkeys")
+        } else {
+            UserDefaults.standard.set(dict, forKey: "hotkeys")
+        }
     }
 
     // MARK: - Public API
