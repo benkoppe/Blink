@@ -18,11 +18,32 @@ final class HotkeyRecorderModel {
     let hotkey: Hotkey
 
     @ObservationIgnored
-    private lazy var monitor = LocalEventMonitor(mask: .keyDown) { [weak self] event in
-        guard let self else { return event }
-        handleKeyDown(event: event)
-        return nil
-    }
+    private lazy var monitor = EventTap(
+        label: "HotkeyRecorder",
+        options: .defaultTap,
+        location: .hidEventTap,
+        place: .headInsertEventTap,
+        types: [.keyDown],
+        callback: { [weak self] proxy, type, event in
+            guard let self else { return event }
+
+            switch type {
+            case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                proxy.enable()
+                return event
+
+            case .keyDown:
+                guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
+                    return nil
+                }
+                handleKeyDown(event: event)
+                return nil
+
+            default:
+                return event
+            }
+        }
+    )
 
     init(hotkey: Hotkey, appState: AppState?) {
         self.hotkey = hotkey
@@ -32,19 +53,19 @@ final class HotkeyRecorderModel {
     func startRecording() {
         guard !isRecording else { return }
         hotkey.disable()
-        monitor.start()
+        monitor.enable()
         isRecording = true
     }
 
     func stopRecording() {
         guard isRecording else { return }
-        monitor.stop()
+        monitor.disable()
         hotkey.enable()
         isRecording = false
     }
 
-    private func handleKeyDown(event: NSEvent) {
-        let keyCombination = KeyCombination(event: event)
+    private func handleKeyDown(event: CGEvent) {
+        let keyCombination = KeyCombination(cgEvent: event)
 
         guard !keyCombination.modifiers.isEmpty else {
             if keyCombination.key == .escape {

@@ -27,6 +27,12 @@ struct KeyCombination: Hashable {
         let modifiers = Modifiers(nsEventFlags: event.modifierFlags)
         self.init(key: key, modifiers: modifiers)
     }
+
+    init(cgEvent: CGEvent) {
+        let key = KeyCode(rawValue: Int(cgEvent.getIntegerValueField(.keyboardEventKeycode)))
+        let modifiers = Modifiers(cgEventFlags: cgEvent.flags)
+        self.init(key: key, modifiers: modifiers)
+    }
 }
 
 private func getSystemReservedKeyCombinations() -> [KeyCombination] {
