@@ -101,6 +101,13 @@ private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
 // For an unknown reason, this must be used as zoomDeltaX
 private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
 
+// Large bursts of otherwise-valid instant DockSwipe commits can make Dock fall
+// back to its animated transition path. Breaking long jumps into short chunks
+// with a tiny pause keeps each batch on the instant path.
+private let kInstantGestureChunkSize = 4
+private let kInstantGestureChunkDelayMicros: useconds_t = 8_000
+private let kInstantGestureChunkThreshold = 8
+
 // MARK - SpaceInfo
 
 struct SpaceInfo: Equatable {
@@ -563,9 +570,19 @@ final class SpaceSwitcher {
     private func postInstantGestures(_ direction: Direction, count: Int) -> Bool {
         guard count >= 0 else { return false }
 
-        for _ in 0..<count {
+        for step in 0..<count {
             let didPost = autoreleasepool { postInstantGesture(direction) }
             guard didPost else { return false }
+
+            let completed = step + 1
+            let shouldPause =
+                count >= kInstantGestureChunkThreshold
+                && completed < count
+                && completed.isMultiple(of: kInstantGestureChunkSize)
+
+            if shouldPause {
+                usleep(kInstantGestureChunkDelayMicros)
+            }
         }
 
         return true
