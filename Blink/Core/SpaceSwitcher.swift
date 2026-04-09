@@ -178,16 +178,17 @@ final class SpaceSwitcher {
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
         guard let info = spaceInfo, info.spaceCount > 0 else { return false }
-        let target = min(index, info.spaceCount - 1)
+        guard (0..<info.spaceCount).contains(index) else { return false }
+        let target = index
         guard target != info.currentIndex else {
-            return index < info.spaceCount
+            return true
         }
         let direction: Direction = target > info.currentIndex ? .right : .left
         let steps = abs(target - info.currentIndex)
         for _ in 0..<steps {
             guard postGesture(direction) else { return false }
         }
-        return index < info.spaceCount
+        return true
     }
 
     func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
