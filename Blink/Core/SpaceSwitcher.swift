@@ -264,21 +264,76 @@ final class SpaceSwitcher {
         Logger.spaceSwitcher.info("Mission control: \(isMissionControlActive())")
     }
 
+    private func displayBounds(for displayIdentifier: String?) -> CGRect? {
+        guard let displayIdentifier else { return nil }
+
+        var maxDisplayCount: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &maxDisplayCount) == .success,
+            maxDisplayCount > 0
+        else { return nil }
+
+        var displayIDs = Array(repeating: CGDirectDisplayID(), count: Int(maxDisplayCount))
+        var displayCount: UInt32 = 0
+        guard
+            CGGetOnlineDisplayList(maxDisplayCount, &displayIDs, &displayCount)
+                == .success
+        else { return nil }
+
+        for displayID in displayIDs.prefix(Int(displayCount)) {
+            guard
+                let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue(),
+                let uuidString = CFUUIDCreateString(nil, uuid) as String?
+            else { continue }
+
+            if uuidString == displayIdentifier {
+                return CGDisplayBounds(displayID)
+            }
+        }
+
+        return nil
+    }
+
+    private func windowBounds(from window: [String: Any]) -> CGRect? {
+        guard let bounds = window[kCGWindowBounds as String] as? NSDictionary else {
+            return nil
+        }
+        return CGRect(dictionaryRepresentation: bounds)
+    }
+
+    private func isMissionControlWindow(
+        _ window: [String: Any],
+        displayBounds: CGRect?
+    ) -> Bool {
+        guard
+            (window[kCGWindowOwnerName as String] as? String) == "Dock",
+            let windowOwnerPID = window[kCGWindowOwnerPID as String] as? pid_t,
+            let app = NSRunningApplication(processIdentifier: windowOwnerPID),
+            app.bundleIdentifier == "com.apple.dock",
+            window[kCGWindowName as String] == nil,
+            let layer = window[kCGWindowLayer as String] as? Int,
+            layer != 20,
+            let bounds = windowBounds(from: window)
+        else { return false }
+
+        guard let displayBounds else {
+            return true
+        }
+
+        let widthDelta = displayBounds.width - bounds.width
+        let heightDelta = displayBounds.height - bounds.height
+
+        // Fullscreen helper windows cover the entire display even when Mission
+        // Control is not open. The actual Mission Control space strip shrinks
+        // those Dock windows inward, so require a meaningful inset.
+        return widthDelta > 40 && heightDelta > 40
+    }
+
     func isMissionControlActive() -> Bool {
+        let targetDisplayBounds = displayBounds(for: spaceInfo?.displayIdentifier)
         let windowList =
             CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
         for window in windowList {
-            if  // window must be owned by "Dock" process
-            (window["kCGWindowOwnerName"] as? String) == "Dock",
-
-                // ensure the owner is not some other process named "Dock" (seems unlikely though)
-                let windowOwnerPID = window["kCGWindowOwnerPID"] as? pid_t,
-                let app = NSRunningApplication(processIdentifier: windowOwnerPID),
-                app.bundleIdentifier == "com.apple.dock",
-
-                // window must have no title
-                window["kCGWindowName"] == nil
-            {
+            if isMissionControlWindow(window, displayBounds: targetDisplayBounds) {
                 return true
             }
         }
