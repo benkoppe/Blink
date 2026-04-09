@@ -6,12 +6,14 @@
 //
 
 import Foundation
-import Observation
+import ObservableDefaults
 
-@MainActor @Observable
+@MainActor @ObservableDefaults(autoInit: false)
 final class HotkeySettingsManager {
+    private static let hotkeysDefaultsKey = "hotkeys"
+
     /// All hotkeys.
-    private(set) var hotkeys = BoundAction.allCases.map { action in
+    @ObservableOnly private(set) var hotkeys = BoundAction.allCases.map { action in
         Hotkey(keyCombination: nil, action: action)
     }
 
@@ -22,7 +24,7 @@ final class HotkeySettingsManager {
     private let decoder = JSONDecoder()
 
     /// The shared app state.
-    @ObservationIgnored private(set) weak var appState: AppState?
+    @Ignore private(set) weak var appState: AppState?
 
     init(appState: AppState) {
         self.appState = appState
@@ -39,7 +41,8 @@ final class HotkeySettingsManager {
     private func loadInitialState() {
         guard let appState else { return }
 
-        let dict = UserDefaults.standard.dictionary(forKey: "hotkeys") as? [String: Data]
+        let dict =
+            UserDefaults.standard.dictionary(forKey: Self.hotkeysDefaultsKey) as? [String: Data]
 
         for hotkey in hotkeys {
             hotkey.assignAppState(appState)
@@ -122,9 +125,9 @@ final class HotkeySettingsManager {
         }
 
         if dict.isEmpty {
-            UserDefaults.standard.removeObject(forKey: "hotkeys")
+            UserDefaults.standard.removeObject(forKey: Self.hotkeysDefaultsKey)
         } else {
-            UserDefaults.standard.set(dict, forKey: "hotkeys")
+            UserDefaults.standard.set(dict, forKey: Self.hotkeysDefaultsKey)
         }
     }
 

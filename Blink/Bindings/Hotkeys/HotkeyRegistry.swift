@@ -99,7 +99,11 @@ final class HotkeyRegistry {
     ///     the event kind specified by `eventKind`.
     ///
     /// - Returns: The registration's identifier on success, `nil` on failure.
-    func register(hotkey: Hotkey, eventKind: EventKind, handler: @escaping () -> Void) -> UInt32? {
+    func register(
+        hotkey: Hotkey,
+        eventKind: EventKind,
+        handler: @escaping () -> Void
+    ) -> UInt32? {
         enum Context {
             static var currentID: UInt32 = 0
         }
@@ -151,10 +155,7 @@ final class HotkeyRegistry {
     }
 
     private func handleKeyDownEvent(_ event: CGEvent) -> CGEvent? {
-        guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
-            return event
-        }
-
+        let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         let key = KeyCode(rawValue: Int(event.getIntegerValueField(.keyboardEventKeycode)))
         let modifiers = Modifiers(cgEventFlags: event.flags)
 
@@ -164,6 +165,10 @@ final class HotkeyRegistry {
             })
         else {
             return event
+        }
+
+        guard !isAutorepeat else {
+            return nil
         }
 
         registration.handler()
