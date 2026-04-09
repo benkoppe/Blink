@@ -32,6 +32,10 @@ struct GeneralSettingsPane: View {
             BlinkSection("Gestures") {
                 gestures(for: 3)
                 gestures(for: 4)
+                allowSameDirectionRepeat
+                if appState.settingsManager.gestureSettingsManager.allowSameDirectionRepeat {
+                    sameDirectionRepeatSensitivity
+                }
             }
         }
     }
@@ -81,6 +85,26 @@ struct GeneralSettingsPane: View {
     func gestures(for fingerCount: Int) -> some View {
         Toggle("\(fingerCount)-finger Swipes", isOn: swipeBinding(for: fingerCount))
             .annotation("Switch spaces with \(fingerCount) fingers")
+    }
+
+    var allowSameDirectionRepeat: some View {
+        @Bindable var manager = appState.settingsManager.gestureSettingsManager
+
+        return Toggle("Allow repeated swipe direction", isOn: $manager.allowSameDirectionRepeat)
+            .annotation("Swipe the same direction multiple times within a single gesture")
+    }
+
+    var sameDirectionRepeatSensitivity: some View {
+        @Bindable var manager = appState.settingsManager.gestureSettingsManager
+
+        return Slider(value: $manager.sameDirectionRepeatSensitivity, in: 0...0.18) {
+            Text("Sensitivity")
+        } minimumValueLabel: {
+            Text("Low")
+        } maximumValueLabel: {
+            Text("High")
+        }
+        .annotation("How much additional travel is required before the same direction fires again")
     }
 }
 

@@ -20,6 +20,9 @@ final class GestureSettingsManager {
     @ObservationIgnored private(set) weak var appState: AppState?
     @ObservationIgnored private let monitor = SwipeGestureMonitor()
 
+    var allowSameDirectionRepeat: Bool = false
+    var sameDirectionRepeatSensitivity: Double = 0.04
+
     init(appState: AppState) {
         self.appState = appState
         monitor.onSwipe = { [weak self] direction, fingerCount in
@@ -74,6 +77,9 @@ final class GestureSettingsManager {
             monitor.stopMonitoring()
             return
         }
+
+        monitor.allowSameDirectionRepeat = self.allowSameDirectionRepeat
+        monitor.sameDirectionRepeatSensitivity = self.sameDirectionRepeatSensitivity
 
         let anyEnabled = gestures.contains { $0.action != nil }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()

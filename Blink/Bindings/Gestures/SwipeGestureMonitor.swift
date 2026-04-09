@@ -30,11 +30,23 @@ final class SwipeGestureMonitor {
     /// Parameters: (direction, fingerCount)
     var onSwipe: ((SwipeDirection, Int) -> Void)?
 
+    /// When true, the same direction can fire multiple times within a single gesture.
+    var allowSameDirectionRepeat: Bool = false
+
+    /// Additional delta that must accumulate (beyond the base threshold) before the
+    /// same direction can fire again. Only meaningful when `allowSameDirectionRepeat`
+    /// is true. Same scale as `kSwipeDeltaThreshold` (0 = fires as easily as the
+    /// first swipe, higher = harder to repeat).
+    var sameDirectionRepeatSensitivity: Double = 0.06
+
     private var eventTap: EventTap?
 
     private struct GestureState {
         var isActive = false
         var lastFiredDirection: SwipeDirection?
+        /// Accumulates delta in the same direction after a swipe fires, used to
+        /// gate same-direction repeats. Reset to 0 each time a swipe fires.
+        var postFireAccumulator: Double = 0
         var accumulatedDeltaX: Double = 0
         var accumulatedDeltaY: Double = 0
         var previousPositions: [String: CGPoint] = [:]
@@ -43,6 +55,7 @@ final class SwipeGestureMonitor {
             // print("reset state")
             isActive = false
             lastFiredDirection = nil
+            postFireAccumulator = 0
             accumulatedDeltaX = 0
             accumulatedDeltaY = 0
             previousPositions = [:]
@@ -146,11 +159,17 @@ final class SwipeGestureMonitor {
         let direction: SwipeDirection = state.accumulatedDeltaX > 0 ? .right : .left
 
         if direction == state.lastFiredDirection {
-            state.accumulatedDeltaX = 0
-            return
+            state.postFireAccumulator += abs(dx)
+            guard allowSameDirectionRepeat,
+                state.postFireAccumulator >= sameDirectionRepeatSensitivity
+            else {
+                state.accumulatedDeltaX = 0
+                return
+            }
         }
 
         state.lastFiredDirection = direction
+        state.postFireAccumulator = 0
         state.accumulatedDeltaX = 0
         // print("firing with \(direction)")
         onSwipe?(direction, activeFingerCount)
