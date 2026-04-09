@@ -97,14 +97,41 @@ struct GeneralSettingsPane: View {
     var sameDirectionRepeatSensitivity: some View {
         @Bindable var manager = appState.settingsManager.gestureSettingsManager
 
-        return Slider(value: $manager.sameDirectionRepeatSensitivity, in: 0...0.18) {
-            Text("Sensitivity")
-        } minimumValueLabel: {
-            Text("Low")
-        } maximumValueLabel: {
-            Text("High")
+        return BlinkLabeledContent {
+            BlinkSlider(
+                LocalizedStringKey(manager.sameDirectionRepeatSensitivity.formatted()),
+                value: $manager.sameDirectionRepeatSensitivity,
+                in: 0...0.18,
+                step: 0.01
+            )
+            .frame(height: 20)
+        } label: {
+            BlinkLabeledContent {
+                resetButton(
+                    binding: $manager.sameDirectionRepeatSensitivity,
+                    default: 0.06
+                )
+            } label: {
+                Text("Sensitivity")
+            }
         }
-        .annotation("How much additional travel is required before the same direction fires again")
+        .annotation(
+            "How much additional travel is required before the same direction fires again",
+            spacing: 3)
+    }
+
+    @ViewBuilder
+    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
+        -> some View
+    {
+        Button {
+            binding.wrappedValue = defaultValue
+        } label: {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+        }
+        .buttonStyle(.borderless)
+        .help("Reset to default")
+        .disabled(binding.wrappedValue == defaultValue)
     }
 }
 
