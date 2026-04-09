@@ -320,7 +320,7 @@ final class SpaceSwitcher {
     private enum DockLayer {
         static let thumbnail: Int = 17
         static let overlay: Int = 20
-        static let spaceBacking: Int = -2_147_483_622
+        static let fullscreenPreviewBacking: Int = -2_147_483_622
         static let wallpaper: Int = -2_147_483_624
     }
 
@@ -342,8 +342,8 @@ final class SpaceSwitcher {
             isUnnamed && layer == DockLayer.overlay && bounds.height < 80
         }
 
-        var isFullscreenSpaceBacking: Bool {
-            isUnnamed && layer == DockLayer.spaceBacking
+        var isFullscreenPreviewBacking: Bool {
+            isUnnamed && layer == DockLayer.fullscreenPreviewBacking
         }
 
         func widthDelta(from displayBounds: CGRect) -> CGFloat {
@@ -359,7 +359,7 @@ final class SpaceSwitcher {
                 && heightDelta(from: displayBounds) > 40
         }
 
-        func matchesSize(of other: DockWindowInfo) -> Bool {
+        func matchesPreviewBounds(of other: DockWindowInfo) -> Bool {
             abs(bounds.width - other.bounds.width) < 10
                 && abs(bounds.height - other.bounds.height) < 10
         }
@@ -385,7 +385,7 @@ final class SpaceSwitcher {
         )
     }
 
-    private func missionControlMatches(
+    private func detectedMissionControlWindowIndices(
         for windows: [DockWindowInfo],
         displayBounds: CGRect
     ) -> Set<Int> {
@@ -401,16 +401,16 @@ final class SpaceSwitcher {
             }
         }
 
-        let insetFullscreenBackings = insetWindows.filter { _, window in
-            window.isFullscreenSpaceBacking
+        let insetFullscreenPreviewBackings = insetWindows.filter { _, window in
+            window.isFullscreenPreviewBacking
         }
         let insetWallpapers = insetWindows.filter { _, window in
             window.isWallpaper
         }
 
-        for (backingIndex, backingWindow) in insetFullscreenBackings {
+        for (backingIndex, backingWindow) in insetFullscreenPreviewBackings {
             for (wallpaperIndex, wallpaperWindow) in insetWallpapers
-            where backingWindow.matchesSize(of: wallpaperWindow) {
+            where backingWindow.matchesPreviewBounds(of: wallpaperWindow) {
                 matchingIndices.insert(backingIndex)
                 matchingIndices.insert(wallpaperIndex)
             }
@@ -451,7 +451,7 @@ final class SpaceSwitcher {
         let dockWindows = windowList.compactMap(dockWindowInfo)
         let matchingIndices =
             targetDisplayBounds.map {
-                missionControlMatches(for: dockWindows, displayBounds: $0)
+                detectedMissionControlWindowIndices(for: dockWindows, displayBounds: $0)
             } ?? Set<Int>()
         let isActive = !matchingIndices.isEmpty
 
