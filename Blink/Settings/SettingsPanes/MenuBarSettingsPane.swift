@@ -97,7 +97,7 @@ struct MenuBarSettingsPane: View {
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
+                    ResetButton(
                         binding: $settings.iconSize, default: MenuBarSettingsManager.defaultIconSize
                     )
                 } label: {
@@ -119,7 +119,7 @@ struct MenuBarSettingsPane: View {
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
+                    ResetButton(
                         binding: $settings.iconCornerRadius,
                         default: MenuBarSettingsManager.defaultIconCornerRadius)
                 } label: {
@@ -141,7 +141,7 @@ struct MenuBarSettingsPane: View {
                 .frame(height: 20)
             } label: {
                 BlinkLabeledContent {
-                    resetButton(
+                    ResetButton(
                         binding: $settings.iconSpacing,
                         default: MenuBarSettingsManager.defaultIconSpacing)
                 } label: {
@@ -153,20 +153,6 @@ struct MenuBarSettingsPane: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    func resetButton<Value: Equatable>(binding: Binding<Value>, default defaultValue: Value)
-        -> some View
-    {
-        Button {
-            binding.wrappedValue = defaultValue
-        } label: {
-            Image(systemName: "arrow.counterclockwise.circle.fill")
-        }
-        .buttonStyle(.borderless)
-        .help("Reset to default")
-        .disabled(binding.wrappedValue == defaultValue)
     }
 }
 
