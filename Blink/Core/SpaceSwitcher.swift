@@ -177,18 +177,23 @@ final class SpaceSwitcher {
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
+        refreshSpaceInfo()
+
         guard let info = spaceInfo, info.spaceCount > 0 else { return false }
         guard (0..<info.spaceCount).contains(index) else { return false }
         let target = index
         guard target != info.currentIndex else {
             return true
         }
+
         let direction: Direction = target > info.currentIndex ? .right : .left
         let steps = abs(target - info.currentIndex)
-        for _ in 0..<steps {
-            guard postGesture(direction) else { return false }
+
+        if isMissionControlActive() {
+            return postMissionControlGestures(direction, count: steps)
         }
-        return true
+
+        return postInstantGestures(direction, count: steps)
     }
 
     func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
@@ -551,6 +556,21 @@ final class SpaceSwitcher {
         return true
     }
 
+    /// Batch repeated instant gestures without re-checking space state between steps.
+    /// This keeps large indexed jumps fast by letting WindowServer consume a tight
+    /// burst of already-formed one-space commits.
+    @discardableResult
+    private func postInstantGestures(_ direction: Direction, count: Int) -> Bool {
+        guard count >= 0 else { return false }
+
+        for _ in 0..<count {
+            let didPost = autoreleasepool { postInstantGesture(direction) }
+            guard didPost else { return false }
+        }
+
+        return true
+    }
+
     /// Multi-step gesture trace for switching spaces inside Mission Control.
     /// Sends intermediate changed-phase frames so Mission Control treats the
     /// sequence as a real tracked gesture and commits the switch cleanly.
@@ -627,6 +647,21 @@ final class SpaceSwitcher {
 
         endGesture.post(tap: .cgSessionEventTap)
         endDock.post(tap: .cgSessionEventTap)
+
+        return true
+    }
+
+    @discardableResult
+    private func postMissionControlGestures(
+        _ direction: Direction,
+        count: Int
+    ) -> Bool {
+        guard count >= 0 else { return false }
+
+        for _ in 0..<count {
+            let didPost = autoreleasepool { postMissionControlGesture(direction) }
+            guard didPost else { return false }
+        }
 
         return true
     }
