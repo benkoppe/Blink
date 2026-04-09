@@ -20,7 +20,7 @@ struct GestureSettingsPane: View {
                 gestures(for: 3)
                 gestures(for: 4)
             }
-            BlinkSection("Multiswipes") {
+            BlinkSection("Multiswipe") {
                 allowSameDirectionRepeat
                 if manager.allowSameDirectionRepeat {
                     sameDirectionRepeatSensitivity
