@@ -12,4 +12,7 @@ import Observation
 @MainActor @ObservableDefaults
 final class GeneralSettingsManager {
     var bindingsEnabled: Bool = true
+
+    @DefaultsKey(userDefaultsKey: "settings.wrapSpaceSwitching")
+    var wrapSpaceSwitching: Bool = false
 }

@@ -142,6 +142,10 @@ final class SpaceSwitcher {
     private var windowScreenObserver: NSObjectProtocol?
     private var screenParamsObserver: NSObjectProtocol?
 
+    private var wrapSpaces: Bool {
+        appState?.settingsManager.generalSettingsManager.wrapSpaceSwitching ?? false
+    }
+
     init(appState: AppState) {
         self.appState = appState
 
@@ -412,8 +416,22 @@ final class SpaceSwitcher {
         refreshSpaceInfo()
 
         if let info = spaceInfo {
-            if direction == .left && info.isAtLeftEdge { return false }
-            if direction == .right && info.isAtRightEdge { return false }
+            let shouldWrap =
+                switch direction {
+                case .left: info.isAtLeftEdge
+                case .right: info.isAtRightEdge
+                }
+
+            if shouldWrap {
+                guard wrapSpaces else { return false }
+
+                let targetIndex =
+                    switch direction {
+                    case .left: info.spaceCount - 1
+                    case .right: 0
+                    }
+                return switchToIndex(targetIndex)
+            }
         }
 
         if isMissionControlActive() {
