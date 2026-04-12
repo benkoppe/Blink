@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import os.log
 
 /// A type that receives system events from various locations within the
 /// event stream.
@@ -92,6 +93,13 @@ final class EventTap {
     private var machPort: CFMachPort?
     private var source: CFRunLoopSource?
 
+    /// A copy of the mach port stored without actor isolation so that the C
+    /// event tap callback can re-enable the tap synchronously on timeout without
+    /// waiting for the main actor. Written once during `init` (before any
+    /// callback can fire) and never mutated afterward, so no synchronisation is
+    /// required.
+    fileprivate nonisolated(unsafe) var tapMachPort: CFMachPort?
+
     /// The label associated with the event tap.
     let label: String
 
@@ -141,6 +149,7 @@ final class EventTap {
             return
         }
         self.machPort = machPort
+        self.tapMachPort = machPort
         self.source = source
     }
 
@@ -257,6 +266,26 @@ private nonisolated func handleEvent(
         return Unmanaged.passRetained(event)
     }
     let eventTap = Unmanaged<EventTap>.fromOpaque(refcon).takeUnretainedValue()
+
+    // When macOS disables the tap due to a timeout or user-input event, we must
+    // re-enable it *synchronously* here in the C callback before returning.
+    // Relying solely on the @MainActor callback to call proxy.enable() is unsafe:
+    // the actor hop is asynchronous, and by the time the main actor runs the
+    // closure the kernel's re-enable window has already closed, leaving the tap
+    // permanently dead until the next explicit enable() call (which never comes).
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let port = eventTap.tapMachPort {
+            os_log(
+                .error,
+                log: OSLog(subsystem: Bundle.main.bundleIdentifier ?? "Blink", category: "EventTap"),
+                "Event tap %@ disabled by system (type: %u); re-enabling synchronously.",
+                eventTap.label, type.rawValue
+            )
+            CGEvent.tapEnable(tap: port, enable: true)
+        }
+        // Still dispatch to the @MainActor callback so callers can reset state.
+    }
+
     return EventTap.performCallback(for: eventTap, proxy: proxy, type: type, event: event)
 }
 
