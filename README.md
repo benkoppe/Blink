@@ -54,4 +54,4 @@ Without these people & app inspirations, Blink wouldn't be possible:
 | [BetterTouchTool](https://folivora.ai/) | As far as I can tell, BetterTouchTool (BTT) is the first app to use this trick. Everyone else I've seen has followed BTT. Thanks @fifafu! |
 | RGBCube's [darwin-fast-workspace-switch](https://github.com/RGBCube/ncc/blob/dentride/modules/darwin-fast-workspace-switch.mod.nix) | Decompiled from BTT; original base of Blink's space-switching logic. I had also decompiled BTT to reverse engineer this feature, but I never got it working myself before seeing this.  |
 | jurplel's [InstantSpaceSwitcher](https://github.com/jurplel/InstantSpaceSwitcher) | Around the same time I started working on Blink, I saw this posted to Hacker News. It takes a slightly different approach to Blink in some ways, but it definitely became inspiration behind some features like the Menu Bar UI. |
-| jordanbaird's [Ice](https://github.com/jordanbaird/Ice) | Inspiration for much of Blink's settings UI. |
+| jordanbaird's [Ice](https://github.com/jordanbaird/Ice) | Inspiration for much of Blink's UI. |
