@@ -24,6 +24,9 @@ final class GestureSettingsManager {
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
     var disableSystemSwipeGestures: Bool = true
 
+    @DefaultsKey(userDefaultsKey: "settings.flipSwipeDirection")
+    var flipSwipeDirection: Bool = false
+
     @DefaultsKey(userDefaultsKey: "settings.allowSameDirectionRepeat")
     var allowSameDirectionRepeat: Bool = false
     @DefaultsKey(userDefaultsKey: "settings.sameDirectionRepeatSensitivity")
@@ -86,6 +89,7 @@ final class GestureSettingsManager {
         let bindingsEnabled = appState.settingsManager.generalSettingsManager.bindingsEnabled
         monitor.allowSameDirectionRepeat = allowSameDirectionRepeat
         monitor.sameDirectionRepeatSensitivity = sameDirectionRepeatSensitivity
+        monitor.flipSwipeDirection = flipSwipeDirection
 
         let anyEnabled = bindingsEnabled && gestures.contains { $0.action != nil }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()

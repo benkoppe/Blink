@@ -10,6 +10,13 @@ import Observation
 
 enum SwipeDirection: String, Codable, Hashable {
     case left, right
+
+    var opposite: Self {
+        switch self {
+        case .left: .right
+        case .right: .left
+        }
+    }
 }
 
 struct SwipeGestureID: Codable, Hashable {

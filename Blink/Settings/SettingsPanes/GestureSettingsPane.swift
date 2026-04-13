@@ -21,8 +21,9 @@ struct GestureSettingsPane: View {
                 gestures(for: 4)
             }
 
-            BlinkSection {
+            BlinkSection("Behavior") {
                 disableSystemSwipeGestures
+                flipSwipeDirection
             }
 
             BlinkSection("Multiswipe") {
@@ -65,6 +66,13 @@ struct GestureSettingsPane: View {
         @Bindable var manager = manager
         Toggle("Disable system swipe gestures", isOn: $manager.disableSystemSwipeGestures)
             .annotation("Consume macOS left/right swipe-between-spaces gestures so they do nothing")
+    }
+
+    @ViewBuilder
+    private var flipSwipeDirection: some View {
+        @Bindable var manager = manager
+        Toggle("Flip swipe direction", isOn: $manager.flipSwipeDirection)
+            .annotation("Swap left/right swipe direction")
     }
 
     @ViewBuilder

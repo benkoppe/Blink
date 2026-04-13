@@ -30,6 +30,9 @@ final class SwipeGestureMonitor {
     /// Parameters: (direction, fingerCount)
     var onSwipe: ((SwipeDirection, Int) -> Void)?
 
+    /// Invert swipe direction
+    var flipSwipeDirection: Bool = false
+
     /// When true, the same direction can fire multiple times within a single gesture.
     var allowSameDirectionRepeat: Bool = false
 
@@ -156,7 +159,8 @@ final class SwipeGestureMonitor {
             abs(state.accumulatedDeltaX) >= kSwipeDeltaThreshold
         else { return }
 
-        let direction: SwipeDirection = state.accumulatedDeltaX > 0 ? .right : .left
+        let rawDirection: SwipeDirection = state.accumulatedDeltaX > 0 ? .right : .left
+        let direction = flipSwipeDirection ? rawDirection.opposite : rawDirection
 
         if direction == state.lastFiredDirection {
             state.postFireAccumulator += abs(dx)
