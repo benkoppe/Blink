@@ -1,3 +1,10 @@
+# Blink 0.0.8
+
+## What's New
+- New toggle to consume system space-switching gestures (default is on).
+- New toggle to flip left/right gesture directions.
+- Gesture and hotkey detection is more resilient
+
 # Blink 0.0.7
 
 ## What's New
