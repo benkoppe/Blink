@@ -1,3 +1,8 @@
+# Blink 0.0.9
+
+## What's New
+- Tahoe menu bar icon adjustments.
+
 # Blink 0.0.8
 
 ## What's New
