@@ -54,20 +54,17 @@ struct BlinkMenu: View {
             if let info = switcher.spaceInfo, info.spaceCount > 0 {
                 Divider()
                 Picker(
-                    "Jump to...", systemImage: "pointer.arrow.and.square.on.square.dashed",
+                    "Jump to...", systemImage: "square.and.line.vertical.and.square",
                     selection: jumpSelection
                 ) {
                     ForEach(0..<info.spaceCount, id: \.self) { index in
-                        Label(
-                            "Space \(index + 1)",
-                            systemImage: "\(index + 1).circle.fill"
-                        )
-                        .keyboardShortcut(
-                            from: BoundAction.indexedSpaceActions.indices.contains(index)
-                                ? hotkey(for: BoundAction.indexedSpaceActions[index])
-                                : nil
-                        )
-                        .tag(Optional(index))
+                        Text("Space \(index + 1)")
+                            .keyboardShortcut(
+                                from: BoundAction.indexedSpaceActions.indices.contains(index)
+                                    ? hotkey(for: BoundAction.indexedSpaceActions[index])
+                                    : nil
+                            )
+                            .tag(Optional(index))
                     }
                 }
             }
@@ -87,14 +84,13 @@ struct BlinkMenu: View {
         VStack {
             Text("\(Constants.appName) \(Constants.versionString)")
 
-            Button("Settings...", systemImage: "gearshape.fill") {
+            Button("Settings...", systemImage: "gearshape") {
                 appState.appDelegate?.openSettingsWindow()
             }
             .keyboardShortcut(",")
 
             Button(
-                isEnabled.wrappedValue ? "Disable" : "Enable",
-                systemImage: isEnabled.wrappedValue ? "pause.circle" : "play.circle"
+                isEnabled.wrappedValue ? "Disable" : "Enable"
             ) {
                 isEnabled.wrappedValue.toggle()
             }
