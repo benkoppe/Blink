@@ -20,6 +20,11 @@ struct GestureSettingsPane: View {
                 gestures(for: 3)
                 gestures(for: 4)
             }
+
+            BlinkSection {
+                disableSystemSwipeGestures
+            }
+
             BlinkSection("Multiswipe") {
                 allowSameDirectionRepeat
                 if manager.allowSameDirectionRepeat {
@@ -53,6 +58,13 @@ struct GestureSettingsPane: View {
     private func gestures(for fingerCount: Int) -> some View {
         Toggle("\(fingerCount)-finger Swipes", isOn: swipeBinding(for: fingerCount))
             .annotation("Switch spaces with \(fingerCount) fingers")
+    }
+
+    @ViewBuilder
+    private var disableSystemSwipeGestures: some View {
+        @Bindable var manager = manager
+        Toggle("Disable system swipe gestures", isOn: $manager.disableSystemSwipeGestures)
+            .annotation("Consume macOS left/right swipe-between-spaces gestures so they do nothing")
     }
 
     @ViewBuilder

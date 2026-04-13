@@ -19,6 +19,10 @@ final class GestureSettingsManager {
 
     @Ignore private(set) weak var appState: AppState?
     @Ignore private let monitor = SwipeGestureMonitor()
+    @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
+
+    @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
+    var disableSystemSwipeGestures: Bool = true
 
     @DefaultsKey(userDefaultsKey: "settings.allowSameDirectionRepeat")
     var allowSameDirectionRepeat: Bool = false
@@ -74,19 +78,21 @@ final class GestureSettingsManager {
     private func reconfigure() {
         guard let appState else {
             Logger.gestureSettingsManager.error("Missing app state")
-            return
-        }
-
-        guard appState.settingsManager.generalSettingsManager.bindingsEnabled else {
             monitor.stopMonitoring()
+            systemSwipeSuppressor.stopMonitoring()
             return
         }
 
-        monitor.allowSameDirectionRepeat = self.allowSameDirectionRepeat
-        monitor.sameDirectionRepeatSensitivity = self.sameDirectionRepeatSensitivity
+        let bindingsEnabled = appState.settingsManager.generalSettingsManager.bindingsEnabled
+        monitor.allowSameDirectionRepeat = allowSameDirectionRepeat
+        monitor.sameDirectionRepeatSensitivity = sameDirectionRepeatSensitivity
 
-        let anyEnabled = gestures.contains { $0.action != nil }
+        let anyEnabled = bindingsEnabled && gestures.contains { $0.action != nil }
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()
+
+        let shouldSuppressSystemSwipes = bindingsEnabled && disableSystemSwipeGestures
+        shouldSuppressSystemSwipes
+            ? systemSwipeSuppressor.startMonitoring() : systemSwipeSuppressor.stopMonitoring()
     }
 
     // MARK - Persistence
