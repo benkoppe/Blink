@@ -5,6 +5,10 @@
 
 Blink does a simple job: enabling **instant space switches** on macOS.
 
+Before            |  After
+:-------------------------:|:-------------------------:
+![](https://github.com/user-attachments/assets/6d12c302-2524-4a86-8010-1f1c9975a129) | ![](https://github.com/user-attachments/assets/18e6350f-b03d-44ff-b0b2-c79b3576b9da)
+
 1. [Install](#install)
 2. [Why?](#why)
 3. [Thanks](#thanks)
