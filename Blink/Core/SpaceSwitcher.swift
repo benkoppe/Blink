@@ -101,12 +101,19 @@ private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
 // For an unknown reason, this must be used as zoomDeltaX
 private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
 
-// Large bursts of otherwise-valid instant DockSwipe commits can make Dock fall
-// back to its animated transition path. Breaking long jumps into short chunks
-// with a tiny pause keeps each batch on the instant path.
+private let kDefaultInstantGestureVelocity = 999_999.0
+
+// Interval between per-step MC gestures when posted via asyncAfter.
+// Must be long enough for one run-loop cycle to process the previous event.
+private let kMissionControlStepInterval: TimeInterval = 0.010
+
+// For large instant jumps outside Mission Control, gestures are chunked into
+// groups so Dock doesn't see an overwhelming burst. asyncAfter is used (not
+// usleep) for the same reason as the MC path: Blink's active event tap holds
+// events until the main-thread run loop fires, so usleep just queues them
+// all up and they flush as a burst at the end anyway.
 private let kInstantGestureChunkSize = 4
-private let kInstantGestureChunkDelayMicros: useconds_t = 8_000
-private let kInstantGestureChunkThreshold = 8
+private let kInstantGestureChunkInterval: TimeInterval = 0.040
 
 // MARK - SpaceInfo
 
@@ -141,6 +148,8 @@ final class SpaceSwitcher {
     private(set) var spaceInfo: SpaceInfo?
 
     private let symbols: CGSSymbols?
+
+    private var optimisticCurrentIndex: Int?
 
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
@@ -184,23 +193,23 @@ final class SpaceSwitcher {
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
-        refreshSpaceInfo()
+        let missionControlActive = isMissionControlActive()
 
-        guard let info = spaceInfo, info.spaceCount > 0 else { return false }
+        guard let info = loadActionSpaceInfo(), info.spaceCount > 0 else { return false }
         guard (0..<info.spaceCount).contains(index) else { return false }
-        let target = index
-        guard target != info.currentIndex else {
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+        guard index != currentIndex else {
             return true
         }
 
-        let direction: Direction = target > info.currentIndex ? .right : .left
-        let steps = abs(target - info.currentIndex)
+        let direction: Direction = index > currentIndex ? .right : .left
+        let steps = abs(index - currentIndex)
 
-        if isMissionControlActive() {
-            return postMissionControlGestures(direction, count: steps)
+        if missionControlActive {
+            return postMissionControlJump(direction, steps: steps)
         }
 
-        return postInstantGestures(direction, count: steps)
+        return postInstantJump(direction, steps: steps, targetIndex: index)
     }
 
     func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
@@ -212,6 +221,10 @@ final class SpaceSwitcher {
         // debugLogSpaceInfo()
     }
 
+    private func loadActionSpaceInfo() -> SpaceInfo? {
+        loadSpaceInfo(useCursorDisplay: true) ?? loadSpaceInfo(useCursorDisplay: false) ?? spaceInfo
+    }
+
     // MARK - Workspace notifications
 
     private func subscribeToWorkspaceNotifications() {
@@ -220,7 +233,10 @@ final class SpaceSwitcher {
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            self?.optimisticCurrentIndex = nil
+            self?.refreshSpaceInfo()
+        }
 
         appObserver = workspaceNC.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -257,6 +273,48 @@ final class SpaceSwitcher {
     // MARK: - Space info loading
 
     private enum Direction { case left, right }
+
+    private func scheduleAsyncActions(
+        count: Int,
+        interval: TimeInterval,
+        action: @escaping (Int) -> Void,
+        completion: (() -> Void)? = nil
+    ) {
+        let start = DispatchTime.now()
+
+        for index in 0..<count {
+            let deadline = start + Double(index) * interval
+            DispatchQueue.main.asyncAfter(deadline: deadline) {
+                action(index)
+            }
+        }
+
+        guard let completion else { return }
+
+        let completionDeadline = start + Double(count) * interval
+        DispatchQueue.main.asyncAfter(deadline: completionDeadline) {
+            completion()
+        }
+    }
+
+    private func currentIndex(for info: SpaceInfo) -> Int {
+        guard let optimisticCurrentIndex else { return info.currentIndex }
+        return max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
+    }
+
+    private func setOptimisticCurrentIndex(_ index: Int) {
+        optimisticCurrentIndex = index
+
+        guard let info = spaceInfo, (0..<info.spaceCount).contains(index) else { return }
+        spaceInfo = SpaceInfo(
+            currentIndex: index,
+            spaceCount: info.spaceCount,
+            currentSpaceID: info.currentSpaceID,
+            currentSpaceType: info.currentSpaceType,
+            displayIdentifier: info.displayIdentifier,
+            frontmostBundleID: info.frontmostBundleID
+        )
+    }
 
     private enum OverlayMode: String {
         case none
@@ -639,24 +697,22 @@ final class SpaceSwitcher {
     // (See the README)
     //
     // Two different sequences are used:
-    //  - Outside Mission Control: a minimal begin+end pair. The Dock's desktop
-    //    switcher treats swipeProgress on the end event as a direct commit signal,
-    //    so no intermediate frames are needed.
-    //  - Inside Mission Control: a full begin+changed...+end trace. Mission Control
-    //    interprets swipeProgress as a normalized scroll position across the space
-    //    strip and requires intermediate frames to register the gesture as intentional
-    //    before it will commit the switch.
+    //  - Outside Mission Control: a high-velocity began+changed+ended DockSwipe
+    //    trace that Dock treats as an instant desktop-space commit.
+    //  - Inside Mission Control: an explicit progress trace that remains more
+    //    reliable for moving across many spaces in the strip.
 
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
-        refreshSpaceInfo()
-        // debugLogSpaceInfo()
+        let missionControlActive = isMissionControlActive()
+        let info = loadActionSpaceInfo()
 
-        if let info = spaceInfo {
+        if let info {
+            let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
             let shouldWrap =
                 switch direction {
-                case .left: info.isAtLeftEdge
-                case .right: info.isAtRightEdge
+                case .left: currentIndex == 0
+                case .right: currentIndex + 1 >= info.spaceCount
                 }
 
             if shouldWrap {
@@ -671,109 +727,170 @@ final class SpaceSwitcher {
             }
         }
 
-        if isMissionControlActive() {
-            return postMissionControlGesture(direction)
-        } else {
-            return postInstantGesture(direction)
+        if missionControlActive {
+            return postMissionControlStep(direction)
         }
+
+        return postInstantStep(direction, info: info)
     }
 
-    /// Minimal two-event sequence for instant switching outside Mission Control.
+    private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
+        var flagsProgress = Float.leastNonzeroMagnitude
+        if direction == .left {
+            flagsProgress.negate()
+        }
+
+        return Int64(Int32(bitPattern: flagsProgress.bitPattern))
+    }
+
+    /// Synthetic DockSwipe trace for instant switching outside Mission Control.
     @discardableResult
-    private func postInstantGesture(_ direction: Direction) -> Bool {
-        let isRight = direction == .right
-        let flagDir = isRight ? Int64(1) : Int64(0)
-        let progress = isRight ? 2.0 : -2.0
-        let velocity = isRight ? 400.0 : -400.0
+    private func postInstantGesture(
+        _ direction: Direction,
+        velocity: Double = kDefaultInstantGestureVelocity
+    ) -> Bool {
+        postDockSwipe(phase: Phase.began, direction: direction, velocity: velocity)
+            && postDockSwipe(phase: Phase.changed, direction: direction, velocity: velocity)
+            && postDockSwipe(phase: Phase.ended, direction: direction, velocity: velocity)
+    }
 
-        // -- Begin --
-        guard let beginGesture = CGEvent(source: nil),
-            let beginDock = CGEvent(source: nil)
+    @discardableResult
+    private func postDockSwipe(
+        phase: Int64,
+        direction: Direction,
+        velocity: Double
+    ) -> Bool {
+        let velocityX = direction == .right ? velocity : -velocity
+        let flagBits = dockSwipeFlagBits(for: direction)
+
+        guard let gestureEvent = CGEvent(source: nil),
+            let dockEvent = CGEvent(source: nil)
         else { return false }
 
-        beginGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        beginGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
+        gestureEvent.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
+        gestureEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
 
-        beginDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        beginDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        beginDock.setIntegerValueField(GestureField.phase, value: Phase.began)
-        beginDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        beginDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        beginDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        beginDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        beginDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
+        dockEvent.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
+        dockEvent.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
+        dockEvent.setIntegerValueField(GestureField.phase, value: phase)
+        dockEvent.setIntegerValueField(GestureField.scrollFlags, value: flagBits)
+        dockEvent.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
+        dockEvent.setDoubleValueField(GestureField.scrollY, value: 0)
+        dockEvent.setDoubleValueField(GestureField.velocityX, value: velocityX)
+        dockEvent.setDoubleValueField(GestureField.velocityY, value: 0)
+        dockEvent.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
+        dockEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
 
-        beginGesture.post(tap: .cgSessionEventTap)
-        beginDock.post(tap: .cgSessionEventTap)
-
-        // -- End --
-        guard let endGesture = CGEvent(source: nil),
-            let endDock = CGEvent(source: nil)
-        else { return false }
-
-        endGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        endGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        endDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        endDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        endDock.setIntegerValueField(GestureField.phase, value: Phase.ended)
-        endDock.setDoubleValueField(GestureField.swipeProgress, value: progress)
-        endDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        endDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        endDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        endDock.setDoubleValueField(GestureField.velocityX, value: velocity)
-        endDock.setDoubleValueField(GestureField.velocityY, value: 0)
-        endDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        endDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        endGesture.post(tap: .cgSessionEventTap)
-        endDock.post(tap: .cgSessionEventTap)
+        dockEvent.post(tap: .cgSessionEventTap)
+        gestureEvent.post(tap: .cgSessionEventTap)
 
         return true
     }
 
-    /// Batch repeated instant gestures without re-checking space state between steps.
-    /// This keeps large indexed jumps fast by letting WindowServer consume a tight
-    /// burst of already-formed one-space commits.
     @discardableResult
-    private func postInstantGestures(_ direction: Direction, count: Int) -> Bool {
+    private func postInstantGestures(
+        _ direction: Direction,
+        count: Int,
+        velocity: Double
+    ) -> Bool {
         guard count >= 0 else { return false }
 
-        for step in 0..<count {
-            let didPost = autoreleasepool { postInstantGesture(direction) }
+        for _ in 0..<count {
+            let didPost = autoreleasepool { postInstantGesture(direction, velocity: velocity) }
             guard didPost else { return false }
-
-            let completed = step + 1
-            let shouldPause =
-                count >= kInstantGestureChunkThreshold
-                && completed < count
-                && completed.isMultiple(of: kInstantGestureChunkSize)
-
-            if shouldPause {
-                usleep(kInstantGestureChunkDelayMicros)
-            }
         }
 
         return true
     }
 
-    /// Multi-step gesture trace for switching spaces inside Mission Control.
-    /// Sends intermediate changed-phase frames so Mission Control treats the
-    /// sequence as a real tracked gesture and commits the switch cleanly.
+    @discardableResult
+    private func postInstantJump(
+        _ direction: Direction,
+        steps: Int,
+        targetIndex: Int
+    ) -> Bool {
+        let velocity = kDefaultInstantGestureVelocity * Double(steps)
+
+        if steps > kInstantGestureChunkSize {
+            return postChunkedInstantJump(
+                direction,
+                steps: steps,
+                velocity: velocity,
+                targetIndex: targetIndex
+            )
+        }
+
+        let didPost = postInstantGestures(direction, count: steps, velocity: velocity)
+        if didPost {
+            setOptimisticCurrentIndex(targetIndex)
+        }
+        return didPost
+    }
+
+    @discardableResult
+    private func postChunkedInstantJump(
+        _ direction: Direction,
+        steps: Int,
+        velocity: Double,
+        targetIndex: Int
+    ) -> Bool {
+        let chunkCount = (steps + kInstantGestureChunkSize - 1) / kInstantGestureChunkSize
+
+        scheduleAsyncActions(count: chunkCount, interval: kInstantGestureChunkInterval) {
+            [weak self] chunk in
+            guard let self else { return }
+
+            let chunkStart = chunk * kInstantGestureChunkSize
+            let chunkEnd = min(chunkStart + kInstantGestureChunkSize, steps)
+            let chunkSteps = chunkEnd - chunkStart
+            _ = self.postInstantGestures(direction, count: chunkSteps, velocity: velocity)
+        } completion: { [weak self] in
+            self?.setOptimisticCurrentIndex(targetIndex)
+        }
+
+        return true
+    }
+
+    @discardableResult
+    private func postMissionControlJump(_ direction: Direction, steps: Int) -> Bool {
+        // Blink's active event tap delays delivery until the main run loop spins,
+        // so each Mission Control step must be posted from a later turn.
+        scheduleAsyncActions(count: steps, interval: kMissionControlStepInterval) {
+            [weak self] _ in
+            self?.postMissionControlGesture(direction)
+        } completion: { [weak self] in
+            self?.refreshSpaceInfo()
+        }
+
+        return true
+    }
+
+    @discardableResult
+    private func postInstantStep(_ direction: Direction, info: SpaceInfo?) -> Bool {
+        let didPost = postInstantGesture(direction)
+        guard didPost, let info else { return didPost }
+
+        let currentIndex = currentIndex(for: info)
+        let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
+        setOptimisticCurrentIndex(targetIndex)
+        return true
+    }
+
+    @discardableResult
+    private func postMissionControlStep(_ direction: Direction) -> Bool {
+        let didPost = postMissionControlGesture(direction)
+        if didPost { refreshSpaceInfo() }
+        return didPost
+    }
+
     @discardableResult
     private func postMissionControlGesture(_ direction: Direction) -> Bool {
         let isRight = direction == .right
-        // scrollFlags values matching actual DockSwipe events:
-        // 1 = swipe right (toward higher-indexed space), 4 = swipe left
-        let flagDir = isRight ? Int64(1) : Int64(4)
-        // Progress steps from 0 toward ±1.0. Mission Control uses these to
-        // track the gesture and determine which space to land on.
+        let flagDir = dockSwipeFlagBits(for: direction)
         let progressSteps: [Double] = [0.25, 0.5, 0.75]
-        // swipeProgress slightly past ±1.0 commits the switch.
         let progress = isRight ? 1.05 : -1.05
         let velocity = isRight ? 200.0 : -200.0
 
-        // -- Begin --
         guard let beginGesture = CGEvent(source: nil),
             let beginDock = CGEvent(source: nil)
         else { return false }
@@ -793,14 +910,15 @@ final class SpaceSwitcher {
         beginGesture.post(tap: .cgSessionEventTap)
         beginDock.post(tap: .cgSessionEventTap)
 
-        // -- Intermediate changed frames --
         for step in progressSteps {
             guard let changedDock = CGEvent(source: nil) else { return false }
             changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
             changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
             changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
             changedDock.setDoubleValueField(
-                GestureField.swipeProgress, value: isRight ? step : -step)
+                GestureField.swipeProgress,
+                value: isRight ? step : -step
+            )
             changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
             changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
             changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
@@ -811,7 +929,6 @@ final class SpaceSwitcher {
             changedDock.post(tap: .cgSessionEventTap)
         }
 
-        // -- End --
         guard let endGesture = CGEvent(source: nil),
             let endDock = CGEvent(source: nil)
         else { return false }
@@ -837,20 +954,6 @@ final class SpaceSwitcher {
         return true
     }
 
-    @discardableResult
-    private func postMissionControlGestures(
-        _ direction: Direction,
-        count: Int
-    ) -> Bool {
-        guard count >= 0 else { return false }
-
-        for _ in 0..<count {
-            let didPost = autoreleasepool { postMissionControlGesture(direction) }
-            guard didPost else { return false }
-        }
-
-        return true
-    }
 }
 
 // MARK: - Logger
