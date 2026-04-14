@@ -181,9 +181,7 @@ final class SpaceSwitcher {
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
-        refreshSpaceInfo()
-
-        guard let info = spaceInfo, info.spaceCount > 0 else { return false }
+        guard let info = loadActionSpaceInfo(), info.spaceCount > 0 else { return false }
         guard (0..<info.spaceCount).contains(index) else { return false }
         let currentIndex = currentIndex(for: info)
         let target = index
@@ -217,6 +215,10 @@ final class SpaceSwitcher {
         // Use the menu-bar display for the icon (always correct on multi-monitor)
         spaceInfo = loadSpaceInfo(useCursorDisplay: false)
         // debugLogSpaceInfo()
+    }
+
+    private func loadActionSpaceInfo() -> SpaceInfo? {
+        loadSpaceInfo(useCursorDisplay: true) ?? loadSpaceInfo(useCursorDisplay: false) ?? spaceInfo
     }
 
     // MARK - Workspace notifications
@@ -668,20 +670,14 @@ final class SpaceSwitcher {
     // (See the README)
     //
     // Two different sequences are used:
-    //  - Outside Mission Control: a began+changed+ended DockSwipe trace with very
-    //    high velocity and FLT_TRUE_MIN-derived flag bits. This is the sequence
-    //    Dock most reliably treats as an instant desktop-space commit.
-    //  - Inside Mission Control: a full begin+changed...+end trace. Mission Control
-    //    interprets swipeProgress as a normalized scroll position across the space
-    //    strip and requires intermediate frames to register the gesture as intentional
-    //    before it will commit the switch.
+    //  - Outside Mission Control: a high-velocity began+changed+ended DockSwipe
+    //    trace that Dock treats as an instant desktop-space commit.
+    //  - Inside Mission Control: an explicit progress trace that remains more
+    //    reliable for moving across many spaces in the strip.
 
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
-        refreshSpaceInfo()
-        // debugLogSpaceInfo()
-
-        if let info = spaceInfo {
+        if let info = loadActionSpaceInfo() {
             let currentIndex = currentIndex(for: info)
             let shouldWrap =
                 switch direction {
@@ -703,21 +699,21 @@ final class SpaceSwitcher {
 
         if isMissionControlActive() {
             let didPost = postMissionControlGesture(direction)
-            if didPost, let info = spaceInfo {
-                let currentIndex = currentIndex(for: info)
-                let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
-                setOptimisticCurrentIndex(targetIndex)
-            }
-            return didPost
-        } else {
-            let didPost = postInstantGesture(direction)
-            if didPost, let info = spaceInfo {
+            if didPost, let info = loadActionSpaceInfo() {
                 let currentIndex = currentIndex(for: info)
                 let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
                 setOptimisticCurrentIndex(targetIndex)
             }
             return didPost
         }
+
+        let didPost = postInstantGesture(direction)
+        if didPost, let info = loadActionSpaceInfo() {
+            let currentIndex = currentIndex(for: info)
+            let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
+            setOptimisticCurrentIndex(targetIndex)
+        }
+        return didPost
     }
 
     private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
@@ -789,23 +785,14 @@ final class SpaceSwitcher {
         return true
     }
 
-    /// Multi-step gesture trace for switching spaces inside Mission Control.
-    /// Sends intermediate changed-phase frames so Mission Control treats the
-    /// sequence as a real tracked gesture and commits the switch cleanly.
     @discardableResult
     private func postMissionControlGesture(_ direction: Direction) -> Bool {
         let isRight = direction == .right
-        // scrollFlags values matching actual DockSwipe events:
-        // 1 = swipe right (toward higher-indexed space), 4 = swipe left
         let flagDir = isRight ? Int64(1) : Int64(4)
-        // Progress steps from 0 toward ±1.0. Mission Control uses these to
-        // track the gesture and determine which space to land on.
         let progressSteps: [Double] = [0.25, 0.5, 0.75]
-        // swipeProgress slightly past ±1.0 commits the switch.
         let progress = isRight ? 1.05 : -1.05
         let velocity = isRight ? 200.0 : -200.0
 
-        // -- Begin --
         guard let beginGesture = CGEvent(source: nil),
             let beginDock = CGEvent(source: nil)
         else { return false }
@@ -825,14 +812,15 @@ final class SpaceSwitcher {
         beginGesture.post(tap: .cgSessionEventTap)
         beginDock.post(tap: .cgSessionEventTap)
 
-        // -- Intermediate changed frames --
         for step in progressSteps {
             guard let changedDock = CGEvent(source: nil) else { return false }
             changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
             changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
             changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
             changedDock.setDoubleValueField(
-                GestureField.swipeProgress, value: isRight ? step : -step)
+                GestureField.swipeProgress,
+                value: isRight ? step : -step
+            )
             changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
             changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
             changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
@@ -843,7 +831,6 @@ final class SpaceSwitcher {
             changedDock.post(tap: .cgSessionEventTap)
         }
 
-        // -- End --
         guard let endGesture = CGEvent(source: nil),
             let endDock = CGEvent(source: nil)
         else { return false }
@@ -883,6 +870,7 @@ final class SpaceSwitcher {
 
         return true
     }
+
 }
 
 // MARK: - Logger
