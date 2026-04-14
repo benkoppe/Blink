@@ -139,6 +139,7 @@ final class SpaceSwitcher {
     private(set) weak var appState: AppState?
 
     private(set) var spaceInfo: SpaceInfo?
+    private var lastUsedSpaceInfo: SpaceInfo?
 
     private let symbols: CGSSymbols?
 
@@ -203,12 +204,33 @@ final class SpaceSwitcher {
         return postInstantGestures(direction, count: steps)
     }
 
+    @discardableResult
+    func switchToLastUsedSpace() -> Bool {
+        guard let lastUsedSpaceInfo else { return false }
+        return switchToIndex(lastUsedSpaceInfo.currentIndex)
+    }
+
     func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
     func canMoveRight() -> Bool { spaceInfo.map { !$0.isAtRightEdge } ?? false }
 
     func refreshSpaceInfo() {
         // Use the menu-bar display for the icon (always correct on multi-monitor)
-        spaceInfo = loadSpaceInfo(useCursorDisplay: false)
+        let newSpaceInfo = loadSpaceInfo(useCursorDisplay: false)
+
+        if let currentSpaceInfo = spaceInfo, let newSpaceInfo {
+            let activeSpaceChanged: Bool = if let currentSpaceID = currentSpaceInfo.currentSpaceID,
+                                              let newSpaceID = newSpaceInfo.currentSpaceID {
+                currentSpaceID != newSpaceID
+            } else {
+                currentSpaceInfo.currentIndex != newSpaceInfo.currentIndex
+            }
+
+            if activeSpaceChanged {
+                lastUsedSpaceInfo = currentSpaceInfo
+            }
+        }
+
+        spaceInfo = newSpaceInfo
         // debugLogSpaceInfo()
     }
 
