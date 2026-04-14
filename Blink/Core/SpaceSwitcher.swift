@@ -209,7 +209,7 @@ final class SpaceSwitcher {
     func refreshSpaceInfo() {
         // Use the menu-bar display for the icon (always correct on multi-monitor)
         spaceInfo = loadSpaceInfo(useCursorDisplay: false)
-        debugLogSpaceInfo()
+        // debugLogSpaceInfo()
     }
 
     // MARK - Workspace notifications
@@ -645,6 +645,7 @@ final class SpaceSwitcher {
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
         refreshSpaceInfo()
+        debugLogSpaceInfo()
 
         if let info = spaceInfo {
             let shouldWrap =
