@@ -1,3 +1,10 @@
+# Blink 0.0.10
+
+## What's New
+- App Exposé detection.
+  - Blink now lets unmodified gestures through in App Exposé, restoring system functionality.
+- Opening the app while its already open now launches settings.
+
 # Blink 0.0.9
 
 ## What's New
