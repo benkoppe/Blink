@@ -413,7 +413,7 @@ final class SpaceSwitcher {
         var matchingIndices: Set<Int> = []
 
         for (index, window) in insetWindows {
-            if window.isThumbnailCard {
+            if window.isThumbnailCard || window.isWallpaper {
                 matchingIndices.insert(index)
             }
         }
@@ -518,11 +518,7 @@ final class SpaceSwitcher {
     }
 
     func isAppExposeActive() -> Bool {
-        let val = overlayModeReport().mode == .appExpose
-        if val {
-            debugLogSpaceInfo()
-        }
-        return val
+        overlayModeReport().mode == .appExpose
     }
 
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
