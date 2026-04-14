@@ -193,67 +193,23 @@ final class SpaceSwitcher {
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
+        let missionControlActive = isMissionControlActive()
+
         guard let info = loadActionSpaceInfo(), info.spaceCount > 0 else { return false }
         guard (0..<info.spaceCount).contains(index) else { return false }
-        let currentIndex = currentIndex(for: info)
-        let target = index
-        guard target != currentIndex else {
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+        guard index != currentIndex else {
             return true
         }
 
-        let direction: Direction = target > currentIndex ? .right : .left
-        let steps = abs(target - currentIndex)
-        let velocity = kDefaultInstantGestureVelocity * Double(steps)
+        let direction: Direction = index > currentIndex ? .right : .left
+        let steps = abs(index - currentIndex)
 
-        if isMissionControlActive() {
-            // usleep() doesn't work here: Blink's active event tap holds posted
-            // events in the kernel until its callback runs on the main thread.
-            // usleep() blocks the main thread, so all queued events flush to
-            // Mission Control in one burst when we return — MC then caps at ~4
-            // regardless of delay. asyncAfter yields the main thread between
-            // steps so the tap callback can process each event before the next
-            // is posted, delivering them to MC one at a time.
-            for i in 0..<steps {
-                let deadline: DispatchTime = .now() + Double(i) * kMissionControlStepInterval
-                DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
-                    self?.postMissionControlGesture(direction)
-                }
-            }
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + Double(steps) * kMissionControlStepInterval
-            ) { [weak self] in
-                self?.refreshSpaceInfo()
-            }
-            return true
+        if missionControlActive {
+            return postMissionControlJump(direction, steps: steps)
         }
 
-        if steps > kInstantGestureChunkSize {
-            // Large jump: chunk gestures into groups with asyncAfter gaps so
-            // Dock isn't overwhelmed. Same tap-holds-events reasoning as MC path.
-            let chunkCount = (steps + kInstantGestureChunkSize - 1) / kInstantGestureChunkSize
-            for chunk in 0..<chunkCount {
-                let chunkStart = chunk * kInstantGestureChunkSize
-                let chunkEnd = min(chunkStart + kInstantGestureChunkSize, steps)
-                let chunkSteps = chunkEnd - chunkStart
-                let deadline: DispatchTime = .now() + Double(chunk) * kInstantGestureChunkInterval
-                DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
-                    guard let self else { return }
-                    _ = self.postInstantGestures(direction, count: chunkSteps, velocity: velocity)
-                }
-            }
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + Double(chunkCount) * kInstantGestureChunkInterval
-            ) { [weak self] in
-                self?.setOptimisticCurrentIndex(target)
-            }
-            return true
-        }
-
-        let didPost = postInstantGestures(direction, count: steps, velocity: velocity)
-        if didPost {
-            setOptimisticCurrentIndex(target)
-        }
-        return didPost
+        return postInstantJump(direction, steps: steps, targetIndex: index)
     }
 
     func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
@@ -317,6 +273,29 @@ final class SpaceSwitcher {
     // MARK: - Space info loading
 
     private enum Direction { case left, right }
+
+    private func scheduleAsyncActions(
+        count: Int,
+        interval: TimeInterval,
+        action: @escaping (Int) -> Void,
+        completion: (() -> Void)? = nil
+    ) {
+        let start = DispatchTime.now()
+
+        for index in 0..<count {
+            let deadline = start + Double(index) * interval
+            DispatchQueue.main.asyncAfter(deadline: deadline) {
+                action(index)
+            }
+        }
+
+        guard let completion else { return }
+
+        let completionDeadline = start + Double(count) * interval
+        DispatchQueue.main.asyncAfter(deadline: completionDeadline) {
+            completion()
+        }
+    }
 
     private func currentIndex(for info: SpaceInfo) -> Int {
         guard let optimisticCurrentIndex else { return info.currentIndex }
@@ -726,8 +705,9 @@ final class SpaceSwitcher {
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
         let missionControlActive = isMissionControlActive()
+        let info = loadActionSpaceInfo()
 
-        if let info = loadActionSpaceInfo() {
+        if let info {
             let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
             let shouldWrap =
                 switch direction {
@@ -748,18 +728,10 @@ final class SpaceSwitcher {
         }
 
         if missionControlActive {
-            let didPost = postMissionControlGesture(direction)
-            if didPost { refreshSpaceInfo() }
-            return didPost
+            return postMissionControlStep(direction)
         }
 
-        let didPost = postInstantGesture(direction)
-        if didPost, let info = loadActionSpaceInfo() {
-            let currentIndex = currentIndex(for: info)
-            let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
-            setOptimisticCurrentIndex(targetIndex)
-        }
-        return didPost
+        return postInstantStep(direction, info: info)
     }
 
     private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
@@ -832,9 +804,89 @@ final class SpaceSwitcher {
     }
 
     @discardableResult
+    private func postInstantJump(
+        _ direction: Direction,
+        steps: Int,
+        targetIndex: Int
+    ) -> Bool {
+        let velocity = kDefaultInstantGestureVelocity * Double(steps)
+
+        if steps > kInstantGestureChunkSize {
+            return postChunkedInstantJump(
+                direction,
+                steps: steps,
+                velocity: velocity,
+                targetIndex: targetIndex
+            )
+        }
+
+        let didPost = postInstantGestures(direction, count: steps, velocity: velocity)
+        if didPost {
+            setOptimisticCurrentIndex(targetIndex)
+        }
+        return didPost
+    }
+
+    @discardableResult
+    private func postChunkedInstantJump(
+        _ direction: Direction,
+        steps: Int,
+        velocity: Double,
+        targetIndex: Int
+    ) -> Bool {
+        let chunkCount = (steps + kInstantGestureChunkSize - 1) / kInstantGestureChunkSize
+
+        scheduleAsyncActions(count: chunkCount, interval: kInstantGestureChunkInterval) {
+            [weak self] chunk in
+            guard let self else { return }
+
+            let chunkStart = chunk * kInstantGestureChunkSize
+            let chunkEnd = min(chunkStart + kInstantGestureChunkSize, steps)
+            let chunkSteps = chunkEnd - chunkStart
+            _ = self.postInstantGestures(direction, count: chunkSteps, velocity: velocity)
+        } completion: { [weak self] in
+            self?.setOptimisticCurrentIndex(targetIndex)
+        }
+
+        return true
+    }
+
+    @discardableResult
+    private func postMissionControlJump(_ direction: Direction, steps: Int) -> Bool {
+        // Blink's active event tap delays delivery until the main run loop spins,
+        // so each Mission Control step must be posted from a later turn.
+        scheduleAsyncActions(count: steps, interval: kMissionControlStepInterval) {
+            [weak self] _ in
+            self?.postMissionControlGesture(direction)
+        } completion: { [weak self] in
+            self?.refreshSpaceInfo()
+        }
+
+        return true
+    }
+
+    @discardableResult
+    private func postInstantStep(_ direction: Direction, info: SpaceInfo?) -> Bool {
+        let didPost = postInstantGesture(direction)
+        guard didPost, let info else { return didPost }
+
+        let currentIndex = currentIndex(for: info)
+        let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
+        setOptimisticCurrentIndex(targetIndex)
+        return true
+    }
+
+    @discardableResult
+    private func postMissionControlStep(_ direction: Direction) -> Bool {
+        let didPost = postMissionControlGesture(direction)
+        if didPost { refreshSpaceInfo() }
+        return didPost
+    }
+
+    @discardableResult
     private func postMissionControlGesture(_ direction: Direction) -> Bool {
         let isRight = direction == .right
-        let flagDir = isRight ? Int64(1) : Int64(4)
+        let flagDir = dockSwipeFlagBits(for: direction)
         let progressSteps: [Double] = [0.25, 0.5, 0.75]
         let progress = isRight ? 1.05 : -1.05
         let velocity = isRight ? 200.0 : -200.0
