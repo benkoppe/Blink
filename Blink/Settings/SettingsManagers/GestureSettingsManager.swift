@@ -35,6 +35,15 @@ final class GestureSettingsManager {
 
     init(appState: AppState) {
         self.appState = appState
+
+        let spaceSwitcher = appState.spaceSwitcher
+        monitor.shouldIgnoreSwipe = { [weak spaceSwitcher] in
+            spaceSwitcher?.isAppExposeActive() ?? false
+        }
+        systemSwipeSuppressor.shouldBypassSwipeSuppression = { [weak spaceSwitcher] in
+            spaceSwitcher?.isAppExposeActive() ?? false
+        }
+
         monitor.onSwipe = { [weak self] direction, fingerCount in
             self?.handleSwipe(direction: direction, fingerCount: fingerCount)
         }
