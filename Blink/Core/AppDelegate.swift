@@ -62,6 +62,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard let appState else {
+            Logger.appDelegate.warning("Missing app state in applicationShouldHandleReopen")
+            return false
+        }
+        switch appState.permissionsManager.permissionsState {
+        case .hasAllPermissions, .hasRequiredPermissions:
+            openSettingsWindow()
+        case .missingPermissions:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                appState.activate(withPolicy: .regular)
+                appState.openPermissionsWindow()
+            }
+        }
+        return false
+    }
+
     // MARK: - Other Methods
 
     /// Assigns the app state to the delegate.
