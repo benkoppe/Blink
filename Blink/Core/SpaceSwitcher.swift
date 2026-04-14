@@ -23,6 +23,8 @@ private typealias CGSCopyDisplaySpacesFn =
     @convention(c) (Int32, CFString?) -> Unmanaged<CFArray>?
 private typealias CGSCopyMenuBarDisplayFn =
     @convention(c) (Int32) -> Unmanaged<CFString>?
+private typealias CGSCopySpacesForWindowsFn =
+    @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
 
 // MARK - Symbol loader
 
@@ -31,6 +33,7 @@ private struct CGSSymbols {
     let getActiveSpace: CGSGetAciveSpaceFn
     let copyDisplaySpaces: CGSCopyDisplaySpacesFn
     let copyMenuBarDisplayID: CGSCopyMenuBarDisplayFn?  // degrade gracefully if absent
+    let copySpacesForWindows: CGSCopySpacesForWindowsFn?  // degrade gracefully if absent
 
     /// Load all symbols from CoreGraphics
     static func load() -> CGSSymbols? {
@@ -61,6 +64,10 @@ private struct CGSSymbols {
             copyMenuBarDisplayID: sym(
                 "CGSCopyActiveMenuBarDisplayIdentifier",
                 as: CGSCopyMenuBarDisplayFn.self
+            ),
+            copySpacesForWindows: sym(
+                "CGSCopySpacesForWindows",
+                as: CGSCopySpacesForWindowsFn.self
             )
         )
     }
@@ -114,6 +121,7 @@ private let kMissionControlStepInterval: TimeInterval = 0.010
 // all up and they flush as a burst at the end anyway.
 private let kInstantGestureChunkSize = 4
 private let kInstantGestureChunkInterval: TimeInterval = 0.040
+private let kRecentSpaceChangeSuppressionInterval: TimeInterval = 0.4
 
 // MARK - SpaceInfo
 
@@ -150,6 +158,8 @@ final class SpaceSwitcher {
     private let symbols: CGSSymbols?
 
     private var optimisticCurrentIndex: Int?
+    private var recentSpaceChange = false
+    private var recentSpaceChangeResetWorkItem: DispatchWorkItem?
 
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
@@ -160,6 +170,10 @@ final class SpaceSwitcher {
 
     private var wrapSpaces: Bool {
         appState?.settingsManager.generalSettingsManager.wrapSpaceSwitching ?? false
+    }
+
+    private var instantCmdTabSpaceSwitchingEnabled: Bool {
+        appState?.settingsManager.generalSettingsManager.instantCmdTabSpaceSwitching ?? false
     }
 
     init(appState: AppState) {
@@ -205,6 +219,8 @@ final class SpaceSwitcher {
         let direction: Direction = index > currentIndex ? .right : .left
         let steps = abs(index - currentIndex)
 
+        markRecentSpaceChange()
+
         if missionControlActive {
             return postMissionControlJump(direction, steps: steps)
         }
@@ -234,6 +250,7 @@ final class SpaceSwitcher {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            self?.markRecentSpaceChange()
             self?.optimisticCurrentIndex = nil
             self?.refreshSpaceInfo()
         }
@@ -242,7 +259,9 @@ final class SpaceSwitcher {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] notification in
+            self?.handleActivatedApplication(notification)
+        }
 
         screensWakeObserver = workspaceNC.addObserver(
             forName: NSWorkspace.screensDidWakeNotification,
@@ -300,6 +319,21 @@ final class SpaceSwitcher {
     private func currentIndex(for info: SpaceInfo) -> Int {
         guard let optimisticCurrentIndex else { return info.currentIndex }
         return max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
+    }
+
+    private func markRecentSpaceChange() {
+        recentSpaceChange = true
+        recentSpaceChangeResetWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.recentSpaceChange = false
+        }
+        recentSpaceChangeResetWorkItem = workItem
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + kRecentSpaceChangeSuppressionInterval,
+            execute: workItem
+        )
     }
 
     private func setOptimisticCurrentIndex(_ index: Int) {
@@ -579,6 +613,102 @@ final class SpaceSwitcher {
         overlayModeReport().mode == .appExpose
     }
 
+    private func handleActivatedApplication(_ notification: Notification) {
+        guard instantCmdTabSpaceSwitchingEnabled else {
+            refreshSpaceInfo()
+            return
+        }
+
+        guard !recentSpaceChange else {
+            return
+        }
+
+        guard let currentInfo = loadSpaceInfo(useCursorDisplay: false) else {
+            refreshSpaceInfo()
+            return
+        }
+
+        guard
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+            let targetIndex = targetSpaceIndexForActivatedApp(
+                pid: app.processIdentifier,
+                currentInfo: currentInfo
+            )
+        else {
+            refreshSpaceInfo()
+            return
+        }
+
+        if !switchToIndex(targetIndex) {
+            refreshSpaceInfo()
+        }
+    }
+
+    private func targetSpaceIndexForActivatedApp(pid: pid_t, currentInfo: SpaceInfo) -> Int? {
+        guard
+            let cgs = symbols,
+            let copySpacesForWindows = cgs.copySpacesForWindows
+        else { return nil }
+
+        let windowIDs = normalWindowIDs(for: pid)
+        guard !windowIDs.isEmpty else { return nil }
+
+        let connection = cgs.mainConnectionID()
+        guard connection != 0 else { return nil }
+
+        guard
+            let displayDict = loadManagedDisplayDictionary(
+                connection: connection,
+                displayID: currentInfo.displayIdentifier as CFString?
+            )
+        else { return nil }
+
+        let orderedSpaceIDs = orderedSpaceIDs(from: displayDict)
+        guard !orderedSpaceIDs.isEmpty else { return nil }
+
+        guard
+            let rawSpaces = copySpacesForWindows(connection, 7, windowIDs as CFArray)?
+                .takeRetainedValue() as NSArray?
+        else { return nil }
+
+        var foundOtherIndex: Int?
+
+        for entry in rawSpaces {
+            guard let spaceID = (entry as? NSNumber)?.uint64Value else { continue }
+            guard let index = orderedSpaceIDs.firstIndex(of: spaceID) else { continue }
+
+            if index == currentInfo.currentIndex {
+                return nil
+            }
+
+            foundOtherIndex = foundOtherIndex ?? index
+        }
+
+        return foundOtherIndex
+    }
+
+    private func normalWindowIDs(for pid: pid_t) -> [NSNumber] {
+        guard
+            let rawWindows = CGWindowListCopyWindowInfo(
+                [.optionAll, .excludeDesktopElements],
+                kCGNullWindowID
+            ) as? [[String: Any]]
+        else { return [] }
+
+        return rawWindows.compactMap { window in
+            guard
+                let ownerPID = window[kCGWindowOwnerPID as String] as? NSNumber,
+                ownerPID.int32Value == pid,
+                let layer = window[kCGWindowLayer as String] as? Int,
+                layer == 0,
+                let windowID = window[kCGWindowNumber as String] as? NSNumber
+            else { return nil }
+
+            return windowID
+        }
+    }
+
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
         guard let cgs = symbols else { return nil }
 
@@ -592,6 +722,20 @@ final class SpaceSwitcher {
             useCursorDisplay
             ? cursorDisplayIdentifier()
             : cgs.copyMenuBarDisplayID?(connection)?.takeRetainedValue()
+
+        guard let displayDict = loadManagedDisplayDictionary(connection: connection, displayID: displayID)
+        else { return nil }
+
+        return extractSpaceInfo(
+            from: displayDict,
+            globalActiveSpaceID: activeSpaceID,
+            displayIdentifier: displayDict["Display Identifier"] as? String,
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        )
+    }
+
+    private func loadManagedDisplayDictionary(connection: Int32, displayID: CFString?) -> NSDictionary? {
+        guard let cgs = symbols else { return nil }
 
         // Fetch all display/space layout data. Fall back to nil displayID
         // (all displays) if the targeted display yields no results
@@ -619,13 +763,16 @@ final class SpaceSwitcher {
             }
         }
 
-        guard let displayDict = target ?? fallback else { return nil }
-        return extractSpaceInfo(
-            from: displayDict,
-            globalActiveSpaceID: activeSpaceID,
-            displayIdentifier: displayDict["Display Identifier"] as? String,
-            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        )
+        return target ?? fallback
+    }
+
+    private func orderedSpaceIDs(from displayDict: NSDictionary) -> [UInt64] {
+        guard let spacesArray = displayDict["Spaces"] as? NSArray else { return [] }
+
+        return spacesArray.compactMap { item in
+            guard let spaceDict = item as? NSDictionary else { return nil }
+            return (spaceDict["id64"] as? NSNumber)?.uint64Value
+        }
     }
 
     private func extractSpaceInfo(
@@ -867,6 +1014,7 @@ final class SpaceSwitcher {
 
     @discardableResult
     private func postInstantStep(_ direction: Direction, info: SpaceInfo?) -> Bool {
+        markRecentSpaceChange()
         let didPost = postInstantGesture(direction)
         guard didPost, let info else { return didPost }
 
@@ -878,6 +1026,7 @@ final class SpaceSwitcher {
 
     @discardableResult
     private func postMissionControlStep(_ direction: Direction) -> Bool {
+        markRecentSpaceChange()
         let didPost = postMissionControlGesture(direction)
         if didPost { refreshSpaceInfo() }
         return didPost
