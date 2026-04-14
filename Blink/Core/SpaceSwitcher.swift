@@ -258,12 +258,18 @@ final class SpaceSwitcher {
 
     private enum Direction { case left, right }
 
+    private enum OverlayMode: String {
+        case none
+        case appExpose
+        case missionControl
+    }
+
     private func debugLogSpaceInfo() {
         guard let info = spaceInfo else {
             Logger.spaceSwitcher.info("SpaceInfo: <nil>")
             return
         }
-        let missionControlReport = missionControlWindowReport()
+        let overlayReport = overlayModeReport()
         Logger.spaceSwitcher.info(
             """
             SpaceInfo:
@@ -273,11 +279,11 @@ final class SpaceSwitcher {
               frontmostBundleID: \(info.frontmostBundleID ?? "nil")
               currentIndex: \(info.currentIndex)
               spaceCount: \(info.spaceCount)
-              targetDisplayBounds: \(missionControlReport.displayBounds.map(String.init(describing:)) ?? "nil")
+              targetDisplayBounds: \(overlayReport.displayBounds.map(String.init(describing:)) ?? "nil")
             """
         )
         Logger.spaceSwitcher.info(
-            "Mission control: \(missionControlReport.isActive)\n\(missionControlReport.debugDescription)"
+            "Overlay mode: \(overlayReport.mode.rawValue)\n\(overlayReport.debugDescription)"
         )
     }
 
@@ -319,7 +325,8 @@ final class SpaceSwitcher {
 
     private enum DockLayer {
         static let thumbnail: Int = 17
-        static let overlay: Int = 20
+        static let appSwitcherBackdrop: Int = 18
+        static let previewOverlay: Int = 20
         static let fullscreenPreviewBacking: Int = -2_147_483_622
         static let wallpaper: Int = -2_147_483_624
     }
@@ -339,7 +346,7 @@ final class SpaceSwitcher {
         }
 
         var isEmptySpaceLabelStrip: Bool {
-            isUnnamed && layer == DockLayer.overlay && bounds.height < 80
+            isUnnamed && layer == DockLayer.previewOverlay && bounds.height < 80
         }
 
         var isFullscreenPreviewBacking: Bool {
@@ -385,6 +392,16 @@ final class SpaceSwitcher {
         )
     }
 
+    private func hasAppSwitcherBackdrop(in windows: [DockWindowInfo]) -> Bool {
+        windows.contains { $0.layer == DockLayer.appSwitcherBackdrop }
+    }
+
+    private func previewOverlayCount(in windows: [DockWindowInfo]) -> Int {
+        windows.reduce(0) { count, window in
+            count + (window.layer == DockLayer.previewOverlay ? 1 : 0)
+        }
+    }
+
     private func detectedMissionControlWindowIndices(
         for windows: [DockWindowInfo],
         displayBounds: CGRect
@@ -396,7 +413,7 @@ final class SpaceSwitcher {
         var matchingIndices: Set<Int> = []
 
         for (index, window) in insetWindows {
-            if window.isThumbnailCard || window.isEmptySpaceLabelStrip {
+            if window.isThumbnailCard || window.isWallpaper {
                 matchingIndices.insert(index)
             }
         }
@@ -439,8 +456,8 @@ final class SpaceSwitcher {
             """
     }
 
-    private func missionControlWindowReport() -> (
-        isActive: Bool,
+    private func overlayModeReport() -> (
+        mode: OverlayMode,
         displayBounds: CGRect?,
         debugDescription: String
     ) {
@@ -453,7 +470,21 @@ final class SpaceSwitcher {
             targetDisplayBounds.map {
                 detectedMissionControlWindowIndices(for: dockWindows, displayBounds: $0)
             } ?? Set<Int>()
-        let isActive = !matchingIndices.isEmpty
+
+        let hasStrongMissionControlSignal = !matchingIndices.isEmpty
+        let hasBackdrop = hasAppSwitcherBackdrop(in: dockWindows)
+        let layer20Count = previewOverlayCount(in: dockWindows)
+
+        let mode: OverlayMode
+        if hasStrongMissionControlSignal {
+            mode = .missionControl
+        } else if hasBackdrop && layer20Count >= 3 {
+            mode = .missionControl
+        } else if hasBackdrop && (1...2).contains(layer20Count) {
+            mode = .appExpose
+        } else {
+            mode = .none
+        }
 
         var dockWindowDescriptions: [String] = []
         for (index, window) in dockWindows.enumerated() {
@@ -466,18 +497,28 @@ final class SpaceSwitcher {
             }
         }
 
-        let debugDescription =
+        let dockWindowSummary =
             if dockWindowDescriptions.isEmpty {
                 "Detected Dock windows: <none>"
             } else {
                 "Detected Dock windows:\n" + dockWindowDescriptions.joined(separator: "\n")
             }
+        let debugDescription = """
+            hasStrongMissionControlSignal: \(hasStrongMissionControlSignal)
+            hasLayer18Backdrop: \(hasBackdrop)
+            layer20Count: \(layer20Count)
+            \(dockWindowSummary)
+            """
 
-        return (isActive, targetDisplayBounds, debugDescription)
+        return (mode, targetDisplayBounds, debugDescription)
     }
 
     func isMissionControlActive() -> Bool {
-        missionControlWindowReport().isActive
+        overlayModeReport().mode == .missionControl
+    }
+
+    func isAppExposeActive() -> Bool {
+        overlayModeReport().mode == .appExpose
     }
 
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
@@ -609,6 +650,7 @@ final class SpaceSwitcher {
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
         refreshSpaceInfo()
+        // debugLogSpaceInfo()
 
         if let info = spaceInfo {
             let shouldWrap =

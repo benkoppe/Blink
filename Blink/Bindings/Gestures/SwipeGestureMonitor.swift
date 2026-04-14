@@ -42,10 +42,15 @@ final class SwipeGestureMonitor {
     /// first swipe, higher = harder to repeat).
     var sameDirectionRepeatSensitivity: Double = 0.06
 
+    /// When true for the first active frame of a gesture, Blink ignores that gesture
+    /// and lets macOS handle it normally.
+    var shouldIgnoreSwipe: (() -> Bool)?
+
     private var eventTap: EventTap?
 
     private struct GestureState {
         var isActive = false
+        var shouldIgnoreCurrentGesture = false
         var lastFiredDirection: SwipeDirection?
         /// Accumulates delta in the same direction after a swipe fires, used to
         /// gate same-direction repeats. Reset to 0 each time a swipe fires.
@@ -57,6 +62,7 @@ final class SwipeGestureMonitor {
         mutating func reset() {
             // print("reset state")
             isActive = false
+            shouldIgnoreCurrentGesture = false
             lastFiredDirection = nil
             postFireAccumulator = 0
             accumulatedDeltaX = 0
@@ -131,6 +137,15 @@ final class SwipeGestureMonitor {
         if activeFingerCount == 0 {
             // print("fingerCount 0")
             state.reset()
+            return
+        }
+
+        if !state.isActive {
+            state.isActive = true
+            state.shouldIgnoreCurrentGesture = shouldIgnoreSwipe?() ?? false
+        }
+
+        if state.shouldIgnoreCurrentGesture {
             return
         }
 

@@ -22,6 +22,10 @@ private let kGesturePhaseCancelled: Int64 = 8
 final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
     private var suppressingNativeSwipe = false
+    private var bypassingNativeSwipe = false
+
+    /// Return true to let the current native swipe reach macOS unchanged.
+    var shouldBypassSwipeSuppression: (() -> Bool)?
 
     func startMonitoring() {
         guard eventTap == nil else { return }
@@ -38,6 +42,7 @@ final class SystemSwipeSuppressor {
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     self.suppressingNativeSwipe = false
+                    self.bypassingNativeSwipe = false
                     proxy.enable()
                     return cgEvent
 
@@ -61,10 +66,15 @@ final class SystemSwipeSuppressor {
         eventTap?.disable()
         eventTap = nil
         suppressingNativeSwipe = false
+        bypassingNativeSwipe = false
     }
 
     private func handleGestureEvent(_ event: CGEvent) -> CGEvent? {
         guard !isSyntheticOrAppPosted(event) else {
+            return event
+        }
+
+        if bypassingNativeSwipe {
             return event
         }
 
@@ -84,16 +94,23 @@ final class SystemSwipeSuppressor {
 
         switch phase {
         case kGesturePhaseBegan:
-            suppressingNativeSwipe = true
+            let shouldBypass = shouldBypassSwipeSuppression?() ?? false
+            bypassingNativeSwipe = shouldBypass
+            suppressingNativeSwipe = !shouldBypass
+            return shouldBypass ? event : nil
 
         case kGesturePhaseEnded, kGesturePhaseCancelled:
+            let isBypassing = bypassingNativeSwipe
+            bypassingNativeSwipe = false
             suppressingNativeSwipe = false
+            return isBypassing ? event : nil
 
         default:
-            break
+            if bypassingNativeSwipe {
+                return event
+            }
+            return suppressingNativeSwipe ? nil : event
         }
-
-        return nil
     }
 
     private func isHorizontalDockSwipe(_ event: CGEvent) -> Bool {
