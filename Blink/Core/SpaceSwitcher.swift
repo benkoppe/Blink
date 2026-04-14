@@ -105,7 +105,7 @@ private let kDefaultInstantGestureVelocity = 999_999.0
 
 // Interval between per-step MC gestures when posted via asyncAfter.
 // Must be long enough for one run-loop cycle to process the previous event.
-private let kMissionControlStepInterval: TimeInterval = 0.020
+private let kMissionControlStepInterval: TimeInterval = 0.010
 
 // For large instant jumps outside Mission Control, gestures are chunked into
 // groups so Dock doesn't see an overwhelming burst. asyncAfter is used (not
@@ -113,7 +113,7 @@ private let kMissionControlStepInterval: TimeInterval = 0.020
 // events until the main-thread run loop fires, so usleep just queues them
 // all up and they flush as a burst at the end anyway.
 private let kInstantGestureChunkSize = 4
-private let kInstantGestureChunkInterval: TimeInterval = 0.020
+private let kInstantGestureChunkInterval: TimeInterval = 0.040
 
 // MARK - SpaceInfo
 
