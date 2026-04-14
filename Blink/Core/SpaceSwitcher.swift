@@ -413,7 +413,7 @@ final class SpaceSwitcher {
         var matchingIndices: Set<Int> = []
 
         for (index, window) in insetWindows {
-            if window.isThumbnailCard || window.isEmptySpaceLabelStrip {
+            if window.isThumbnailCard {
                 matchingIndices.insert(index)
             }
         }
@@ -470,11 +470,15 @@ final class SpaceSwitcher {
             targetDisplayBounds.map {
                 detectedMissionControlWindowIndices(for: dockWindows, displayBounds: $0)
             } ?? Set<Int>()
+
+        let hasStrongMissionControlSignal = !matchingIndices.isEmpty
         let hasBackdrop = hasAppSwitcherBackdrop(in: dockWindows)
         let layer20Count = previewOverlayCount(in: dockWindows)
 
         let mode: OverlayMode
-        if !matchingIndices.isEmpty {
+        if hasStrongMissionControlSignal {
+            mode = .missionControl
+        } else if hasBackdrop && layer20Count >= 3 {
             mode = .missionControl
         } else if hasBackdrop && (1...2).contains(layer20Count) {
             mode = .appExpose
@@ -500,6 +504,7 @@ final class SpaceSwitcher {
                 "Detected Dock windows:\n" + dockWindowDescriptions.joined(separator: "\n")
             }
         let debugDescription = """
+            hasStrongMissionControlSignal: \(hasStrongMissionControlSignal)
             hasLayer18Backdrop: \(hasBackdrop)
             layer20Count: \(layer20Count)
             \(dockWindowSummary)
@@ -513,7 +518,11 @@ final class SpaceSwitcher {
     }
 
     func isAppExposeActive() -> Bool {
-        overlayModeReport().mode == .appExpose
+        let val = overlayModeReport().mode == .appExpose
+        if val {
+            debugLogSpaceInfo()
+        }
+        return val
     }
 
     private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
@@ -645,7 +654,7 @@ final class SpaceSwitcher {
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
         refreshSpaceInfo()
-        debugLogSpaceInfo()
+        // debugLogSpaceInfo()
 
         if let info = spaceInfo {
             let shouldWrap =
