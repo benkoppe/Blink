@@ -37,22 +37,6 @@ struct GeneralSettingsPane: View {
         )
     }
 
-    private let minCustomVelocity = 10.0
-    private let maxCustomVelocity = 1_000_000.0
-    private var instantGestureCustomValueLogBinding: Binding<Double> {
-        Binding(
-            get: {
-                let value = max(minCustomVelocity, manager.instantGestureSpeed.customValue)
-                return log10(value)
-            },
-            set: { newLogValue in
-                var setting = manager.instantGestureSpeed
-                setting.customValue = pow(10, newLogValue)
-                manager.instantGestureSpeed = setting
-            }
-        )
-    }
-
     var body: some View {
         BlinkForm {
             BlinkSection {
