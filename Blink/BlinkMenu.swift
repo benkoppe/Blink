@@ -41,12 +41,23 @@ struct BlinkMenu: View {
         }
     }
 
-    private var jumpSelection: Binding<Int?> {
+    enum JumpSelection: Hashable {
+        case lastSpace
+        case index(_ index: Int)
+    }
+
+    private var jumpSelection: Binding<JumpSelection?> {
         Binding(
-            get: { switcher.spaceInfo?.currentIndex },
+            get: {
+                guard let index = switcher.spaceInfo?.currentIndex else { return nil }
+                return .index(index)
+            },
             set: { newValue in
-                guard let index = newValue else { return }
-                _ = switcher.switchToIndex(index)
+                guard let selection = newValue else { return }
+                switch selection {
+                case .lastSpace: switcher.switchToLastSpace()
+                case .index(let index): switcher.switchToIndex(index)
+                }
             }
         )
     }
@@ -59,6 +70,13 @@ struct BlinkMenu: View {
                     "Jump to...", systemImage: "square.and.line.vertical.and.square",
                     selection: jumpSelection
                 ) {
+                    Text("Last Space")
+                        .selectionDisabled(!switcher.canSwitchToLastSpace())
+                        .keyboardShortcut(from: hotkey(for: BoundAction.lastSpace))
+                        .tag(Optional(JumpSelection.lastSpace))
+
+                    Divider()
+
                     ForEach(0..<info.spaceCount, id: \.self) { index in
                         Text("Space \(index + 1)")
                             .keyboardShortcut(
@@ -66,7 +84,7 @@ struct BlinkMenu: View {
                                     ? hotkey(for: BoundAction.indexedSpaceActions[index])
                                     : nil
                             )
-                            .tag(Optional(index))
+                            .tag(Optional(JumpSelection.index(index)))
                     }
                 }
             }
