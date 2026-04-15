@@ -8,7 +8,7 @@
 import Foundation
 
 enum BoundAction: String, Codable, CaseIterable {
-    case left, right
+    case left, right, lastSpace
     case space1, space2, space3, space4, space5
     case space6, space7, space8, space9, space10
 
@@ -16,6 +16,7 @@ enum BoundAction: String, Codable, CaseIterable {
         switch self {
         case .left: return "Switch Left"
         case .right: return "Switch Right"
+        case .lastSpace: return "Last Space"
         case .space1: return "Space 1"
         case .space2: return "Space 2"
         case .space3: return "Space 3"
@@ -35,6 +36,7 @@ enum BoundAction: String, Codable, CaseIterable {
         switch self {
         case .left: switcher.switchLeft()
         case .right: switcher.switchRight()
+        case .lastSpace: switcher.switchToLastSpace()
         case .space1: switcher.switchToIndex(0)
         case .space2: switcher.switchToIndex(1)
         case .space3: switcher.switchToIndex(2)
@@ -56,6 +58,7 @@ extension BoundAction {
         switch self {
         case .left: return .init(key: .leftArrow, modifiers: swipeModifiers)
         case .right: return .init(key: .rightArrow, modifiers: swipeModifiers)
+        case .lastSpace: return .init(key: .grave, modifiers: jumpModifiers)
         case .space1: return .init(key: .one, modifiers: jumpModifiers)
         case .space2: return .init(key: .two, modifiers: jumpModifiers)
         case .space3: return KeyCombination(key: .three, modifiers: jumpModifiers)

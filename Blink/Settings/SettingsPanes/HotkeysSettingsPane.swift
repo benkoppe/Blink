@@ -22,6 +22,7 @@ struct HotkeysSettingsPane: View {
             BlinkSection("Change Spaces") {
                 hotkeyRecorder(forAction: .left)
                 hotkeyRecorder(forAction: .right)
+                hotkeyRecorder(forAction: .lastSpace)
             }
             BlinkSection("Jump to Index") {
                 hotkeyRecorder(forAction: .space1)
