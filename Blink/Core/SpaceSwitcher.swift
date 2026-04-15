@@ -169,6 +169,11 @@ private struct SpaceSnapshot {
     }
 }
 
+private struct PendingJump {
+    let originSpaceID: UInt64
+    var targetSpaceID: UInt64
+}
+
 // MARK: - SpaceSwitcher
 
 @Observable
@@ -186,6 +191,7 @@ final class SpaceSwitcher {
     private var snapshot: SpaceSnapshot?
     private var optimisticCurrentIndexByDisplay: [String: Int] = [:]
     private var lastSpaceIDByDisplay: [String: UInt64] = [:]
+    private var pendingJumpByDisplay: [String: PendingJump] = [:]
 
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
@@ -268,7 +274,7 @@ final class SpaceSwitcher {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.optimisticCurrentIndexByDisplay.removeAll()
+            self?.clearOptimisticStateForCompletedJumps()
             self?.refreshSpaceInfo()
         }
 
@@ -356,6 +362,15 @@ final class SpaceSwitcher {
         guard let previousSnapshot else { return }
 
         for (displayIdentifier, currentInfo) in currentSnapshot.spaceInfoByDisplay {
+            if let pendingJump = pendingJumpByDisplay[displayIdentifier] {
+                if currentInfo.currentSpaceID == pendingJump.targetSpaceID {
+                    lastSpaceIDByDisplay[displayIdentifier] = pendingJump.originSpaceID
+                    pendingJumpByDisplay.removeValue(forKey: displayIdentifier)
+                    optimisticCurrentIndexByDisplay.removeValue(forKey: displayIdentifier)
+                }
+                continue
+            }
+
             guard
                 let previousInfo = previousSnapshot.spaceInfoByDisplay[displayIdentifier],
                 let previousSpaceID = previousInfo.currentSpaceID,
@@ -370,6 +385,9 @@ final class SpaceSwitcher {
             activeDisplayIdentifiers.contains($0.key)
         }
         optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
+            activeDisplayIdentifiers.contains($0.key)
+        }
+        pendingJumpByDisplay = pendingJumpByDisplay.filter {
             activeDisplayIdentifiers.contains($0.key)
         }
     }
@@ -414,13 +432,30 @@ final class SpaceSwitcher {
         optimisticCurrentIndexByDisplay[displayIdentifier] = index
     }
 
-    private func rememberCurrentSpaceAsLast(_ info: SpaceInfo) {
+    private func rememberCurrentSpaceAsLast(_ info: SpaceInfo, targetIndex: Int? = nil) {
         guard
             let displayIdentifier = info.displayIdentifier,
             let currentSpaceID = info.currentSpaceID
         else { return }
 
-        lastSpaceIDByDisplay[displayIdentifier] = currentSpaceID
+        guard
+            let targetIndex,
+            info.spaceIDs.indices.contains(targetIndex)
+        else {
+            if pendingJumpByDisplay[displayIdentifier] == nil {
+                lastSpaceIDByDisplay[displayIdentifier] = currentSpaceID
+            }
+            return
+        }
+
+        if pendingJumpByDisplay[displayIdentifier] == nil {
+            pendingJumpByDisplay[displayIdentifier] = PendingJump(
+                originSpaceID: currentSpaceID,
+                targetSpaceID: info.spaceIDs[targetIndex]
+            )
+        } else {
+            pendingJumpByDisplay[displayIdentifier]?.targetSpaceID = info.spaceIDs[targetIndex]
+        }
     }
 
     @discardableResult
@@ -441,7 +476,7 @@ final class SpaceSwitcher {
             : postInstantJump(direction, steps: steps, targetIndex: index, info: info)
 
         if didPost {
-            rememberCurrentSpaceAsLast(info)
+            rememberCurrentSpaceAsLast(info, targetIndex: index)
         }
 
         return didPost
@@ -479,6 +514,12 @@ final class SpaceSwitcher {
 
         guard targetIndex != currentIndex else { return nil }
         return targetIndex
+    }
+
+    private func clearOptimisticStateForCompletedJumps() {
+        optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
+            pendingJumpByDisplay[$0.key] != nil
+        }
     }
 
     private enum OverlayMode: String {
