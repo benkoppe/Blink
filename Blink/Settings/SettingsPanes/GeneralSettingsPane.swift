@@ -47,9 +47,9 @@ struct GeneralSettingsPane: View {
     @ViewBuilder
     private var wrapSpaceSwitching: some View {
         @Bindable var manager = manager
-        Toggle("Wrap spaces", isOn: $manager.wrapSpaceSwitching)
+        Toggle("Wrap-around spaces", isOn: $manager.wrapSpaceSwitching)
             .annotation(
-                "Going left from Space 1 jumps to the last space, and vice versa (a little clunky)")
+                "Going left from Space 1 jumps to the last space, and vice versa")
     }
 
     @ViewBuilder

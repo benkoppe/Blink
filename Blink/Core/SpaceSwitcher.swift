@@ -128,6 +128,7 @@ private let kRecentSpaceChangeSuppressionInterval: TimeInterval = 0.4
 struct SpaceInfo: Equatable {
     let currentIndex: Int
     let spaceCount: Int
+    let spaceIDs: [UInt64]
 
     var displayNumber: Int { currentIndex + 1 }
     var isAtLeftEdge: Bool { currentIndex == 0 }
@@ -144,6 +145,41 @@ struct SpaceInfo: Equatable {
     var isKnownStandardSpace: Bool {
         isNormalDesktopSpace || isFullscreenSpace
     }
+
+    func index(ofSpaceID spaceID: UInt64) -> Int? {
+        spaceIDs.firstIndex(of: spaceID)
+    }
+}
+
+private struct SpaceSnapshot {
+    let spaceInfoByDisplay: [String: SpaceInfo]
+    let fallbackSpaceInfo: SpaceInfo
+    let menuBarDisplayIdentifier: String?
+
+    var menuBarSpaceInfo: SpaceInfo {
+        if let menuBarDisplayIdentifier,
+            let info = spaceInfoByDisplay[menuBarDisplayIdentifier]
+        {
+            return info
+        }
+
+        return fallbackSpaceInfo
+    }
+
+    func spaceInfo(for displayIdentifier: String?) -> SpaceInfo {
+        if let displayIdentifier,
+            let info = spaceInfoByDisplay[displayIdentifier]
+        {
+            return info
+        }
+
+        return menuBarSpaceInfo
+    }
+}
+
+private struct PendingJump {
+    let originSpaceID: UInt64
+    var targetSpaceID: UInt64
 }
 
 // MARK: - SpaceSwitcher
@@ -153,11 +189,17 @@ final class SpaceSwitcher {
     /// The shared app state.
     private(set) weak var appState: AppState?
 
-    private(set) var spaceInfo: SpaceInfo?
+    var spaceInfo: SpaceInfo? {
+        guard let snapshot else { return nil }
+        return applyingOptimisticIndex(to: snapshot.menuBarSpaceInfo)
+    }
 
     private let symbols: CGSSymbols?
 
-    private var optimisticCurrentIndex: Int?
+    private var snapshot: SpaceSnapshot?
+    private var optimisticCurrentIndexByDisplay: [String: Int] = [:]
+    private var lastSpaceIDByDisplay: [String: UInt64] = [:]
+    private var pendingJumpByDisplay: [String: PendingJump] = [:]
     private var recentSpaceChange = false
     private var recentSpaceChangeResetWorkItem: DispatchWorkItem?
 
@@ -207,38 +249,34 @@ final class SpaceSwitcher {
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
-        let missionControlActive = isMissionControlActive()
+        guard let snapshot = refreshSnapshot() else { return false }
+        let info = actionSpaceInfo(in: snapshot)
+        guard info.spaceCount > 0 else { return false }
 
-        guard let info = loadActionSpaceInfo(), info.spaceCount > 0 else { return false }
-        guard (0..<info.spaceCount).contains(index) else { return false }
-        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
-        guard index != currentIndex else {
-            return true
-        }
-
-        let direction: Direction = index > currentIndex ? .right : .left
-        let steps = abs(index - currentIndex)
-
-        markRecentSpaceChange()
-
-        if missionControlActive {
-            return postMissionControlJump(direction, steps: steps)
-        }
-
-        return postInstantJump(direction, steps: steps, targetIndex: index)
+        return moveToIndex(index, using: info)
     }
 
-    func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
-    func canMoveRight() -> Bool { spaceInfo.map { !$0.isAtRightEdge } ?? false }
+    @discardableResult
+    func switchToLastSpace() -> Bool {
+        guard let snapshot = refreshSnapshot() else { return false }
+        let info = actionSpaceInfo(in: snapshot)
+        guard let targetIndex = lastSpaceTargetIndex(using: info) else { return false }
+
+        return moveToIndex(targetIndex, using: info)
+    }
+
+    func canMoveLeft() -> Bool { canMove(.left) }
+    func canMoveRight() -> Bool { canMove(.right) }
+
+    func canSwitchToLastSpace() -> Bool {
+        guard let snapshot else { return false }
+        let info = actionSpaceInfo(in: snapshot)
+        return lastSpaceTargetIndex(using: info) != nil
+    }
 
     func refreshSpaceInfo() {
-        // Use the menu-bar display for the icon (always correct on multi-monitor)
-        spaceInfo = loadSpaceInfo(useCursorDisplay: false)
+        _ = refreshSnapshot()
         // debugLogSpaceInfo()
-    }
-
-    private func loadActionSpaceInfo() -> SpaceInfo? {
-        loadSpaceInfo(useCursorDisplay: true) ?? loadSpaceInfo(useCursorDisplay: false) ?? spaceInfo
     }
 
     // MARK - Workspace notifications
@@ -251,7 +289,7 @@ final class SpaceSwitcher {
             queue: .main
         ) { [weak self] _ in
             self?.markRecentSpaceChange()
-            self?.optimisticCurrentIndex = nil
+            self?.clearOptimisticStateForCompletedJumps()
             self?.refreshSpaceInfo()
         }
 
@@ -316,11 +354,6 @@ final class SpaceSwitcher {
         }
     }
 
-    private func currentIndex(for info: SpaceInfo) -> Int {
-        guard let optimisticCurrentIndex else { return info.currentIndex }
-        return max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
-    }
-
     private func markRecentSpaceChange() {
         recentSpaceChange = true
         recentSpaceChangeResetWorkItem?.cancel()
@@ -336,18 +369,190 @@ final class SpaceSwitcher {
         )
     }
 
-    private func setOptimisticCurrentIndex(_ index: Int) {
-        optimisticCurrentIndex = index
+    @discardableResult
+    private func refreshSnapshot() -> SpaceSnapshot? {
+        let previousSnapshot = snapshot
 
-        guard let info = spaceInfo, (0..<info.spaceCount).contains(index) else { return }
-        spaceInfo = SpaceInfo(
-            currentIndex: index,
+        guard let newSnapshot = loadSpaceSnapshot() else {
+            return snapshot
+        }
+
+        updateLastSpaceHistory(from: previousSnapshot, to: newSnapshot)
+        snapshot = newSnapshot
+
+        return newSnapshot
+    }
+
+    private func actionSpaceInfo(in snapshot: SpaceSnapshot) -> SpaceInfo {
+        snapshot.spaceInfo(for: cursorDisplayIdentifier())
+    }
+
+    private func updateLastSpaceHistory(
+        from previousSnapshot: SpaceSnapshot?,
+        to currentSnapshot: SpaceSnapshot
+    ) {
+        guard let previousSnapshot else { return }
+
+        for (displayIdentifier, currentInfo) in currentSnapshot.spaceInfoByDisplay {
+            if let pendingJump = pendingJumpByDisplay[displayIdentifier] {
+                if currentInfo.currentSpaceID == pendingJump.targetSpaceID {
+                    lastSpaceIDByDisplay[displayIdentifier] = pendingJump.originSpaceID
+                    pendingJumpByDisplay.removeValue(forKey: displayIdentifier)
+                    optimisticCurrentIndexByDisplay.removeValue(forKey: displayIdentifier)
+                }
+                continue
+            }
+
+            guard
+                let previousInfo = previousSnapshot.spaceInfoByDisplay[displayIdentifier],
+                let previousSpaceID = previousInfo.currentSpaceID,
+                previousSpaceID != currentInfo.currentSpaceID
+            else { continue }
+
+            lastSpaceIDByDisplay[displayIdentifier] = previousSpaceID
+        }
+
+        let activeDisplayIdentifiers = Set(currentSnapshot.spaceInfoByDisplay.keys)
+        lastSpaceIDByDisplay = lastSpaceIDByDisplay.filter {
+            activeDisplayIdentifiers.contains($0.key)
+        }
+        optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
+            activeDisplayIdentifiers.contains($0.key)
+        }
+        pendingJumpByDisplay = pendingJumpByDisplay.filter {
+            activeDisplayIdentifiers.contains($0.key)
+        }
+    }
+
+    private func applyingOptimisticIndex(to info: SpaceInfo) -> SpaceInfo {
+        guard
+            info.spaceCount > 0,
+            let displayIdentifier = info.displayIdentifier,
+            let optimisticCurrentIndex = optimisticCurrentIndexByDisplay[displayIdentifier]
+        else {
+            return info
+        }
+
+        let clampedIndex = max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
+        guard clampedIndex != info.currentIndex else {
+            return info
+        }
+
+        return SpaceInfo(
+            currentIndex: clampedIndex,
             spaceCount: info.spaceCount,
+            spaceIDs: info.spaceIDs,
             currentSpaceID: info.currentSpaceID,
             currentSpaceType: info.currentSpaceType,
             displayIdentifier: info.displayIdentifier,
             frontmostBundleID: info.frontmostBundleID
         )
+    }
+
+    private func currentIndex(for info: SpaceInfo) -> Int {
+        guard
+            let displayIdentifier = info.displayIdentifier,
+            let optimisticCurrentIndex = optimisticCurrentIndexByDisplay[displayIdentifier]
+        else {
+            return info.currentIndex
+        }
+        return max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
+    }
+
+    private func setOptimisticCurrentIndex(_ index: Int, for info: SpaceInfo) {
+        guard let displayIdentifier = info.displayIdentifier else { return }
+        optimisticCurrentIndexByDisplay[displayIdentifier] = index
+    }
+
+    private func rememberCurrentSpaceAsLast(_ info: SpaceInfo, targetIndex: Int? = nil) {
+        guard
+            let displayIdentifier = info.displayIdentifier,
+            let currentSpaceID = info.currentSpaceID
+        else { return }
+
+        guard
+            let targetIndex,
+            info.spaceIDs.indices.contains(targetIndex)
+        else {
+            if pendingJumpByDisplay[displayIdentifier] == nil {
+                lastSpaceIDByDisplay[displayIdentifier] = currentSpaceID
+            }
+            return
+        }
+
+        if pendingJumpByDisplay[displayIdentifier] == nil {
+            pendingJumpByDisplay[displayIdentifier] = PendingJump(
+                originSpaceID: currentSpaceID,
+                targetSpaceID: info.spaceIDs[targetIndex]
+            )
+        } else {
+            pendingJumpByDisplay[displayIdentifier]?.targetSpaceID = info.spaceIDs[targetIndex]
+        }
+    }
+
+    @discardableResult
+    private func moveToIndex(_ index: Int, using info: SpaceInfo) -> Bool {
+        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
+
+        guard (0..<info.spaceCount).contains(index) else { return false }
+
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+        guard index != currentIndex else { return true }
+
+        let direction: Direction = index > currentIndex ? .right : .left
+        let steps = abs(index - currentIndex)
+
+        let didPost =
+            missionControlActive
+            ? postMissionControlJump(direction, steps: steps)
+            : postInstantJump(direction, steps: steps, targetIndex: index, info: info)
+
+        if didPost {
+            markRecentSpaceChange()
+            rememberCurrentSpaceAsLast(info, targetIndex: index)
+        }
+
+        return didPost
+    }
+
+    private func canMove(_ direction: Direction) -> Bool {
+        guard let snapshot else { return false }
+
+        let info = actionSpaceInfo(in: snapshot)
+        guard info.spaceCount > 0 else { return false }
+
+        if wrapSpaces { return true }
+
+        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+
+        switch direction {
+        case .left:
+            return currentIndex > 0
+        case .right:
+            return currentIndex + 1 < info.spaceCount
+        }
+    }
+
+    private func lastSpaceTargetIndex(using info: SpaceInfo) -> Int? {
+        guard
+            info.spaceCount > 0,
+            let displayIdentifier = info.displayIdentifier,
+            let lastSpaceID = lastSpaceIDByDisplay[displayIdentifier],
+            let targetIndex = info.index(ofSpaceID: lastSpaceID)
+        else { return nil }
+
+        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+
+        guard targetIndex != currentIndex else { return nil }
+        return targetIndex
+    }
+
+    private func clearOptimisticStateForCompletedJumps() {
+        optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
+            pendingJumpByDisplay[$0.key] != nil
+        }
     }
 
     private enum OverlayMode: String {
@@ -553,7 +758,17 @@ final class SpaceSwitcher {
         displayBounds: CGRect?,
         debugDescription: String
     ) {
-        let targetDisplayBounds = displayBounds(for: spaceInfo?.displayIdentifier)
+        overlayModeReport(for: spaceInfo?.displayIdentifier)
+    }
+
+    private func overlayModeReport(
+        for displayIdentifier: String?
+    ) -> (
+        mode: OverlayMode,
+        displayBounds: CGRect?,
+        debugDescription: String
+    ) {
+        let targetDisplayBounds = displayBounds(for: displayIdentifier)
         let windowList =
             CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
 
@@ -609,6 +824,10 @@ final class SpaceSwitcher {
         overlayModeReport().mode == .missionControl
     }
 
+    private func isMissionControlActive(on displayIdentifier: String?) -> Bool {
+        overlayModeReport(for: displayIdentifier).mode == .missionControl
+    }
+
     func isAppExposeActive() -> Bool {
         overlayModeReport().mode == .appExpose
     }
@@ -623,7 +842,7 @@ final class SpaceSwitcher {
             return
         }
 
-        guard let currentInfo = loadSpaceInfo(useCursorDisplay: false) else {
+        guard let currentInfo = refreshSnapshot()?.menuBarSpaceInfo else {
             refreshSpaceInfo()
             return
         }
@@ -640,7 +859,7 @@ final class SpaceSwitcher {
             return
         }
 
-        if !switchToIndex(targetIndex) {
+        if !moveToIndex(targetIndex, using: currentInfo) {
             refreshSpaceInfo()
         }
     }
@@ -709,56 +928,75 @@ final class SpaceSwitcher {
         }
     }
 
-    private func loadSpaceInfo(useCursorDisplay: Bool) -> SpaceInfo? {
+    private func loadSpaceSnapshot() -> SpaceSnapshot? {
         guard let cgs = symbols else { return nil }
 
         let connection = cgs.mainConnectionID()
         guard connection != 0 else { return nil }
 
         let activeSpaceID = cgs.getActiveSpace(connection)
-        guard activeSpaceID != 0 else { return nil }
-
-        let displayID: CFString? =
-            useCursorDisplay
-            ? cursorDisplayIdentifier()
-            : cgs.copyMenuBarDisplayID?(connection)?.takeRetainedValue()
-
-        guard let displayDict = loadManagedDisplayDictionary(connection: connection, displayID: displayID)
+        guard
+            activeSpaceID != 0,
+            let rawDisplays = cgs.copyDisplaySpaces(connection, nil)?.takeRetainedValue()
         else { return nil }
 
-        return extractSpaceInfo(
-            from: displayDict,
-            globalActiveSpaceID: activeSpaceID,
-            displayIdentifier: displayDict["Display Identifier"] as? String,
-            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let menuBarDisplayIdentifier =
+            cgs.copyMenuBarDisplayID?(connection)?.takeRetainedValue() as String?
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+
+        var spaceInfoByDisplay: [String: SpaceInfo] = [:]
+        var fallbackSpaceInfo: SpaceInfo?
+
+        for item in rawDisplays as NSArray {
+            guard let displayDict = item as? NSDictionary,
+                let info = extractSpaceInfo(
+                    from: displayDict,
+                    globalActiveSpaceID: activeSpaceID,
+                    frontmostBundleID: frontmostBundleID
+                )
+            else { continue }
+
+            if fallbackSpaceInfo == nil {
+                fallbackSpaceInfo = info
+            }
+
+            if let displayIdentifier = info.displayIdentifier {
+                spaceInfoByDisplay[displayIdentifier] = info
+            }
+        }
+
+        guard let fallbackSpaceInfo else { return nil }
+
+        return SpaceSnapshot(
+            spaceInfoByDisplay: spaceInfoByDisplay,
+            fallbackSpaceInfo: fallbackSpaceInfo,
+            menuBarDisplayIdentifier: menuBarDisplayIdentifier
         )
     }
 
     private func loadManagedDisplayDictionary(connection: Int32, displayID: CFString?) -> NSDictionary? {
         guard let cgs = symbols else { return nil }
 
-        // Fetch all display/space layout data. Fall back to nil displayID
-        // (all displays) if the targeted display yields no results
-        var rawDisplays = cgs.copyDisplaySpaces(connection, displayID)?
-            .takeRetainedValue()
-        if rawDisplays == nil, displayID != nil {
-            rawDisplays = cgs.copyDisplaySpaces(connection, nil)?
-                .takeRetainedValue()
+        guard let rawDisplays = cgs.copyDisplaySpaces(connection, nil)?.takeRetainedValue() else {
+            return nil
         }
-        guard let rawDisplays else { return nil }
 
-        // Find the display dict that matches our target identifier
-        var fallback: NSDictionary?
         var target: NSDictionary?
+        var fallback: NSDictionary?
 
         for item in rawDisplays as NSArray {
-            guard let dict = item as? NSDictionary else { continue }
-            if fallback == nil { fallback = dict }
-            if let id = displayID,
-                let dictID = dict["Display Identifier"] as? String,
-                dictID == id as String
+            guard let displayDict = item as? NSDictionary else { continue }
+
+            if fallback == nil {
+                fallback = displayDict
+            }
+
+            guard let displayID else { continue }
+
+            if let candidateID = displayDict["Display Identifier"] as? String,
+                candidateID == displayID as String
             {
-                target = dict
+                target = displayDict
                 break
             }
         }
@@ -778,11 +1016,12 @@ final class SpaceSwitcher {
     private func extractSpaceInfo(
         from displayDict: NSDictionary,
         globalActiveSpaceID: UInt64,
-        displayIdentifier: String?,
         frontmostBundleID: String?
     )
         -> SpaceInfo?
     {
+        let displayIdentifier = displayDict["Display Identifier"] as? String
+
         guard let spacesArray = displayDict["Spaces"] as? NSArray else {
             return nil
         }
@@ -799,15 +1038,19 @@ final class SpaceSwitcher {
         var count = 0
         var activeIndex = 0
         var foundActive = false
+        var spaceIDs: [UInt64] = []
 
         for item in spacesArray {
             guard let spaceDict = item as? NSDictionary,
                 let id = (spaceDict["id64"] as? NSNumber)?.uint64Value
             else { continue }
+
             if !foundActive && id == activeID {
                 activeIndex = count
                 foundActive = true
             }
+
+            spaceIDs.append(id)
             count += 1
         }
 
@@ -815,6 +1058,7 @@ final class SpaceSwitcher {
         return SpaceInfo(
             currentIndex: foundActive ? activeIndex : 0,
             spaceCount: count,
+            spaceIDs: spaceIDs,
             currentSpaceID: currentSpaceID,
             currentSpaceType: currentSpaceType,
             displayIdentifier: displayIdentifier,
@@ -822,18 +1066,18 @@ final class SpaceSwitcher {
         )
     }
 
-    private func cursorDisplayIdentifier() -> CFString? {
+    private func cursorDisplayIdentifier() -> String? {
         guard let event = CGEvent(source: nil) else { return nil }
+
         var displayID: CGDirectDisplayID = 0
         var count: UInt32 = 0
         guard
-            CGGetDisplaysWithPoint(event.location, 1, &displayID, &count)
-                == .success,
-            count > 0
+            CGGetDisplaysWithPoint(event.location, 1, &displayID, &count) == .success,
+            count > 0,
+            let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue()
         else { return nil }
-        let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?
-            .takeRetainedValue()
-        return CFUUIDCreateString(nil, uuid)
+
+        return CFUUIDCreateString(nil, uuid) as String?
     }
 
     // MARK: - Gesture posting
@@ -851,8 +1095,9 @@ final class SpaceSwitcher {
 
     @discardableResult
     private func postGesture(_ direction: Direction) -> Bool {
-        let missionControlActive = isMissionControlActive()
-        let info = loadActionSpaceInfo()
+        let snapshot = refreshSnapshot()
+        let info = snapshot.map(actionSpaceInfo(in:))
+        let missionControlActive = isMissionControlActive(on: info?.displayIdentifier)
 
         if let info {
             let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
@@ -870,15 +1115,21 @@ final class SpaceSwitcher {
                     case .left: info.spaceCount - 1
                     case .right: 0
                     }
-                return switchToIndex(targetIndex)
+
+                return moveToIndex(targetIndex, using: info)
             }
         }
 
-        if missionControlActive {
-            return postMissionControlStep(direction)
+        let didPost =
+            missionControlActive
+            ? postMissionControlStep(direction)
+            : postInstantStep(direction, info: info)
+
+        if didPost, let info {
+            rememberCurrentSpaceAsLast(info)
         }
 
-        return postInstantStep(direction, info: info)
+        return didPost
     }
 
     private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
@@ -954,7 +1205,8 @@ final class SpaceSwitcher {
     private func postInstantJump(
         _ direction: Direction,
         steps: Int,
-        targetIndex: Int
+        targetIndex: Int,
+        info: SpaceInfo
     ) -> Bool {
         let velocity = kDefaultInstantGestureVelocity * Double(steps)
 
@@ -963,13 +1215,14 @@ final class SpaceSwitcher {
                 direction,
                 steps: steps,
                 velocity: velocity,
-                targetIndex: targetIndex
+                targetIndex: targetIndex,
+                info: info
             )
         }
 
         let didPost = postInstantGestures(direction, count: steps, velocity: velocity)
         if didPost {
-            setOptimisticCurrentIndex(targetIndex)
+            setOptimisticCurrentIndex(targetIndex, for: info)
         }
         return didPost
     }
@@ -979,7 +1232,8 @@ final class SpaceSwitcher {
         _ direction: Direction,
         steps: Int,
         velocity: Double,
-        targetIndex: Int
+        targetIndex: Int,
+        info: SpaceInfo
     ) -> Bool {
         let chunkCount = (steps + kInstantGestureChunkSize - 1) / kInstantGestureChunkSize
 
@@ -992,7 +1246,7 @@ final class SpaceSwitcher {
             let chunkSteps = chunkEnd - chunkStart
             _ = self.postInstantGestures(direction, count: chunkSteps, velocity: velocity)
         } completion: { [weak self] in
-            self?.setOptimisticCurrentIndex(targetIndex)
+            self?.setOptimisticCurrentIndex(targetIndex, for: info)
         }
 
         return true
@@ -1020,7 +1274,7 @@ final class SpaceSwitcher {
 
         let currentIndex = currentIndex(for: info)
         let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
-        setOptimisticCurrentIndex(targetIndex)
+        setOptimisticCurrentIndex(targetIndex, for: info)
         return true
     }
 

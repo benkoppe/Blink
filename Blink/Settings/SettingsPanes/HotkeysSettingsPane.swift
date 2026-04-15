@@ -23,7 +23,10 @@ struct HotkeysSettingsPane: View {
                 hotkeyRecorder(forAction: .left)
                 hotkeyRecorder(forAction: .right)
             }
-            BlinkSection("Jump to Index") {
+            BlinkSection("Jump to") {
+                hotkeyRecorder(forAction: .lastSpace)
+            }
+            BlinkSection {
                 hotkeyRecorder(forAction: .space1)
                 hotkeyRecorder(forAction: .space2)
                 hotkeyRecorder(forAction: .space3)
