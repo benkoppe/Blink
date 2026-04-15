@@ -240,19 +240,19 @@ final class SpaceSwitcher {
     func switchToLastSpace() -> Bool {
         guard let snapshot = refreshSnapshot() else { return false }
         let info = actionSpaceInfo(in: snapshot)
-
-        guard
-            info.spaceCount > 0,
-            let displayIdentifier = info.displayIdentifier,
-            let lastSpaceID = lastSpaceIDByDisplay[displayIdentifier],
-            let targetIndex = info.index(ofSpaceID: lastSpaceID)
-        else { return false }
+        guard let targetIndex = lastSpaceTargetIndex(using: info) else { return false }
 
         return moveToIndex(targetIndex, using: info)
     }
 
-    func canMoveLeft() -> Bool { spaceInfo.map { !$0.isAtLeftEdge } ?? false }
-    func canMoveRight() -> Bool { spaceInfo.map { !$0.isAtRightEdge } ?? false }
+    func canMoveLeft() -> Bool { canMove(.left) }
+    func canMoveRight() -> Bool { canMove(.right) }
+
+    func canSwitchToLastSpace() -> Bool {
+        guard let snapshot else { return false }
+        let info = actionSpaceInfo(in: snapshot)
+        return lastSpaceTargetIndex(using: info) != nil
+    }
 
     func refreshSpaceInfo() {
         _ = refreshSnapshot()
@@ -445,6 +445,40 @@ final class SpaceSwitcher {
         }
 
         return didPost
+    }
+
+    private func canMove(_ direction: Direction) -> Bool {
+        guard let snapshot else { return false }
+
+        let info = actionSpaceInfo(in: snapshot)
+        guard info.spaceCount > 0 else { return false }
+
+        if wrapSpaces { return true }
+
+        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+
+        switch direction {
+        case .left:
+            return currentIndex > 0
+        case .right:
+            return currentIndex + 1 < info.spaceCount
+        }
+    }
+
+    private func lastSpaceTargetIndex(using info: SpaceInfo) -> Int? {
+        guard
+            info.spaceCount > 0,
+            let displayIdentifier = info.displayIdentifier,
+            let lastSpaceID = lastSpaceIDByDisplay[displayIdentifier],
+            let targetIndex = info.index(ofSpaceID: lastSpaceID)
+        else { return nil }
+
+        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
+        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
+
+        guard targetIndex != currentIndex else { return nil }
+        return targetIndex
     }
 
     private enum OverlayMode: String {
