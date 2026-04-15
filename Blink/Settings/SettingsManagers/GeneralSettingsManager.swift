@@ -9,6 +9,49 @@ import Foundation
 import ObservableDefaults
 import Observation
 
+enum InstantGestureSpeedPreset: String, CaseIterable, Codable {
+    case normal
+    case fast
+    case faster
+    case fastest
+    case instant
+    case custom
+
+    var displayName: String {
+        switch self {
+        case .normal: "Normal"
+        case .fast: "Fast"
+        case .faster: "Faster"
+        case .fastest: "Fastest"
+        case .instant: "Instant"
+        case .custom: "Custom"
+        }
+    }
+
+    var presetVelocity: Double? {
+        switch self {
+        case .normal: 1
+        case .fast: 40
+        case .faster: 50
+        case .fastest: 60
+        case .instant: 999_999
+        case .custom: nil
+        }
+    }
+}
+
+struct InstantGestureSpeedSetting: Codable, Equatable {
+    static let defaultPreset: InstantGestureSpeedPreset = .instant
+    static let defaultCustomValue = 80.0
+
+    var preset: InstantGestureSpeedPreset = defaultPreset
+    var customValue: Double = defaultCustomValue
+
+    var velocity: Double {
+        preset.presetVelocity ?? max(1, customValue)
+    }
+}
+
 @MainActor @ObservableDefaults
 final class GeneralSettingsManager {
     @ObservableOnly
@@ -16,4 +59,7 @@ final class GeneralSettingsManager {
 
     @DefaultsKey(userDefaultsKey: "settings.wrapSpaceSwitching")
     var wrapSpaceSwitching: Bool = false
+
+    @DefaultsKey(userDefaultsKey: "settings.instantGestureSpeed")
+    var instantGestureSpeed: InstantGestureSpeedSetting = .init()
 }

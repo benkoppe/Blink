@@ -204,6 +204,13 @@ final class SpaceSwitcher {
         appState?.settingsManager.generalSettingsManager.wrapSpaceSwitching ?? false
     }
 
+    private var instantGestureVelocity: Double {
+        max(
+            1,
+            appState?.settingsManager.generalSettingsManager.instantGestureSpeed.velocity
+                ?? kDefaultInstantGestureVelocity)
+    }
+
     init(appState: AppState) {
         self.appState = appState
 
@@ -977,9 +984,11 @@ final class SpaceSwitcher {
     @discardableResult
     private func postInstantGesture(
         _ direction: Direction,
-        velocity: Double = kDefaultInstantGestureVelocity
+        velocity: Double? = nil
     ) -> Bool {
-        postDockSwipe(phase: Phase.began, direction: direction, velocity: velocity)
+        let velocity = velocity ?? instantGestureVelocity
+
+        return postDockSwipe(phase: Phase.began, direction: direction, velocity: velocity)
             && postDockSwipe(phase: Phase.changed, direction: direction, velocity: velocity)
             && postDockSwipe(phase: Phase.ended, direction: direction, velocity: velocity)
     }
@@ -1040,7 +1049,7 @@ final class SpaceSwitcher {
         targetIndex: Int,
         info: SpaceInfo
     ) -> Bool {
-        let velocity = kDefaultInstantGestureVelocity * Double(steps)
+        let velocity = instantGestureVelocity * Double(steps)
 
         if steps > kInstantGestureChunkSize {
             return postChunkedInstantJump(
