@@ -80,6 +80,11 @@ struct GeneralSettingsPane: View {
             HStack {
                 let presetVelocity = manager.instantGestureSpeed.preset.presetVelocity
 
+                ResetButton(
+                    binding: instantGestureSpeedPresetBinding,
+                    default: .instant
+                )
+
                 TextField(
                     "Velocity",
                     value: presetVelocity != nil
