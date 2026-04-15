@@ -1,3 +1,9 @@
+# Blink 0.0.11
+
+## What's New
+- Jumps over large index gaps are much faster, now nearly instant.
+- New "Jump to last space" action and keybind.
+
 # Blink 0.0.10
 
 ## What's New
