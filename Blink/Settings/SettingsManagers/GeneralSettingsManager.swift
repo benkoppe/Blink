@@ -42,7 +42,7 @@ enum InstantGestureSpeedPreset: String, CaseIterable, Codable {
 
 struct InstantGestureSpeedSetting: Codable, Equatable {
     static let defaultPreset: InstantGestureSpeedPreset = .instant
-    static let defaultCustomValue = 60.0
+    static let defaultCustomValue = 80.0
 
     var preset: InstantGestureSpeedPreset = defaultPreset
     var customValue: Double = defaultCustomValue
