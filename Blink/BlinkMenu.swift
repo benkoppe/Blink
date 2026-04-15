@@ -31,11 +31,13 @@ struct BlinkMenu: View {
                 BoundAction.left.execute(appState: appState)
             }
             .keyboardShortcut(from: hotkey(for: .left))
+            .disabled(!switcher.canMoveLeft())
 
             Button("Switch right", systemImage: "arrow.right") {
                 BoundAction.right.execute(appState: appState)
             }
             .keyboardShortcut(from: hotkey(for: .right))
+            .disabled(!switcher.canMoveRight())
         }
     }
 
