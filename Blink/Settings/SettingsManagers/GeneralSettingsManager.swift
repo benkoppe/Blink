@@ -30,10 +30,10 @@ enum InstantGestureSpeedPreset: String, CaseIterable, Codable {
 
     var presetVelocity: Double? {
         switch self {
-        case .normal: 40
-        case .fast: 50
-        case .faster: 60
-        case .fastest: 80
+        case .normal: 1
+        case .fast: 40
+        case .faster: 50
+        case .fastest: 60
         case .instant: 999_999
         case .custom: nil
         }
