@@ -27,6 +27,7 @@ struct GeneralSettingsPane: View {
 
             BlinkSection("Behavior") {
                 wrapSpaceSwitching
+                instantCmdTabSpaceSwitching
             }
         }
     }
@@ -49,6 +50,13 @@ struct GeneralSettingsPane: View {
         Toggle("Wrap-around spaces", isOn: $manager.wrapSpaceSwitching)
             .annotation(
                 "Going left from Space 1 jumps to the last space, and vice versa")
+    }
+
+    @ViewBuilder
+    private var instantCmdTabSpaceSwitching: some View {
+        @Bindable var manager = manager
+        Toggle("Instant Cmd-Tab space switching", isOn: $manager.instantCmdTabSpaceSwitching)
+            .annotation("When Cmd-Tab activates an app on another space, Blink jumps there instantly")
     }
 }
 

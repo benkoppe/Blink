@@ -16,4 +16,7 @@ final class GeneralSettingsManager {
 
     @DefaultsKey(userDefaultsKey: "settings.wrapSpaceSwitching")
     var wrapSpaceSwitching: Bool = false
+
+    @DefaultsKey(userDefaultsKey: "settings.instantCmdTabSpaceSwitching")
+    var instantCmdTabSpaceSwitching: Bool = true
 }
