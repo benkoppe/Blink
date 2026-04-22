@@ -1,3 +1,11 @@
+# Blink 0.0.12
+
+## What's New
+- Configurable swipe gesture speed options.
+
+## Bug Fixes
+- Attempt to stop gesture detection from randomly breaking hours later.
+
 # Blink 0.0.11
 
 ## What's New
