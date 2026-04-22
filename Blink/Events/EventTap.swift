@@ -277,9 +277,10 @@ private nonisolated func handleEvent(
         if let port = eventTap.tapMachPort {
             os_log(
                 .error,
-                log: OSLog(subsystem: Bundle.main.bundleIdentifier ?? "Blink", category: "EventTap"),
-                "Event tap %@ disabled by system (type: %u); re-enabling synchronously.",
-                eventTap.label, type.rawValue
+                log: OSLog(subsystem: "Blink", category: "EventTap"),
+                "Event tap \"%{public}@\" disabled by system (type: %u); re-enabling synchronously.",
+                eventTap.label,
+                type.rawValue
             )
             CGEvent.tapEnable(tap: port, enable: true)
         }

@@ -190,7 +190,11 @@ final class SwipeGestureMonitor {
         state.lastFiredDirection = direction
         state.postFireAccumulator = 0
         state.accumulatedDeltaX = 0
-        // print("firing with \(direction)")
-        onSwipe?(direction, activeFingerCount)
+
+        // Defer the action so the event-tap callback can return immediately.
+        let onSwipe = onSwipe
+        DispatchQueue.main.async {
+            onSwipe?(direction, activeFingerCount)
+        }
     }
 }
