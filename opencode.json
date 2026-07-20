@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "InstantSpaceSwitcher": {
+      "repository": "jurplel/InstantSpaceSwitcher",
+      "description": "Competing example of this instant-space-switch capability"
+    }
+  },
+  "mcp": {
+    "Xcode": {
+      "type": "local",
+      "command": ["xcrun", "mcpbridge"],
+      "enabled": true
+    }
+  }
+}
