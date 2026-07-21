@@ -10,10 +10,9 @@ import SwiftUI
 @main
 struct BlinkApp: App {
     @NSApplicationDelegateAdaptor var appDelegate: AppDelegate
-    @State private var appState = AppState()
 
-    init() {
-        appDelegate.assignAppState(appState)
+    private var appState: AppState {
+        appDelegate.appState
     }
 
     var body: some Scene {

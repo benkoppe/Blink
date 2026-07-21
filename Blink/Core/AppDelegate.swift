@@ -9,25 +9,15 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private weak var appState: AppState?
+    let appState = AppState()
 
     // MARK: NSApplicationDelegate Methods
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        guard let appState else {
-            Logger.appDelegate.warning("Missing app state in applicationWillFinishLaunching")
-            return
-        }
-
         appState.assignAppDelegate(self)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let appState else {
-            Logger.appDelegate.warning("Missing app state in applicationDidFinishLaunching")
-            return
-        }
-
         // Dismiss the windows
         appState.dismissSettingsWindow()
         appState.dismissPermissionsWindow()
@@ -35,26 +25,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Perform setup after a small delay to ensure that the settings window
         // has been assigned.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard !appState.isPreview else {
+            guard !self.appState.isPreview else {
                 return
             }
             // If we have the required permissions, set up the shared app state.
             // Otherwise, open the permissions window.
-            switch appState.permissionsManager.permissionsState {
+            switch self.appState.permissionsManager.permissionsState {
             case .hasAllPermissions, .hasRequiredPermissions:
                 Logger.appDelegate.info("Has all permissions")
-                appState.performSetup()
+                self.appState.performSetup()
             case .missingPermissions:
                 Logger.appDelegate.info("Missing permissions")
-                appState.activate(withPolicy: .regular)
-                appState.openPermissionsWindow()
+                self.appState.activate(withPolicy: .regular)
+                self.appState.openPermissionsWindow()
             }
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Deactivate and set the policy to accessory when all windows are closed.
-        appState?.deactivate(withPolicy: .accessory)
+        appState.deactivate(withPolicy: .accessory)
         return false
     }
 
@@ -66,17 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        guard let appState else {
-            Logger.appDelegate.warning("Missing app state in applicationShouldHandleReopen")
-            return false
-        }
         switch appState.permissionsManager.permissionsState {
         case .hasAllPermissions, .hasRequiredPermissions:
             openSettingsWindow()
         case .missingPermissions:
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                appState.activate(withPolicy: .regular)
-                appState.openPermissionsWindow()
+                self.appState.activate(withPolicy: .regular)
+                self.appState.openPermissionsWindow()
             }
         }
         return false
@@ -84,25 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Other Methods
 
-    /// Assigns the app state to the delegate.
-    func assignAppState(_ appState: AppState) {
-        guard self.appState == nil else {
-            Logger.appDelegate.warning("Multiple attempts made to assign app state")
-            return
-        }
-        self.appState = appState
-    }
-
     /// Opens the settings window and activates the app.
     @objc func openSettingsWindow() {
-        guard let appState else {
-            Logger.appDelegate.error("Failed to open settings window")
-            return
-        }
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            appState.activate(withPolicy: .regular)
-            appState.openSettingsWindow()
+            self.appState.activate(withPolicy: .regular)
+            self.appState.openSettingsWindow()
         }
     }
 }

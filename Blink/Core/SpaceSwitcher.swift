@@ -103,18 +103,6 @@ private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
 
 private let kDefaultInstantGestureVelocity = 999_999.0
 
-// Interval between per-step MC gestures when posted via asyncAfter.
-// Must be long enough for one run-loop cycle to process the previous event.
-private let kMissionControlStepInterval: TimeInterval = 0.010
-
-// For large instant jumps outside Mission Control, gestures are chunked into
-// groups so Dock doesn't see an overwhelming burst. asyncAfter is used (not
-// usleep) for the same reason as the MC path: Blink's active event tap holds
-// events until the main-thread run loop fires, so usleep just queues them
-// all up and they flush as a burst at the end anyway.
-private let kInstantGestureChunkSize = 4
-private let kInstantGestureChunkInterval: TimeInterval = 0.040
-
 // MARK - SpaceInfo
 
 struct SpaceInfo: Equatable {
@@ -169,13 +157,9 @@ private struct SpaceSnapshot {
     }
 }
 
-private struct PendingJump {
-    let originSpaceID: UInt64
-    var targetSpaceID: UInt64
-}
-
 // MARK: - SpaceSwitcher
 
+@MainActor
 @Observable
 final class SpaceSwitcher {
     /// The shared app state.
@@ -183,15 +167,13 @@ final class SpaceSwitcher {
 
     var spaceInfo: SpaceInfo? {
         guard let snapshot else { return nil }
-        return applyingOptimisticIndex(to: snapshot.menuBarSpaceInfo)
+
+        return applyingProjectedIndex(to: snapshot.menuBarSpaceInfo)
     }
 
     private let symbols: CGSSymbols?
 
     private var snapshot: SpaceSnapshot?
-    private var optimisticCurrentIndexByDisplay: [String: Int] = [:]
-    private var lastSpaceIDByDisplay: [String: UInt64] = [:]
-    private var pendingJumpByDisplay: [String: PendingJump] = [:]
 
     private var spaceObserver: NSObjectProtocol?
     private var appObserver: NSObjectProtocol?
@@ -211,6 +193,32 @@ final class SpaceSwitcher {
                 ?? kDefaultInstantGestureVelocity)
     }
 
+    @ObservationIgnored
+    private lazy var switchCoordinator = SpaceSwitchCoordinator(
+        dependencies: .init(
+            loadContext: { [weak self] displayIdentifier in
+                self?.freshSwitchContext(for: displayIdentifier)
+            },
+            postStep: { [weak self] gestureMode, direction, velocity in
+                guard let self else {
+                    return false
+                }
+
+                switch gestureMode {
+                case .instant:
+                    return autoreleasepool {
+                        self.postInstantGesture(direction, velocity: velocity)
+                    }
+                case .missionControl:
+                    return self.postMissionControlGesture(direction)
+                }
+            },
+            sleep: { duration in
+                try await Task<Never, Never>.sleep(for: duration)
+            }
+        )
+    )
+
     init(appState: AppState) {
         self.appState = appState
 
@@ -221,55 +229,86 @@ final class SpaceSwitcher {
     }
 
     deinit {
-        let workspaceNC = NSWorkspace.shared.notificationCenter
-        [spaceObserver, appObserver, screensWakeObserver].compactMap { $0 }.forEach {
-            workspaceNC.removeObserver($0)
+        MainActor.assumeIsolated {
+            switchCoordinator.cancelAll()
+
+            let workspaceNC = NSWorkspace.shared.notificationCenter
+            [spaceObserver, appObserver, screensWakeObserver]
+                .compactMap { $0 }.forEach {
+                    workspaceNC.removeObserver($0)
+                }
+            let defaultNC = NotificationCenter.default
+            [windowObserver, windowScreenObserver, screenParamsObserver]
+                .compactMap { $0 }
+                .forEach {
+                    defaultNC.removeObserver($0)
+                }
         }
-        let defaultNC = NotificationCenter.default
-        [windowObserver, windowScreenObserver, screenParamsObserver].compactMap { $0 }
-            .forEach {
-                defaultNC.removeObserver($0)
-            }
     }
 
     // MARK: - Public interface
 
     @discardableResult
-    func switchLeft() -> Bool { postGesture(.left) }
+    func switchLeft() -> Bool { submitStep(.left) }
 
     @discardableResult
-    func switchRight() -> Bool { postGesture(.right) }
+    func switchRight() -> Bool { submitStep(.right) }
 
     @discardableResult
     func switchToIndex(_ index: Int) -> Bool {
-        guard let snapshot = refreshSnapshot() else { return false }
-        let info = actionSpaceInfo(in: snapshot)
-        guard info.spaceCount > 0 else { return false }
+        guard
+            let context = freshActionContext(),
+            context.topology.spaceIDs.indices.contains(index)
+        else {
+            return false
+        }
 
-        return moveToIndex(index, using: info)
+        return switchCoordinator.submitTarget(
+            context.topology.spaceIDs[index],
+            context: context,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     @discardableResult
     func switchToLastSpace() -> Bool {
-        guard let snapshot = refreshSnapshot() else { return false }
-        let info = actionSpaceInfo(in: snapshot)
-        guard let targetIndex = lastSpaceTargetIndex(using: info) else { return false }
+        guard
+            let context = freshActionContext(),
+            let targetSpaceID =
+                switchCoordinator.lastSpaceID(for: context.topology)
+        else {
+            return false
+        }
 
-        return moveToIndex(targetIndex, using: info)
+        return switchCoordinator.submitTarget(
+            targetSpaceID,
+            context: context,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     func canMoveLeft() -> Bool { canMove(.left) }
     func canMoveRight() -> Bool { canMove(.right) }
 
     func canSwitchToLastSpace() -> Bool {
-        guard let snapshot else { return false }
-        let info = actionSpaceInfo(in: snapshot)
-        return lastSpaceTargetIndex(using: info) != nil
+        guard
+            let snapshot,
+            let topology = actionTopology(in: snapshot)
+        else {
+            return false
+        }
+
+        return switchCoordinator.lastSpaceID(for: topology) != nil
     }
 
     func refreshSpaceInfo() {
-        _ = refreshSnapshot()
-        // debugLogSpaceInfo()
+        refreshSpaceInfo(reason: .passiveRefresh)
+    }
+
+    private func refreshSpaceInfo(
+        reason: SpaceSwitchCoordinator.ReconciliationReason
+    ) {
+        _ = refreshSnapshot(reason: reason)
     }
 
     // MARK - Workspace notifications
@@ -281,140 +320,204 @@ final class SpaceSwitcher {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.clearOptimisticStateForCompletedJumps()
-            self?.refreshSpaceInfo()
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo(reason: .activeSpaceChanged)
+            }
         }
 
         appObserver = workspaceNC.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo()
+            }
+        }
 
         screensWakeObserver = workspaceNC.addObserver(
             forName: NSWorkspace.screensDidWakeNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo()
+            }
+        }
 
         let defaultNC = NotificationCenter.default
         windowObserver = defaultNC.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo()
+            }
+        }
 
         windowScreenObserver = defaultNC.addObserver(
             forName: NSWindow.didChangeScreenNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo()
+            }
+        }
 
         screenParamsObserver = defaultNC.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.refreshSpaceInfo() }
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSpaceInfo()
+            }
+        }
     }
 
     // MARK: - Space info loading
 
-    private enum Direction { case left, right }
-
-    private func scheduleAsyncActions(
-        count: Int,
-        interval: TimeInterval,
-        action: @escaping (Int) -> Void,
-        completion: (() -> Void)? = nil
-    ) {
-        let start = DispatchTime.now()
-
-        for index in 0..<count {
-            let deadline = start + Double(index) * interval
-            DispatchQueue.main.asyncAfter(deadline: deadline) {
-                action(index)
-            }
-        }
-
-        guard let completion else { return }
-
-        let completionDeadline = start + Double(count) * interval
-        DispatchQueue.main.asyncAfter(deadline: completionDeadline) {
-            completion()
-        }
-    }
+    private typealias Direction = SpaceSwitchCoordinator.Direction
 
     @discardableResult
-    private func refreshSnapshot() -> SpaceSnapshot? {
-        let previousSnapshot = snapshot
-
+    private func refreshSnapshot(
+        reason: SpaceSwitchCoordinator.ReconciliationReason = .passiveRefresh
+    ) -> SpaceSnapshot? {
         guard let newSnapshot = loadSpaceSnapshot() else {
-            return snapshot
+            // Preserve the previous snapshot for menu presentation, but never
+            // return stale topology to a command submission.
+            return nil
         }
 
-        updateLastSpaceHistory(from: previousSnapshot, to: newSnapshot)
         snapshot = newSnapshot
+
+        switchCoordinator.reconcile(
+            topologies: coordinatorTopologies(in: newSnapshot),
+            reason: reason
+        )
 
         return newSnapshot
     }
 
-    private func actionSpaceInfo(in snapshot: SpaceSnapshot) -> SpaceInfo {
-        snapshot.spaceInfo(for: cursorDisplayIdentifier())
-    }
-
-    private func updateLastSpaceHistory(
-        from previousSnapshot: SpaceSnapshot?,
-        to currentSnapshot: SpaceSnapshot
-    ) {
-        guard let previousSnapshot else { return }
-
-        for (displayIdentifier, currentInfo) in currentSnapshot.spaceInfoByDisplay {
-            if let pendingJump = pendingJumpByDisplay[displayIdentifier] {
-                if currentInfo.currentSpaceID == pendingJump.targetSpaceID {
-                    lastSpaceIDByDisplay[displayIdentifier] = pendingJump.originSpaceID
-                    pendingJumpByDisplay.removeValue(forKey: displayIdentifier)
-                    optimisticCurrentIndexByDisplay.removeValue(forKey: displayIdentifier)
-                }
-                continue
-            }
-
-            guard
-                let previousInfo = previousSnapshot.spaceInfoByDisplay[displayIdentifier],
-                let previousSpaceID = previousInfo.currentSpaceID,
-                previousSpaceID != currentInfo.currentSpaceID
-            else { continue }
-
-            lastSpaceIDByDisplay[displayIdentifier] = previousSpaceID
-        }
-
-        let activeDisplayIdentifiers = Set(currentSnapshot.spaceInfoByDisplay.keys)
-        lastSpaceIDByDisplay = lastSpaceIDByDisplay.filter {
-            activeDisplayIdentifiers.contains($0.key)
-        }
-        optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
-            activeDisplayIdentifiers.contains($0.key)
-        }
-        pendingJumpByDisplay = pendingJumpByDisplay.filter {
-            activeDisplayIdentifiers.contains($0.key)
-        }
-    }
-
-    private func applyingOptimisticIndex(to info: SpaceInfo) -> SpaceInfo {
+    private func topology(
+        from info: SpaceInfo
+    ) -> SpaceSwitchCoordinator.Topology? {
         guard
-            info.spaceCount > 0,
             let displayIdentifier = info.displayIdentifier,
-            let optimisticCurrentIndex = optimisticCurrentIndexByDisplay[displayIdentifier]
+            info.spaceIDs.indices.contains(info.currentIndex)
+        else {
+            return nil
+        }
+
+        return SpaceSwitchCoordinator.Topology(
+            displayIdentifier: displayIdentifier,
+            spaceIDs: info.spaceIDs,
+            currentSpaceID: info.spaceIDs[info.currentIndex]
+        )
+    }
+
+    private func coordinatorTopologies(
+        in snapshot: SpaceSnapshot
+    ) -> [String: SpaceSwitchCoordinator.Topology] {
+        Dictionary(
+            uniqueKeysWithValues:
+                snapshot.spaceInfoByDisplay.compactMap {
+                    displayIdentifier, info in
+
+                    guard
+                        info.displayIdentifier == displayIdentifier,
+                        let topology = topology(from: info)
+                    else {
+                        return nil
+                    }
+
+                    return (displayIdentifier, topology)
+                }
+        )
+    }
+
+    private func actionTopology(
+        in snapshot: SpaceSnapshot
+    ) -> SpaceSwitchCoordinator.Topology? {
+        guard
+            let displayIdentifier = cursorDisplayIdentifier(),
+            let info = snapshot.spaceInfoByDisplay[displayIdentifier]
+        else {
+            return nil
+        }
+
+        return topology(from: info)
+    }
+
+    private func actionContext(
+        in snapshot: SpaceSnapshot
+    ) -> SpaceSwitchCoordinator.Context? {
+        guard let topology = actionTopology(in: snapshot) else {
+            return nil
+        }
+
+        let gestureMode: SpaceSwitchCoordinator.GestureMode =
+            isMissionControlActive(
+                on: topology.displayIdentifier
+            )
+            ? .missionControl
+            : .instant
+
+        return SpaceSwitchCoordinator.Context(
+            topology: topology,
+            gestureMode: gestureMode
+        )
+    }
+
+    private func freshActionContext() -> SpaceSwitchCoordinator.Context? {
+        guard
+            let snapshot = refreshSnapshot(reason: .commandSubmission)
+        else {
+            return nil
+        }
+
+        return actionContext(in: snapshot)
+    }
+
+    private func freshSwitchContext(
+        for displayIdentifier: String
+    ) -> SpaceSwitchCoordinator.Context? {
+        guard
+            cursorDisplayIdentifier() == displayIdentifier,
+            let snapshot = loadSpaceSnapshot(),
+            let info = snapshot.spaceInfoByDisplay[displayIdentifier],
+            let topology = topology(from: info)
+        else {
+            return nil
+        }
+
+        let gestureMode: SpaceSwitchCoordinator.GestureMode =
+            isMissionControlActive(on: displayIdentifier)
+            ? .missionControl
+            : .instant
+
+        return SpaceSwitchCoordinator.Context(
+            topology: topology,
+            gestureMode: gestureMode
+        )
+    }
+
+    private func applyingProjectedIndex(
+        to info: SpaceInfo
+    ) -> SpaceInfo {
+        guard
+            let topology = topology(from: info),
+            let projectedIndex = switchCoordinator.projectedIndex(for: topology),
+            info.spaceIDs.indices.contains(projectedIndex),
+            projectedIndex != info.currentIndex
         else {
             return info
         }
 
-        let clampedIndex = max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
-        guard clampedIndex != info.currentIndex else {
-            return info
-        }
-
         return SpaceInfo(
-            currentIndex: clampedIndex,
+            currentIndex: projectedIndex,
             spaceCount: info.spaceCount,
             spaceIDs: info.spaceIDs,
             currentSpaceID: info.currentSpaceID,
@@ -424,109 +527,33 @@ final class SpaceSwitcher {
         )
     }
 
-    private func currentIndex(for info: SpaceInfo) -> Int {
+    private func canMove(_ direction: Direction) -> Bool {
         guard
-            let displayIdentifier = info.displayIdentifier,
-            let optimisticCurrentIndex = optimisticCurrentIndexByDisplay[displayIdentifier]
+            let snapshot,
+            let topology = actionTopology(in: snapshot)
         else {
-            return info.currentIndex
-        }
-        return max(0, min(optimisticCurrentIndex, info.spaceCount - 1))
-    }
-
-    private func setOptimisticCurrentIndex(_ index: Int, for info: SpaceInfo) {
-        guard let displayIdentifier = info.displayIdentifier else { return }
-        optimisticCurrentIndexByDisplay[displayIdentifier] = index
-    }
-
-    private func rememberCurrentSpaceAsLast(_ info: SpaceInfo, targetIndex: Int? = nil) {
-        guard
-            let displayIdentifier = info.displayIdentifier,
-            let currentSpaceID = info.currentSpaceID
-        else { return }
-
-        guard
-            let targetIndex,
-            info.spaceIDs.indices.contains(targetIndex)
-        else {
-            if pendingJumpByDisplay[displayIdentifier] == nil {
-                lastSpaceIDByDisplay[displayIdentifier] = currentSpaceID
-            }
-            return
+            return false
         }
 
-        if pendingJumpByDisplay[displayIdentifier] == nil {
-            pendingJumpByDisplay[displayIdentifier] = PendingJump(
-                originSpaceID: currentSpaceID,
-                targetSpaceID: info.spaceIDs[targetIndex]
-            )
-        } else {
-            pendingJumpByDisplay[displayIdentifier]?.targetSpaceID = info.spaceIDs[targetIndex]
-        }
+        return switchCoordinator.canMove(
+            direction,
+            in: topology,
+            wrap: wrapSpaces
+        )
     }
 
     @discardableResult
-    private func moveToIndex(_ index: Int, using info: SpaceInfo) -> Bool {
-        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
-
-        guard (0..<info.spaceCount).contains(index) else { return false }
-
-        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
-        guard index != currentIndex else { return true }
-
-        let direction: Direction = index > currentIndex ? .right : .left
-        let steps = abs(index - currentIndex)
-
-        let didPost =
-            missionControlActive
-            ? postMissionControlJump(direction, steps: steps)
-            : postInstantJump(direction, steps: steps, targetIndex: index, info: info)
-
-        if didPost {
-            rememberCurrentSpaceAsLast(info, targetIndex: index)
+    private func submitStep(_ direction: Direction) -> Bool {
+        guard let context = freshActionContext() else {
+            return false
         }
 
-        return didPost
-    }
-
-    private func canMove(_ direction: Direction) -> Bool {
-        guard let snapshot else { return false }
-
-        let info = actionSpaceInfo(in: snapshot)
-        guard info.spaceCount > 0 else { return false }
-
-        if wrapSpaces { return true }
-
-        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
-        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
-
-        switch direction {
-        case .left:
-            return currentIndex > 0
-        case .right:
-            return currentIndex + 1 < info.spaceCount
-        }
-    }
-
-    private func lastSpaceTargetIndex(using info: SpaceInfo) -> Int? {
-        guard
-            info.spaceCount > 0,
-            let displayIdentifier = info.displayIdentifier,
-            let lastSpaceID = lastSpaceIDByDisplay[displayIdentifier],
-            let targetIndex = info.index(ofSpaceID: lastSpaceID)
-        else { return nil }
-
-        let missionControlActive = isMissionControlActive(on: info.displayIdentifier)
-        let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
-
-        guard targetIndex != currentIndex else { return nil }
-        return targetIndex
-    }
-
-    private func clearOptimisticStateForCompletedJumps() {
-        optimisticCurrentIndexByDisplay = optimisticCurrentIndexByDisplay.filter {
-            pendingJumpByDisplay[$0.key] != nil
-        }
+        return switchCoordinator.submitStep(
+            direction,
+            context: context,
+            wrap: wrapSpaces,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     private enum OverlayMode: String {
@@ -859,46 +886,57 @@ final class SpaceSwitcher {
     )
         -> SpaceInfo?
     {
-        let displayIdentifier = displayDict["Display Identifier"] as? String
-
-        guard let spacesArray = displayDict["Spaces"] as? NSArray else {
+        guard
+            let displayIdentifier =
+                displayDict["Display Identifier"] as? String,
+            !displayIdentifier.isEmpty,
+            let spacesArray = displayDict["Spaces"] as? NSArray
+        else {
             return nil
         }
 
-        // Prefer the per-display active space ID
-        var activeID = globalActiveSpaceID
-        let currentSpaceDict = displayDict["Current Space"] as? NSDictionary
-        let currentSpaceID = (currentSpaceDict?["id64"] as? NSNumber)?.uint64Value
-        let currentSpaceType = (currentSpaceDict?["type"] as? NSNumber)?.intValue
-        if let id = currentSpaceID {
-            activeID = id
-        }
+        let currentSpaceDict =
+            displayDict["Current Space"] as? NSDictionary
 
-        var count = 0
-        var activeIndex = 0
-        var foundActive = false
+        let perDisplayActiveSpaceID =
+            (currentSpaceDict?["id64"] as? NSNumber)?
+            .uint64Value
+
+        let currentSpaceType =
+            (currentSpaceDict?["type"] as? NSNumber)?
+            .intValue
+
+        let activeSpaceID =
+            perDisplayActiveSpaceID
+            ?? globalActiveSpaceID
+
         var spaceIDs: [UInt64] = []
 
         for item in spacesArray {
-            guard let spaceDict = item as? NSDictionary,
-                let id = (spaceDict["id64"] as? NSNumber)?.uint64Value
-            else { continue }
-
-            if !foundActive && id == activeID {
-                activeIndex = count
-                foundActive = true
+            guard
+                let spaceDict = item as? NSDictionary,
+                let spaceID = (spaceDict["id64"] as? NSNumber)?.uint64Value,
+                spaceID != 0
+            else {
+                continue
             }
 
-            spaceIDs.append(id)
-            count += 1
+            spaceIDs.append(spaceID)
         }
 
-        guard count > 0 else { return nil }
+        guard
+            !spaceIDs.isEmpty,
+            Set(spaceIDs).count == spaceIDs.count,
+            let activeIndex = spaceIDs.firstIndex(of: activeSpaceID)
+        else {
+            return nil
+        }
+
         return SpaceInfo(
-            currentIndex: foundActive ? activeIndex : 0,
-            spaceCount: count,
+            currentIndex: activeIndex,
+            spaceCount: spaceIDs.count,
             spaceIDs: spaceIDs,
-            currentSpaceID: currentSpaceID,
+            currentSpaceID: activeSpaceID,
             currentSpaceType: currentSpaceType,
             displayIdentifier: displayIdentifier,
             frontmostBundleID: frontmostBundleID
@@ -931,45 +969,6 @@ final class SpaceSwitcher {
     //    trace that Dock treats as an instant desktop-space commit.
     //  - Inside Mission Control: an explicit progress trace that remains more
     //    reliable for moving across many spaces in the strip.
-
-    @discardableResult
-    private func postGesture(_ direction: Direction) -> Bool {
-        let snapshot = refreshSnapshot()
-        let info = snapshot.map(actionSpaceInfo(in:))
-        let missionControlActive = isMissionControlActive(on: info?.displayIdentifier)
-
-        if let info {
-            let currentIndex = missionControlActive ? info.currentIndex : currentIndex(for: info)
-            let shouldWrap =
-                switch direction {
-                case .left: currentIndex == 0
-                case .right: currentIndex + 1 >= info.spaceCount
-                }
-
-            if shouldWrap {
-                guard wrapSpaces else { return false }
-
-                let targetIndex =
-                    switch direction {
-                    case .left: info.spaceCount - 1
-                    case .right: 0
-                    }
-
-                return moveToIndex(targetIndex, using: info)
-            }
-        }
-
-        let didPost =
-            missionControlActive
-            ? postMissionControlStep(direction)
-            : postInstantStep(direction, info: info)
-
-        if didPost, let info {
-            rememberCurrentSpaceAsLast(info)
-        }
-
-        return didPost
-    }
 
     private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
         var flagsProgress = Float.leastNonzeroMagnitude
@@ -1024,105 +1023,6 @@ final class SpaceSwitcher {
         gestureEvent.post(tap: .cgSessionEventTap)
 
         return true
-    }
-
-    @discardableResult
-    private func postInstantGestures(
-        _ direction: Direction,
-        count: Int,
-        velocity: Double
-    ) -> Bool {
-        guard count >= 0 else { return false }
-
-        for _ in 0..<count {
-            let didPost = autoreleasepool { postInstantGesture(direction, velocity: velocity) }
-            guard didPost else { return false }
-        }
-
-        return true
-    }
-
-    @discardableResult
-    private func postInstantJump(
-        _ direction: Direction,
-        steps: Int,
-        targetIndex: Int,
-        info: SpaceInfo
-    ) -> Bool {
-        let velocity = instantGestureVelocity * Double(steps)
-
-        if steps > kInstantGestureChunkSize {
-            return postChunkedInstantJump(
-                direction,
-                steps: steps,
-                velocity: velocity,
-                targetIndex: targetIndex,
-                info: info
-            )
-        }
-
-        let didPost = postInstantGestures(direction, count: steps, velocity: velocity)
-        if didPost {
-            setOptimisticCurrentIndex(targetIndex, for: info)
-        }
-        return didPost
-    }
-
-    @discardableResult
-    private func postChunkedInstantJump(
-        _ direction: Direction,
-        steps: Int,
-        velocity: Double,
-        targetIndex: Int,
-        info: SpaceInfo
-    ) -> Bool {
-        let chunkCount = (steps + kInstantGestureChunkSize - 1) / kInstantGestureChunkSize
-
-        scheduleAsyncActions(count: chunkCount, interval: kInstantGestureChunkInterval) {
-            [weak self] chunk in
-            guard let self else { return }
-
-            let chunkStart = chunk * kInstantGestureChunkSize
-            let chunkEnd = min(chunkStart + kInstantGestureChunkSize, steps)
-            let chunkSteps = chunkEnd - chunkStart
-            _ = self.postInstantGestures(direction, count: chunkSteps, velocity: velocity)
-        } completion: { [weak self] in
-            self?.setOptimisticCurrentIndex(targetIndex, for: info)
-        }
-
-        return true
-    }
-
-    @discardableResult
-    private func postMissionControlJump(_ direction: Direction, steps: Int) -> Bool {
-        // Blink's active event tap delays delivery until the main run loop spins,
-        // so each Mission Control step must be posted from a later turn.
-        scheduleAsyncActions(count: steps, interval: kMissionControlStepInterval) {
-            [weak self] _ in
-            self?.postMissionControlGesture(direction)
-        } completion: { [weak self] in
-            self?.refreshSpaceInfo()
-        }
-
-        return true
-    }
-
-    @discardableResult
-    private func postInstantStep(_ direction: Direction, info: SpaceInfo?) -> Bool {
-        let didPost = postInstantGesture(direction)
-        guard didPost, let info else { return didPost }
-
-        let currentIndex = currentIndex(for: info)
-        let targetIndex = direction == .left ? currentIndex - 1 : currentIndex + 1
-        setOptimisticCurrentIndex(targetIndex, for: info)
-        return true
-    }
-
-    @discardableResult
-    private func postMissionControlStep(_ direction: Direction) -> Bool {
-        let didPost = postMissionControlGesture(direction)
-        if didPost { refreshSpaceInfo() }
-        return didPost
     }
 
     @discardableResult
