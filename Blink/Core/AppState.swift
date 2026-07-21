@@ -12,13 +12,22 @@ import SwiftUI
 @Observable @MainActor
 final class AppState {
     @ObservationIgnored
-    private(set) lazy var spaceSwitcher = SpaceSwitcher(appState: self)
+    private(set) lazy var spaceSwitcher = SpaceSwitcher()
+
+    @ObservationIgnored
+    private(set) lazy var actionDispatcher = ActionDispatcher(
+        spaceSwitcher: spaceSwitcher
+    )
 
     @ObservationIgnored
     private(set) lazy var permissionsManager = PermissionsManager(appState: self)
 
     @ObservationIgnored
-    private(set) lazy var settingsManager = SettingsManager(appState: self)
+    private(set) lazy var settingsManager = SettingsManager(
+        registry: hotkeyRegistry,
+        dispatcher: actionDispatcher,
+        spaceSwitcher: spaceSwitcher
+    )
 
     @ObservationIgnored
     private(set) lazy var updatesManager = UpdatesManager(appState: self)
@@ -37,6 +46,9 @@ final class AppState {
 
     /// The app's hotkey registry.
     let hotkeyRegistry = HotkeyRegistry()
+
+    /// Creates support reports without coupling views to diagnostics storage.
+    let diagnosticsController = DiagnosticsController()
 
     let isPreview: Bool = {
         #if DEBUG

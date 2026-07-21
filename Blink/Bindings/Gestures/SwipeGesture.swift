@@ -8,7 +8,7 @@
 import Foundation
 import Observation
 
-enum SwipeDirection: String, Codable, Hashable {
+nonisolated enum SwipeDirection: String, Codable, Hashable, Sendable {
     case left, right
 
     var opposite: Self {

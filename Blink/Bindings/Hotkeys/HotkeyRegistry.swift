@@ -1,182 +1,180 @@
-//
-//  HotkeyRegistry.swift
-//  Blink
-//
-//  Created by Ben on 3/25/26.
-//
-
 import Carbon.HIToolbox
-import Cocoa
+import Foundation
 
-/// An object that manages the registration, storage, and unregistration of hotkeys.
 @MainActor
 final class HotkeyRegistry {
-    /// The event kinds that a hotkey can be registered for.
     enum EventKind {
         case keyUp
         case keyDown
-
-        fileprivate init?(event: EventRef) {
-            switch Int(GetEventKind(event)) {
-            case kEventHotKeyPressed:
-                self = .keyDown
-            case kEventHotKeyReleased:
-                self = .keyUp
-            default:
-                return nil
-            }
-        }
     }
 
-    /// An object that stores the information needed to cancel a registration.
     private final class Registration {
         let eventKind: EventKind
-        let key: KeyCode
-        let modifiers: Modifiers
         let handler: () -> Void
+        let reference: EventHotKeyRef
 
         init(
             eventKind: EventKind,
-            key: KeyCode,
-            modifiers: Modifiers,
-            handler: @escaping () -> Void
+            handler: @escaping () -> Void,
+            reference: EventHotKeyRef
         ) {
             self.eventKind = eventKind
-            self.key = key
-            self.modifiers = modifiers
             self.handler = handler
+            self.reference = reference
         }
     }
 
-    private var registrations = [UInt32: Registration]()
+    private static let signature: OSType = 0x424C4E4B // BLNK
 
-    private var keyEventTap: EventTap?
+    private var registrations: [UInt32: Registration] = [:]
+    private var nextID: UInt32 = 1
+    private var eventHandler: EventHandlerRef?
 
-    /// Installs the global event tap, if it isn't already.
-    private func installIfNeeded() -> OSStatus {
-        guard keyEventTap == nil else {
-            return noErr
-        }
-
-        let tap = EventTap(
-            label: "HotkeyRegistry",
-            options: .defaultTap,
-            location: .hidEventTap,
-            place: .headInsertEventTap,
-            types: [.keyDown],
-            callback: { [weak self] proxy, type, event in
-                guard let self else { return event }
-
-                switch type {
-                case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    proxy.enable()
-                    return event
-
-                case .keyDown:
-                    return self.handleKeyDownEvent(event)
-
-                default:
-                    return event
-                }
+    deinit {
+        MainActor.assumeIsolated {
+            registrations.values.forEach {
+                UnregisterEventHotKey($0.reference)
             }
-        )
-        tap.enable()
-        keyEventTap = tap
-
-        return tap.isEnabled ? noErr : OSStatus(eventNotHandledErr)
+            if let eventHandler {
+                RemoveEventHandler(eventHandler)
+            }
+        }
     }
 
-    /// Registers the given hotkey for the given event kind and returns the
-    /// identifier of the registration on success.
-    ///
-    /// The returned identifier can be used to unregister the hotkey using
-    /// the ``unregister(_:)`` function.
-    ///
-    /// - Parameters:
-    ///   - hotkey: The hotkey to register the handler with.
-    ///   - eventKind: The event kind to register the handler with.
-    ///   - handler: The handler to perform when `hotkey` is triggered with
-    ///     the event kind specified by `eventKind`.
-    ///
-    /// - Returns: The registration's identifier on success, `nil` on failure.
     func register(
         hotkey: Hotkey,
         eventKind: EventKind,
         handler: @escaping () -> Void
     ) -> UInt32? {
-        enum Context {
-            static var currentID: UInt32 = 0
-        }
-
-        defer {
-            Context.currentID += 1
-        }
-
         guard let keyCombination = hotkey.keyCombination else {
             Logger.hotkeyRegistry.error("Hotkey does not have a valid key combination")
             return nil
         }
-
-        let status = installIfNeeded()
-
-        guard status == noErr else {
-            Logger.hotkeyRegistry.error(
-                "Hotkey event tap installation failed with status \(status)")
+        guard installHandlerIfNeeded() else {
             return nil
         }
 
-        let id = Context.currentID
-
-        guard registrations[id] == nil else {
-            Logger.hotkeyRegistry.error("Hotkey already registered for id \(id)")
-            return nil
-        }
-
-        let registration = Registration(
-            eventKind: eventKind,
-            key: keyCombination.key,
-            modifiers: keyCombination.modifiers,
-            handler: handler
+        let id = nextID
+        nextID &+= 1
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            UInt32(keyCombination.key.rawValue),
+            UInt32(keyCombination.modifiers.carbonFlags),
+            EventHotKeyID(signature: Self.signature, id: id),
+            GetApplicationEventTarget(),
+            0,
+            &reference
         )
-        registrations[id] = registration
 
+        guard status == noErr, let reference else {
+            Logger.hotkeyRegistry.error(
+                "Hotkey registration failed with status \(status)"
+            )
+            return nil
+        }
+
+        registrations[id] = Registration(
+            eventKind: eventKind,
+            handler: handler,
+            reference: reference
+        )
         return id
     }
 
-    /// Unregisters the key combination with the given identifier.
-    ///
-    /// - Parameter id: An identifier returned from a call to the
-    ///   ``register(hotkey:eventKind:handler:)`` function.
     func unregister(_ id: UInt32) {
-        guard registrations.removeValue(forKey: id) != nil else {
+        guard let registration = registrations.removeValue(forKey: id) else {
             Logger.hotkeyRegistry.error("No registered key combination for id \(id)")
             return
         }
+
+        let status = UnregisterEventHotKey(registration.reference)
+        if status != noErr {
+            Logger.hotkeyRegistry.error(
+                "Hotkey unregistration failed with status \(status)"
+            )
+        }
     }
 
-    private func handleKeyDownEvent(_ event: CGEvent) -> CGEvent? {
-        let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        let key = KeyCode(rawValue: Int(event.getIntegerValueField(.keyboardEventKeycode)))
-        let modifiers = Modifiers(cgEventFlags: event.flags)
+    private func installHandlerIfNeeded() -> Bool {
+        guard eventHandler == nil else { return true }
 
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            handleCarbonHotkey,
+            eventTypes.count,
+            &eventTypes,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &eventHandler
+        )
+
+        guard status == noErr else {
+            Logger.hotkeyRegistry.error(
+                "Hotkey event handler installation failed with status \(status)"
+            )
+            return false
+        }
+        return true
+    }
+
+    fileprivate func handle(_ event: EventRef) -> OSStatus {
+        var hotkeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotkeyID
+        )
         guard
-            let registration = registrations.values.first(where: {
-                $0.eventKind == .keyDown && $0.key == key && $0.modifiers == modifiers
-            })
+            status == noErr,
+            hotkeyID.signature == Self.signature,
+            let registration = registrations[hotkeyID.id]
         else {
-            return event
+            return OSStatus(eventNotHandledErr)
         }
 
-        guard !isAutorepeat else {
-            return nil
+        let kind = GetEventKind(event)
+        let expectedKind: UInt32 = registration.eventKind == .keyDown
+            ? UInt32(kEventHotKeyPressed)
+            : UInt32(kEventHotKeyReleased)
+        guard kind == expectedKind else {
+            return OSStatus(eventNotHandledErr)
         }
 
         registration.handler()
-        return nil
+        return noErr
     }
 }
 
-// MARK: - Logger
+private nonisolated func handleCarbonHotkey(
+    _ nextHandler: EventHandlerCallRef?,
+    _ event: EventRef?,
+    _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let event, let userData else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    let registry = Unmanaged<HotkeyRegistry>
+        .fromOpaque(userData)
+        .takeUnretainedValue()
+    return MainActor.assumeIsolated {
+        registry.handle(event)
+    }
+}
+
 extension Logger {
     fileprivate static let hotkeyRegistry = Logger(category: "HotkeyRegistry")
 }

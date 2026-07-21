@@ -26,9 +26,12 @@ final class SystemSwipeSuppressor {
 
     /// Return true to let the current native swipe reach macOS unchanged.
     var shouldBypassSwipeSuppression: (() -> Bool)?
+    var onGestureMayBegin: (() -> Void)?
 
     func startMonitoring() {
-        guard eventTap == nil else { return }
+        if let eventTap, eventTap.isHealthy { return }
+
+        eventTap?.disable()
 
         let tap = EventTap(
             label: "SystemSwipeSuppressor",
@@ -62,6 +65,11 @@ final class SystemSwipeSuppressor {
         eventTap = tap
     }
 
+    func ensureMonitoring() {
+        guard eventTap != nil else { return }
+        startMonitoring()
+    }
+
     func stopMonitoring() {
         eventTap?.disable()
         eventTap = nil
@@ -93,6 +101,9 @@ final class SystemSwipeSuppressor {
         let phase = event.getIntegerValueField(kGesturePhaseField)
 
         switch phase {
+        case SyntheticGestureProtocol.mayBegin:
+            onGestureMayBegin?()
+            return event
         case kGesturePhaseBegan:
             let shouldBypass = shouldBypassSwipeSuppression?() ?? false
             bypassingNativeSwipe = shouldBypass
@@ -122,7 +133,9 @@ final class SystemSwipeSuppressor {
     }
 
     private func isSyntheticOrAppPosted(_ event: CGEvent) -> Bool {
-        if event.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue {
+        if event.getIntegerValueField(SyntheticGestureProtocol.markerField)
+            == SyntheticGestureProtocol.markerValue
+        {
             return true
         }
         let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)

@@ -10,62 +10,47 @@ import SwiftUI
 
 @MainActor @Observable
 final class HotkeyRecorderModel {
-    private weak var appState: AppState?
-
     private(set) var isRecording = false
     var isPresentingReservedByMacOSError = false
 
     let hotkey: Hotkey
+    private let onRecordingChanged: (Bool) -> Void
 
     @ObservationIgnored
-    private lazy var monitor = EventTap(
-        label: "HotkeyRecorder",
-        options: .defaultTap,
-        location: .hidEventTap,
-        place: .headInsertEventTap,
-        types: [.keyDown],
-        callback: { [weak self] proxy, type, event in
-            guard let self else { return event }
-
-            switch type {
-            case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                proxy.enable()
-                return event
-
-            case .keyDown:
-                guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
-                    return nil
-                }
-                handleKeyDown(event: event)
-                return nil
-
-            default:
-                return event
-            }
+    private lazy var monitor = LocalEventMonitor(
+        mask: .keyDown,
+        handler: { [weak self] event in
+            guard let self, isRecording else { return event }
+            guard !event.isARepeat else { return nil }
+            handleKeyDown(event: event)
+            return nil
         }
     )
 
-    init(hotkey: Hotkey, appState: AppState?) {
+    init(
+        hotkey: Hotkey,
+        onRecordingChanged: @escaping (Bool) -> Void
+    ) {
         self.hotkey = hotkey
-        self.appState = appState
+        self.onRecordingChanged = onRecordingChanged
     }
 
     func startRecording() {
         guard !isRecording else { return }
-        hotkey.disable()
-        monitor.enable()
+        onRecordingChanged(true)
+        monitor.start()
         isRecording = true
     }
 
     func stopRecording() {
         guard isRecording else { return }
-        monitor.disable()
-        hotkey.enable()
+        monitor.stop()
+        onRecordingChanged(false)
         isRecording = false
     }
 
-    private func handleKeyDown(event: CGEvent) {
-        let keyCombination = KeyCombination(cgEvent: event)
+    private func handleKeyDown(event: NSEvent) {
+        let keyCombination = KeyCombination(event: event)
 
         guard !keyCombination.modifiers.isEmpty else {
             if keyCombination.key == .escape {

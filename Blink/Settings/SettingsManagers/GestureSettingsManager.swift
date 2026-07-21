@@ -5,6 +5,7 @@
 //  Created by Ben on 3/31/26.
 //
 
+import AppKit
 import Foundation
 import ObservableDefaults
 
@@ -17,9 +18,13 @@ final class GestureSettingsManager {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    @Ignore private(set) weak var appState: AppState?
+    @Ignore private let dispatcher: ActionDispatcher
+    @Ignore private let spaceSwitcher: SpaceSwitcher
+    @Ignore private let generalSettings: GeneralSettingsManager
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
+    @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
+    @Ignore private var cachedOverlayMode: OverlayMode = .unknown
 
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
     var disableSystemSwipeGestures: Bool = true
@@ -33,15 +38,25 @@ final class GestureSettingsManager {
     var sameDirectionRepeatSensitivity: Double = defaultSameDirectionRepeatSensitivity
     static let defaultSameDirectionRepeatSensitivity: Double = 0.06
 
-    init(appState: AppState) {
-        self.appState = appState
+    init(
+        dispatcher: ActionDispatcher,
+        spaceSwitcher: SpaceSwitcher,
+        generalSettings: GeneralSettingsManager
+    ) {
+        self.dispatcher = dispatcher
+        self.spaceSwitcher = spaceSwitcher
+        self.generalSettings = generalSettings
 
-        let spaceSwitcher = appState.spaceSwitcher
         monitor.shouldIgnoreSwipe = { [weak spaceSwitcher] in
             spaceSwitcher?.isAppExposeActive() ?? false
         }
-        systemSwipeSuppressor.shouldBypassSwipeSuppression = { [weak spaceSwitcher] in
-            spaceSwitcher?.isAppExposeActive() ?? false
+        systemSwipeSuppressor.shouldBypassSwipeSuppression = { [weak self] in
+            self?.cachedOverlayMode != OverlayMode.none
+        }
+        systemSwipeSuppressor.onGestureMayBegin = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshOverlayMode()
+            }
         }
 
         monitor.onSwipe = { [weak self] direction, fingerCount in
@@ -52,7 +67,16 @@ final class GestureSettingsManager {
 
     func performSetup() {
         loadInitialState()
+        refreshOverlayMode()
+        observeLifecycle()
         observeGestures()
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            let center = NSWorkspace.shared.notificationCenter
+            lifecycleObservers.forEach(center.removeObserver)
+        }
     }
 
     // MARK - Setup
@@ -88,14 +112,7 @@ final class GestureSettingsManager {
     }
 
     private func reconfigure() {
-        guard let appState else {
-            Logger.gestureSettingsManager.error("Missing app state")
-            monitor.stopMonitoring()
-            systemSwipeSuppressor.stopMonitoring()
-            return
-        }
-
-        let bindingsEnabled = appState.settingsManager.generalSettingsManager.bindingsEnabled
+        let bindingsEnabled = generalSettings.bindingsEnabled
         monitor.allowSameDirectionRepeat = allowSameDirectionRepeat
         monitor.sameDirectionRepeatSensitivity = sameDirectionRepeatSensitivity
         monitor.flipSwipeDirection = flipSwipeDirection
@@ -106,6 +123,36 @@ final class GestureSettingsManager {
         let shouldSuppressSystemSwipes = bindingsEnabled && disableSystemSwipeGestures
         shouldSuppressSystemSwipes
             ? systemSwipeSuppressor.startMonitoring() : systemSwipeSuppressor.stopMonitoring()
+    }
+
+    private func refreshOverlayMode() {
+        cachedOverlayMode = spaceSwitcher.currentOverlayMode()
+    }
+
+    private func observeLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
+
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+            NSWorkspace.activeSpaceDidChangeNotification,
+        ] {
+            lifecycleObservers.append(
+                center.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.refreshOverlayMode()
+                        self?.monitor.ensureMonitoring()
+                        self?.systemSwipeSuppressor.ensureMonitoring()
+                    }
+                }
+            )
+        }
     }
 
     // MARK - Persistence
@@ -125,10 +172,9 @@ final class GestureSettingsManager {
     // MARK - Swipe handling
 
     private func handleSwipe(direction: SwipeDirection, fingerCount: Int) {
-        guard let appState else { return }
         let id = SwipeGestureID(direction: direction, fingerCount: fingerCount)
         guard let gesture = gesture(withID: id), let action = gesture.action else { return }
-        action.execute(appState: appState)
+        dispatcher.dispatch(action, source: .gesture)
     }
 
     // MARK: - Public API

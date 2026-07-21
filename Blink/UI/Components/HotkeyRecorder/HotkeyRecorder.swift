@@ -14,11 +14,14 @@ struct HotkeyRecorder<Label: View>: View {
 
     init(
         hotkey: Hotkey,
-        appState: AppState?,
+        onRecordingChanged: @escaping (Bool) -> Void,
         @ViewBuilder label: () -> Label
     ) {
         self.label = label()
-        self.model = HotkeyRecorderModel(hotkey: hotkey, appState: appState)
+        self.model = HotkeyRecorderModel(
+            hotkey: hotkey,
+            onRecordingChanged: onRecordingChanged
+        )
     }
 
     var body: some View {
@@ -44,6 +47,9 @@ struct HotkeyRecorder<Label: View>: View {
             Button("OK") {
                 model.isPresentingReservedByMacOSError = false
             }
+        }
+        .onDisappear {
+            model.stopRecording()
         }
     }
 

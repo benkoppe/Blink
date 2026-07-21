@@ -75,7 +75,12 @@ struct HotkeysSettingsPane: View {
     @ViewBuilder
     private func hotkeyRecorder(forAction action: BoundAction) -> some View {
         if let hotkey = manager.hotkey(withAction: action) {
-            HotkeyRecorder(hotkey: hotkey, appState: appState) {
+            HotkeyRecorder(
+                hotkey: hotkey,
+                onRecordingChanged: {
+                    manager.setRecording($0, action: action)
+                }
+            ) {
                 HStack {
                     Text(action.displayName)
                     if hotkey.keyCombination != action.defaultKeyCombination {

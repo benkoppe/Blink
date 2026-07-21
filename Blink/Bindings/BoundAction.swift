@@ -31,22 +31,24 @@ enum BoundAction: String, Codable, CaseIterable {
     }
 
     func execute(appState: AppState) {
-        let switcher = appState.spaceSwitcher
+        appState.actionDispatcher.dispatch(self, source: .menu)
+    }
 
+    var spaceSwitchAction: SpaceSwitchAction {
         switch self {
-        case .left: switcher.switchLeft()
-        case .right: switcher.switchRight()
-        case .lastSpace: switcher.switchToLastSpace()
-        case .space1: switcher.switchToIndex(0)
-        case .space2: switcher.switchToIndex(1)
-        case .space3: switcher.switchToIndex(2)
-        case .space4: switcher.switchToIndex(3)
-        case .space5: switcher.switchToIndex(4)
-        case .space6: switcher.switchToIndex(5)
-        case .space7: switcher.switchToIndex(6)
-        case .space8: switcher.switchToIndex(7)
-        case .space9: switcher.switchToIndex(8)
-        case .space10: switcher.switchToIndex(9)
+        case .left: .step(.left)
+        case .right: .step(.right)
+        case .lastSpace: .lastSpace
+        case .space1: .index(0)
+        case .space2: .index(1)
+        case .space3: .index(2)
+        case .space4: .index(3)
+        case .space5: .index(4)
+        case .space6: .index(5)
+        case .space7: .index(6)
+        case .space8: .index(7)
+        case .space9: .index(8)
+        case .space10: .index(9)
         }
     }
 }

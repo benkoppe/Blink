@@ -1,137 +1,124 @@
-//
-//  HotkeySettingsManager.swift
-//  Blink
-//
-//  Created by Ben on 3/26/26.
-//
-
 import Foundation
 import ObservableDefaults
 
 @MainActor @ObservableDefaults(autoInit: false)
 final class HotkeySettingsManager {
-    private static let hotkeysDefaultsKey = "hotkeys"
+    private static let defaultsKey = "hotkeys"
 
-    /// All hotkeys.
-    @ObservableOnly private(set) var hotkeys = BoundAction.allCases.map { action in
-        Hotkey(keyCombination: nil, action: action)
+    @ObservableOnly private(set) var hotkeys = BoundAction.allCases.map {
+        Hotkey(keyCombination: nil, action: $0)
     }
 
-    /// Encoder for hotkeys.
     private let encoder = JSONEncoder()
-
-    /// Decoder for hotkeys.
     private let decoder = JSONDecoder()
 
-    /// The shared app state.
-    @Ignore private(set) weak var appState: AppState?
+    @Ignore private let registry: HotkeyRegistry
+    @Ignore private let dispatcher: ActionDispatcher
+    @Ignore private let generalSettings: GeneralSettingsManager
+    @Ignore private var registrationIDs: [BoundAction: UInt32] = [:]
+    @Ignore private var recordingActions: Set<BoundAction> = []
 
-    init(appState: AppState) {
-        self.appState = appState
+    init(
+        registry: HotkeyRegistry,
+        dispatcher: ActionDispatcher,
+        generalSettings: GeneralSettingsManager
+    ) {
+        self.registry = registry
+        self.dispatcher = dispatcher
+        self.generalSettings = generalSettings
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            registrationIDs.values.forEach(registry.unregister)
+        }
     }
 
     func performSetup() {
         loadInitialState()
-        observeHotkeys()
-        observeEnabled()
+        observeConfiguration()
     }
 
-    // MARK: - Setup
+    func setRecording(_ isRecording: Bool, action: BoundAction) {
+        if isRecording {
+            recordingActions.insert(action)
+        } else {
+            recordingActions.remove(action)
+        }
+        reconfigure()
+    }
 
     private func loadInitialState() {
-        guard let appState else { return }
-
-        let dict =
-            UserDefaults.standard.dictionary(forKey: Self.hotkeysDefaultsKey) as? [String: Data]
+        let values = UserDefaults.standard.dictionary(forKey: Self.defaultsKey) as? [String: Data]
 
         for hotkey in hotkeys {
-            hotkey.assignAppState(appState)
+            guard let data = values?[hotkey.action.rawValue] else {
+                hotkey.keyCombination = hotkey.action.defaultKeyCombination
+                continue
+            }
 
-            if let data = dict?[hotkey.action.rawValue] {
-                do {
-                    let keyCombination = try decoder.decode(
-                        KeyCombination?.self,
-                        from: data
-                    )
-                    hotkey.keyCombination =
-                        keyCombination == hotkey.action.defaultKeyCombination
-                        ? hotkey.action.defaultKeyCombination
-                        : keyCombination
-                } catch {
-                    Logger.hotkeySettingsManager.error("Error decoding hotkey: \(error)")
-                    hotkey.keyCombination = hotkey.action.defaultKeyCombination
-                }
-            } else {
+            do {
+                hotkey.keyCombination = try decoder.decode(KeyCombination?.self, from: data)
+            } catch {
+                Logger.hotkeySettingsManager.error("Error decoding hotkey: \(error)")
                 hotkey.keyCombination = hotkey.action.defaultKeyCombination
             }
         }
     }
 
-    // MARK: - Observation
-
-    private func observeHotkeys() {
+    private func observeConfiguration() {
         withObservationTracking {
-            // Track nested changes
-            for hotkey in hotkeys {
-                _ = hotkey.keyCombination
-            }
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.persistHotkeys()
-                self?.observeHotkeys()  // re-arm
-            }
-        }
-    }
-
-    private func observeEnabled() {
-        withObservationTracking {
+            _ = generalSettings.bindingsEnabled
+            hotkeys.forEach { _ = $0.keyCombination }
             reconfigure()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.reconfigure()
-                self?.observeEnabled()
+                self?.persistHotkeys()
+                self?.observeConfiguration()
             }
         }
     }
 
     private func reconfigure() {
-        guard let appState else { return }
-        if appState.settingsManager.generalSettingsManager.bindingsEnabled {
-            for hotkey in hotkeys { hotkey.enable() }
-        } else {
-            for hotkey in hotkeys { hotkey.disable() }
+        registrationIDs.values.forEach(registry.unregister)
+        registrationIDs.removeAll()
+
+        guard generalSettings.bindingsEnabled else { return }
+
+        for hotkey in hotkeys where !recordingActions.contains(hotkey.action) {
+            guard hotkey.keyCombination != nil else { continue }
+
+            let action = hotkey.action
+            registrationIDs[action] = registry.register(
+                hotkey: hotkey,
+                eventKind: .keyDown
+            ) { [weak dispatcher] in
+                dispatcher?.dispatch(action, source: .hotkey)
+            }
         }
     }
 
-    // MARK: - Persistence
-
     private func persistHotkeys() {
-        guard let appState else { return }
-
-        var dict = [String: Data]()
+        var values: [String: Data] = [:]
 
         for hotkey in hotkeys {
-            hotkey.assignAppState(appState)
-
             guard hotkey.keyCombination != hotkey.action.defaultKeyCombination else {
                 continue
             }
 
             do {
-                dict[hotkey.action.rawValue] = try encoder.encode(hotkey.keyCombination)
+                values[hotkey.action.rawValue] = try encoder.encode(hotkey.keyCombination)
             } catch {
                 Logger.hotkeySettingsManager.error("Error encoding hotkey: \(error)")
             }
         }
 
-        if dict.isEmpty {
-            UserDefaults.standard.removeObject(forKey: Self.hotkeysDefaultsKey)
+        if values.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
         } else {
-            UserDefaults.standard.set(dict, forKey: Self.hotkeysDefaultsKey)
+            UserDefaults.standard.set(values, forKey: Self.defaultsKey)
         }
     }
-
-    // MARK: - Public API
 
     func hotkey(withAction action: BoundAction) -> Hotkey? {
         hotkeys.first { $0.action == action }
@@ -142,13 +129,10 @@ final class HotkeySettingsManager {
     }
 
     func resetAllHotkeys() {
-        for hotkey in hotkeys {
-            hotkey.keyCombination = hotkey.action.defaultKeyCombination
-        }
+        hotkeys.forEach { $0.keyCombination = $0.action.defaultKeyCombination }
     }
 }
 
-// MARK: - Logger
 extension Logger {
     fileprivate static let hotkeySettingsManager = Logger(category: "HotkeySettingsManager")
 }

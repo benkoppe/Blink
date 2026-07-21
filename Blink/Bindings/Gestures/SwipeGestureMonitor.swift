@@ -1,200 +1,136 @@
-//
-//  SwipeGestureMonitor.swift
-//  Blink
-//
-//  Created by Ben on 3/24/26.
-//
-
 import AppKit
 import CoreGraphics
 import Foundation
 
-/// CGEventField rawValue carrying the synthetic-gesture sentinel.
-/// Must match kSyntheticMarkerField in SpaceSwitcher.swift.
-let kSyntheticMarkerField = CGEventField(rawValue: 200)!
+private final class SwipeRecognitionWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.thekoppe.Blink.swipe-recognition")
+    private var recognizer = SwipeRecognizer()
 
-/// Sentinel value written by SpaceSwitcher onto every synthetic CGEvent.
-/// ASCII 'SSWIPE' = 0x535357495045.
-let kSyntheticMarkerValue: Int64 = 0x5353_5749_5045
-
-/// Private CGEventField carrying the number of touches active in a gesture event.
-private let kTouchCountField = CGEventField(rawValue: 134)!
-
-/// Minimum accumulated horizontal delta (points) required to fire a swipe.
-private let kSwipeDeltaThreshold: Double = 0.06
-
-/// Dominance of x-axis over y-axis for trigger
-private let kSwipeDeltaXDominance: Double = 1.35
-
-final class SwipeGestureMonitor {
-    /// Parameters: (direction, fingerCount)
-    var onSwipe: ((SwipeDirection, Int) -> Void)?
-
-    /// Invert swipe direction
-    var flipSwipeDirection: Bool = false
-
-    /// When true, the same direction can fire multiple times within a single gesture.
-    var allowSameDirectionRepeat: Bool = false
-
-    /// Additional delta that must accumulate (beyond the base threshold) before the
-    /// same direction can fire again. Only meaningful when `allowSameDirectionRepeat`
-    /// is true. Same scale as `kSwipeDeltaThreshold` (0 = fires as easily as the
-    /// first swipe, higher = harder to repeat).
-    var sameDirectionRepeatSensitivity: Double = 0.06
-
-    /// When true for the first active frame of a gesture, Blink ignores that gesture
-    /// and lets macOS handle it normally.
-    var shouldIgnoreSwipe: (() -> Bool)?
-
-    private var eventTap: EventTap?
-
-    private struct GestureState {
-        var isActive = false
-        var shouldIgnoreCurrentGesture = false
-        var lastFiredDirection: SwipeDirection?
-        /// Accumulates delta in the same direction after a swipe fires, used to
-        /// gate same-direction repeats. Reset to 0 each time a swipe fires.
-        var postFireAccumulator: Double = 0
-        var accumulatedDeltaX: Double = 0
-        var accumulatedDeltaY: Double = 0
-        var previousPositions: [String: CGPoint] = [:]
-
-        mutating func reset() {
-            // print("reset state")
-            isActive = false
-            shouldIgnoreCurrentGesture = false
-            lastFiredDirection = nil
-            postFireAccumulator = 0
-            accumulatedDeltaX = 0
-            accumulatedDeltaY = 0
-            previousPositions = [:]
+    func consume(
+        _ sample: GestureSample,
+        configuration: SwipeRecognizer.Configuration,
+        ignoreNewGesture: Bool,
+        completion: @escaping @Sendable (
+            (direction: SwipeDirection, fingerCount: Int)?
+        ) -> Void
+    ) {
+        queue.async { [self] in
+            completion(
+                recognizer.consume(
+                    sample,
+                    configuration: configuration,
+                    ignoreNewGesture: ignoreNewGesture
+                )
+            )
         }
     }
 
-    private var state = GestureState()
+    func reset() {
+        queue.async { [self] in
+            recognizer.reset()
+        }
+    }
+}
 
-    // MARK - Monitoring lifecycle
+final class SwipeGestureMonitor {
+    var onSwipe: ((SwipeDirection, Int) -> Void)?
+    var flipSwipeDirection = false
+    var allowSameDirectionRepeat = false
+    var sameDirectionRepeatSensitivity = 0.06
+    var shouldIgnoreSwipe: (() -> Bool)?
+
+    private var eventTap: EventTap?
+    private let worker = SwipeRecognitionWorker()
 
     func startMonitoring() {
-        guard eventTap == nil else { return }
+        if let eventTap, eventTap.isHealthy {
+            return
+        }
+
+        eventTap?.disable()
 
         let tap = EventTap(
             label: "SwipeGestureMonitor",
-            options: .defaultTap,
+            options: .listenOnly,
             location: .hidEventTap,
             place: .headInsertEventTap,
             types: [.gesture],
-            callback: { [weak self] proxy, type, cgEvent in
-                guard let self else { return cgEvent }
+            callback: { [weak self] _, type, event in
+                guard let self else { return event }
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    self.state.reset()
-                    proxy.enable()
-                    return cgEvent
-
+                    self.worker.reset()
+                    return event
                 case .gesture:
-                    if let nsEvent = NSEvent(cgEvent: cgEvent) {
-                        self.handleEvent(nsEvent)
+                    guard
+                        event.getIntegerValueField(
+                            SyntheticGestureProtocol.markerField
+                        ) != SyntheticGestureProtocol.markerValue,
+                        let sample = Self.makeSample(from: event)
+                    else {
+                        return event
                     }
-                    return cgEvent
 
+                    DispatchQueue.main.async { [weak self] in
+                        self?.consume(sample)
+                    }
+                    return event
                 default:
-                    return cgEvent
+                    return event
                 }
             }
         )
+
         tap.enable()
-        self.eventTap = tap
+        eventTap = tap
     }
 
     func stopMonitoring() {
         eventTap?.disable()
         eventTap = nil
-        state.reset()
+        worker.reset()
     }
 
-    // MARK: - Event handling
+    func ensureMonitoring() {
+        guard eventTap != nil else { return }
+        startMonitoring()
+    }
 
-    private func handleEvent(_ event: NSEvent) {
-        // Ignore synthetic events posted by SpaceSwitcher
-        guard let cgEvent = event.cgEvent else { return }
+    private func consume(_ sample: GestureSample) {
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: flipSwipeDirection,
+            allowsSameDirectionRepeat: allowSameDirectionRepeat,
+            sameDirectionRepeatSensitivity: sameDirectionRepeatSensitivity
+        )
+        let shouldIgnore = shouldIgnoreSwipe?() ?? false
 
-        // Ignore synthetic events posted by SpaceSwitcher
-        if cgEvent.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue {
-            return
-        }
-
-        let touches = event.allTouches()
-        guard !touches.isEmpty else {
-            // print("touches empty")
-            state.reset()
-            return
-        }
-
-        let activeFingerCount =
-            touches.allSatisfy { $0.phase == .ended || $0.phase == .cancelled } ? 0 : touches.count
-        if activeFingerCount == 0 {
-            // print("fingerCount 0")
-            state.reset()
-            return
-        }
-
-        if !state.isActive {
-            state.isActive = true
-            state.shouldIgnoreCurrentGesture = shouldIgnoreSwipe?() ?? false
-        }
-
-        if state.shouldIgnoreCurrentGesture {
-            return
-        }
-
-        var dx: CGFloat = 0
-        var dy: CGFloat = 0
-        for touch in event.allTouches() {
-            let key = String(describing: touch.identity)
-            let current = touch.normalizedPosition
-
-            if let prev = state.previousPositions[key] {
-                dx += current.x - prev.x
-                dy += current.y - prev.y
-            }
-
-            if touch.phase == .ended {
-                state.previousPositions.removeValue(forKey: key)
-            } else {
-                state.previousPositions[key] = current
+        worker.consume(
+            sample,
+            configuration: configuration,
+            ignoreNewGesture: shouldIgnore
+        ) { [weak self] result in
+            guard let result else { return }
+            Task { @MainActor [weak self] in
+                await DiagnosticsStore.shared.record(
+                    "gesture",
+                    "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
+                )
+                self?.onSwipe?(result.direction, result.fingerCount)
             }
         }
+    }
 
-        state.accumulatedDeltaX += dx
-        state.accumulatedDeltaY += dy
+    private static func makeSample(from event: CGEvent) -> GestureSample? {
+        guard let nsEvent = NSEvent(cgEvent: event) else { return nil }
 
-        guard abs(state.accumulatedDeltaX) > abs(state.accumulatedDeltaY) * kSwipeDeltaXDominance,
-            abs(state.accumulatedDeltaX) >= kSwipeDeltaThreshold
-        else { return }
-
-        let rawDirection: SwipeDirection = state.accumulatedDeltaX > 0 ? .right : .left
-        let direction = flipSwipeDirection ? rawDirection.opposite : rawDirection
-
-        if direction == state.lastFiredDirection {
-            state.postFireAccumulator += abs(dx)
-            guard allowSameDirectionRepeat,
-                state.postFireAccumulator >= sameDirectionRepeatSensitivity
-            else {
-                state.accumulatedDeltaX = 0
-                return
-            }
+        let touches = nsEvent.allTouches().map {
+            GestureTouchSample(
+                identity: String(describing: $0.identity),
+                position: $0.normalizedPosition,
+                isEnded: $0.phase == .ended || $0.phase == .cancelled
+            )
         }
-
-        state.lastFiredDirection = direction
-        state.postFireAccumulator = 0
-        state.accumulatedDeltaX = 0
-
-        // Defer the action so the event-tap callback can return immediately.
-        let onSwipe = onSwipe
-        DispatchQueue.main.async {
-            onSwipe?(direction, activeFingerCount)
-        }
+        return GestureSample(touches: touches)
     }
 }

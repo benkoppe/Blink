@@ -109,6 +109,10 @@ struct BlinkMenu: View {
             }
             .keyboardShortcut(",")
 
+            Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                appState.diagnosticsController.copyReport()
+            }
+
             Button(
                 isEnabled.wrappedValue ? "Disable" : "Enable"
             ) {
