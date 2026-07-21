@@ -9,17 +9,17 @@ import Observation
 @MainActor
 @Observable
 final class SpaceSwitchCoordinator {
-    enum Direction: Equatable {
+    nonisolated enum Direction: Equatable, Sendable {
         case left
         case right
     }
 
-    enum GestureMode: Equatable {
+    nonisolated enum GestureMode: Equatable, Sendable {
         case instant
         case missionControl
     }
 
-    enum ReconciliationReason {
+    nonisolated enum ReconciliationReason: Sendable {
         case commandSubmission
         case activeSpaceChanged
         case passiveRefresh
@@ -34,7 +34,7 @@ final class SpaceSwitchCoordinator {
         }
     }
 
-    struct Topology: Equatable {
+    nonisolated struct Topology: Equatable, Sendable {
         let displayIdentifier: String
         let spaceIDs: [UInt64]
         let currentSpaceID: UInt64
@@ -63,7 +63,7 @@ final class SpaceSwitchCoordinator {
         }
     }
 
-    struct Context: Equatable {
+    nonisolated struct Context: Equatable, Sendable {
         let topology: Topology
         let gestureMode: GestureMode
     }

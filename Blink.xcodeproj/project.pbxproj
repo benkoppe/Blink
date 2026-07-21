@@ -16,7 +16,18 @@
 		B54E51952F79E09E008FC353 /* AXSwift in Frameworks */ = {isa = PBXBuildFile; productRef = B54E51942F79E09E008FC353 /* AXSwift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		B5308AB8300EF512009B8597 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B54E4DE22F7242F2008FC353 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B54E4DE92F7242F2008FC353;
+			remoteInfo = Blink;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		B5308AB4300EF512009B8597 /* BlinkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BlinkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B54E4DEA2F7242F2008FC353 /* Blink Dev.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Blink Dev.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B54E4DF92F724399008FC353 /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
 		B54E4DFB2F72439E008FC353 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
@@ -33,6 +44,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		B5308AB5300EF512009B8597 /* BlinkTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BlinkTests;
+			sourceTree = "<group>";
+		};
 		B54E4E112F726364008FC353 /* Blink */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -44,6 +60,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B5308AB1300EF512009B8597 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B54E4DE72F7242F2008FC353 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -65,6 +88,7 @@
 			isa = PBXGroup;
 			children = (
 				B54E4E112F726364008FC353 /* Blink */,
+				B5308AB5300EF512009B8597 /* BlinkTests */,
 				B54E4DF82F724399008FC353 /* Frameworks */,
 				B54E4DEB2F7242F2008FC353 /* Products */,
 			);
@@ -74,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				B54E4DEA2F7242F2008FC353 /* Blink Dev.app */,
+				B5308AB4300EF512009B8597 /* BlinkTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -90,6 +115,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B5308AB3300EF512009B8597 /* BlinkTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B5308ABA300EF512009B8597 /* Build configuration list for PBXNativeTarget "BlinkTests" */;
+			buildPhases = (
+				B5308AB0300EF512009B8597 /* Sources */,
+				B5308AB1300EF512009B8597 /* Frameworks */,
+				B5308AB2300EF512009B8597 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B5308AB9300EF512009B8597 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B5308AB5300EF512009B8597 /* BlinkTests */,
+			);
+			name = BlinkTests;
+			packageProductDependencies = (
+			);
+			productName = BlinkTests;
+			productReference = B5308AB4300EF512009B8597 /* BlinkTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		B54E4DE92F7242F2008FC353 /* Blink */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B54E4DF52F7242F5008FC353 /* Build configuration list for PBXNativeTarget "Blink" */;
@@ -124,9 +172,13 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2630;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
+					B5308AB3300EF512009B8597 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = B54E4DE92F7242F2008FC353;
+					};
 					B54E4DE92F7242F2008FC353 = {
 						CreatedOnToolsVersion = 26.3;
 					};
@@ -154,11 +206,19 @@
 			projectRoot = "";
 			targets = (
 				B54E4DE92F7242F2008FC353 /* Blink */,
+				B5308AB3300EF512009B8597 /* BlinkTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B5308AB2300EF512009B8597 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B54E4DE82F7242F2008FC353 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -169,6 +229,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B5308AB0300EF512009B8597 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B54E4DE62F7242F2008FC353 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -178,7 +245,57 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		B5308AB9300EF512009B8597 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B54E4DE92F7242F2008FC353 /* Blink */;
+			targetProxy = B5308AB8300EF512009B8597 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		B5308ABB300EF512009B8597 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4DWUZ6JCGN;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.thekoppe.BlinkTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Blink Dev.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Blink Dev";
+			};
+			name = Debug;
+		};
+		B5308ABC300EF512009B8597 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4DWUZ6JCGN;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.thekoppe.BlinkTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Blink Dev.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Blink Dev";
+			};
+			name = Release;
+		};
 		B54E4DF32F7242F5008FC353 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -324,6 +441,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.thekoppe.Blink.dev;
+				PRODUCT_MODULE_NAME = Blink;
 				PRODUCT_NAME = "$(TARGET_NAME) Dev";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -361,6 +479,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.thekoppe.Blink;
+				PRODUCT_MODULE_NAME = Blink;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
@@ -376,6 +495,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B5308ABA300EF512009B8597 /* Build configuration list for PBXNativeTarget "BlinkTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B5308ABB300EF512009B8597 /* Debug */,
+				B5308ABC300EF512009B8597 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		B54E4DE52F7242F2008FC353 /* Build configuration list for PBXProject "Blink" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
