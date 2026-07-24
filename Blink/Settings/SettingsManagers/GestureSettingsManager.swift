@@ -19,12 +19,14 @@ final class GestureSettingsManager {
     private let decoder = JSONDecoder()
 
     @Ignore private let dispatcher: ActionDispatcher
-    @Ignore private let spaceSwitcher: SpaceSwitcher
     @Ignore private let generalSettings: GeneralSettingsManager
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
+    @Ignore private let overlayModePoller = OverlayModePoller()
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
-    @Ignore private var cachedOverlayMode: OverlayMode = .unknown
+    @Ignore private var routingSnapshot = GestureRoutingSnapshot.unknown
+    @Ignore private var selectedGestureRoute: GestureRoute?
+    @Ignore private var missionControlSyntheticEnabled = true
 
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
     var disableSystemSwipeGestures: Bool = true
@@ -40,23 +42,38 @@ final class GestureSettingsManager {
 
     init(
         dispatcher: ActionDispatcher,
-        spaceSwitcher: SpaceSwitcher,
         generalSettings: GeneralSettingsManager
     ) {
         self.dispatcher = dispatcher
-        self.spaceSwitcher = spaceSwitcher
         self.generalSettings = generalSettings
 
-        monitor.shouldIgnoreSwipe = { [weak spaceSwitcher] in
-            spaceSwitcher?.isAppExposeActive() ?? false
+        monitor.shouldIgnoreSwipe = { [weak self] in
+            guard let self else { return true }
+            return (selectedGestureRoute ?? currentRoute) == .system
         }
-        systemSwipeSuppressor.shouldBypassSwipeSuppression = { [weak self] in
-            self?.cachedOverlayMode != OverlayMode.none
+        systemSwipeSuppressor.routeForNewGesture = { [weak self] in
+            self?.currentRoute ?? .system
         }
         systemSwipeSuppressor.onGestureMayBegin = { [weak self] in
-            DispatchQueue.main.async { [weak self] in
-                self?.refreshOverlayMode()
+            self?.requestOverlayRefresh()
+        }
+        systemSwipeSuppressor.onPotentialOverlayTransition = { [weak self] in
+            self?.routingSnapshot = .unknown
+            self?.requestOverlayRefresh()
+        }
+        systemSwipeSuppressor.onRouteSelected = { [weak self] route in
+            guard let self else { return }
+            selectedGestureRoute = route
+            let mode = routingSnapshot.overlayMode
+            Task {
+                await DiagnosticsStore.shared.record(
+                    "gesture-route",
+                    "selected route=\(route.rawValue) overlay=\(mode.rawValue)"
+                )
             }
+        }
+        systemSwipeSuppressor.onGestureEnded = { [weak self] in
+            self?.selectedGestureRoute = nil
         }
 
         monitor.onSwipe = { [weak self] direction, fingerCount in
@@ -67,7 +84,6 @@ final class GestureSettingsManager {
 
     func performSetup() {
         loadInitialState()
-        refreshOverlayMode()
         observeLifecycle()
         observeGestures()
     }
@@ -76,6 +92,10 @@ final class GestureSettingsManager {
         MainActor.assumeIsolated {
             let center = NSWorkspace.shared.notificationCenter
             lifecycleObservers.forEach(center.removeObserver)
+            let overlayModePoller = overlayModePoller
+            Task {
+                await overlayModePoller.stop()
+            }
         }
     }
 
@@ -123,10 +143,56 @@ final class GestureSettingsManager {
         let shouldSuppressSystemSwipes = bindingsEnabled && disableSystemSwipeGestures
         shouldSuppressSystemSwipes
             ? systemSwipeSuppressor.startMonitoring() : systemSwipeSuppressor.stopMonitoring()
+
+        setOverlayPollingEnabled(anyEnabled || shouldSuppressSystemSwipes)
     }
 
-    private func refreshOverlayMode() {
-        cachedOverlayMode = spaceSwitcher.currentOverlayMode()
+    private var currentRoute: GestureRoute {
+        routingSnapshot.route(
+            at: ProcessInfo.processInfo.systemUptime,
+            missionControlSyntheticEnabled: missionControlSyntheticEnabled
+        )
+    }
+
+    private func setOverlayPollingEnabled(_ enabled: Bool) {
+        let poller = overlayModePoller
+        if enabled {
+            Task { [weak self] in
+                await poller.start { [weak self] snapshot in
+                    Task { @MainActor [weak self] in
+                        self?.updateRoutingSnapshot(snapshot)
+                    }
+                }
+            }
+        } else {
+            routingSnapshot = .unknown
+            Task {
+                await poller.stop()
+            }
+        }
+    }
+
+    private func requestOverlayRefresh() {
+        let poller = overlayModePoller
+        Task {
+            await poller.refresh()
+        }
+    }
+
+    private func updateRoutingSnapshot(_ snapshot: GestureRoutingSnapshot) {
+        let previousMode = routingSnapshot.overlayMode
+        routingSnapshot = snapshot
+        if snapshot.overlayMode == .none {
+            missionControlSyntheticEnabled = true
+        }
+        guard previousMode != snapshot.overlayMode else { return }
+
+        Task {
+            await DiagnosticsStore.shared.record(
+                "overlay",
+                "mode=\(snapshot.overlayMode.rawValue)"
+            )
+        }
     }
 
     private func observeLifecycle() {
@@ -146,7 +212,8 @@ final class GestureSettingsManager {
                     queue: .main
                 ) { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.refreshOverlayMode()
+                        self?.routingSnapshot = .unknown
+                        self?.requestOverlayRefresh()
                         self?.monitor.ensureMonitoring()
                         self?.systemSwipeSuppressor.ensureMonitoring()
                     }
@@ -190,6 +257,18 @@ final class GestureSettingsManager {
     func resetAllGestures() {
         for gesture in gestures {
             gesture.action = gesture.id.defaultAction
+        }
+    }
+
+    func disableMissionControlSyntheticForCurrentSession() {
+        guard missionControlSyntheticEnabled else { return }
+        missionControlSyntheticEnabled = false
+        selectedGestureRoute = nil
+        Task {
+            await DiagnosticsStore.shared.record(
+                "gesture-route",
+                "Mission Control synthetic path failed; falling back to macOS"
+            )
         }
     }
 }

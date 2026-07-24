@@ -104,6 +104,17 @@ private nonisolated final class TestPoster: SpaceGesturePosting, @unchecked Send
     }
 }
 
+private nonisolated final class TestFailureRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCount = 0
+
+    var count: Int { lock.withLock { storedCount } }
+
+    func record() {
+        lock.withLock { storedCount += 1 }
+    }
+}
+
 private enum EngineTestError: Error {
     case timedOut
 }
@@ -148,7 +159,8 @@ struct SpaceSwitchEngineTests {
 
     private func makeEngine(
         snapshot: SystemSpaceSnapshot,
-        mode: OverlayMode = .none
+        mode: OverlayMode = .none,
+        failureRecorder: TestFailureRecorder? = nil
     ) -> (
         SpaceSwitchEngine,
         TestSpaceSystem,
@@ -167,6 +179,9 @@ struct SpaceSwitchEngineTests {
                 overlays: TestOverlayDetector(mode: mode),
                 poster: poster,
                 sleep: { try await sleeper.sleep($0) },
+                missionControlDidFail: {
+                    failureRecorder?.record()
+                },
                 publish: { _ in }
             )
         )
@@ -204,7 +219,7 @@ struct SpaceSwitchEngineTests {
 
     @Test("Repeated requests plan from the desired endpoint")
     func repeatedRequestsAccumulate() async throws {
-        let (engine, _, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
         await engine.start()
 
         _ = await engine.submit(
@@ -221,6 +236,11 @@ struct SpaceSwitchEngineTests {
             wraps: false,
             velocity: 100
         )
+        for _ in 0..<20 { await Task.yield() }
+        #expect(poster.posts.count == 1)
+
+        system.setSnapshot(snapshot(currentA: 101))
+        await engine.refresh(reason: .activeSpaceChanged)
         try await waitUntil { poster.posts.count == 2 }
 
         let presentation = await engine.presentation()
@@ -276,7 +296,7 @@ struct SpaceSwitchEngineTests {
             spacesA: Array(UInt64(100)...UInt64(107)),
             currentB: 200
         )
-        let (engine, _, display, poster, sleeper) = makeEngine(snapshot: initial)
+        let (engine, system, display, poster, _) = makeEngine(snapshot: initial)
         await engine.start()
 
         _ = await engine.submit(
@@ -285,13 +305,81 @@ struct SpaceSwitchEngineTests {
             wraps: false,
             velocity: 100
         )
-        try await waitUntil { poster.posts.count == 4 }
-        try await waitUntil { await sleeper.waitingCount == 1 }
+        try await waitUntil { poster.posts.count == 1 }
 
         display.setDisplayID(displayB)
-        await sleeper.resumeFirst()
+        system.setSnapshot(
+            snapshot(
+                currentA: 101,
+                spacesA: Array(UInt64(100)...UInt64(107)),
+                currentB: 200
+            )
+        )
+        await engine.refresh(reason: .activeSpaceChanged)
         for _ in 0..<20 { await Task.yield() }
-        #expect(poster.posts.count == 4)
+        #expect(poster.posts.count == 1)
+    }
+
+    @Test("A reversal waits for the in-flight step to be acknowledged")
+    func reversalWaitsForAcknowledgement() async throws {
+        let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        await engine.start()
+
+        _ = await engine.submit(
+            action: .step(.right),
+            source: .gesture,
+            wraps: false,
+            velocity: 100
+        )
+        try await waitUntil { poster.posts.count == 1 }
+
+        _ = await engine.submit(
+            action: .step(.left),
+            source: .gesture,
+            wraps: false,
+            velocity: 100
+        )
+        for _ in 0..<20 { await Task.yield() }
+        #expect(poster.posts.count == 1)
+
+        system.setSnapshot(snapshot(currentA: 101))
+        await engine.refresh(reason: .activeSpaceChanged)
+        try await waitUntil { poster.posts.count == 2 }
+        #expect(poster.posts.map(\.direction) == [.right, .left])
+
+        system.setSnapshot(snapshot(currentA: 100))
+        await engine.refresh(reason: .activeSpaceChanged)
+        let presentation = await engine.presentation()
+        #expect(presentation.projectedSpaceByDisplay[displayA] == space(100))
+    }
+
+    @Test("Alternating intent coalesces while a step is in flight")
+    func alternatingIntentCoalesces() async throws {
+        let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        await engine.start()
+
+        for direction in [
+            SpaceSwitchDirection.right,
+            .left,
+            .right,
+        ] {
+            _ = await engine.submit(
+                action: .step(direction),
+                source: .gesture,
+                wraps: false,
+                velocity: 100
+            )
+        }
+        try await waitUntil { poster.posts.count == 1 }
+        #expect(poster.posts.first?.direction == .right)
+
+        system.setSnapshot(snapshot(currentA: 101))
+        await engine.refresh(reason: .activeSpaceChanged)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(poster.posts.count == 1)
+
+        let presentation = await engine.presentation()
+        #expect(presentation.projectedSpaceByDisplay[displayA] == space(101))
     }
 
     @Test("A request on another display supersedes an unacknowledged transaction")
@@ -324,7 +412,7 @@ struct SpaceSwitchEngineTests {
 
     @Test("Mission Control uses one post per batch")
     func missionControlUsesSingleStepBatches() async throws {
-        let (engine, _, _, poster, sleeper) = makeEngine(
+        let (engine, system, _, poster, _) = makeEngine(
             snapshot: snapshot(currentA: 100),
             mode: .missionControl
         )
@@ -339,8 +427,30 @@ struct SpaceSwitchEngineTests {
         try await waitUntil { poster.posts.count == 1 }
         #expect(poster.posts.first?.mode == .missionControl)
 
+        system.setSnapshot(snapshot(currentA: 101))
+        await engine.refresh(reason: .activeSpaceChanged)
+        try await waitUntil { poster.posts.count == 2 }
+    }
+
+    @Test("Mission Control failure opens the native fallback circuit")
+    func missionControlFailureReportsFallback() async throws {
+        let recorder = TestFailureRecorder()
+        let (engine, _, _, poster, sleeper) = makeEngine(
+            snapshot: snapshot(currentA: 100),
+            mode: .missionControl,
+            failureRecorder: recorder
+        )
+        await engine.start()
+
+        _ = await engine.submit(
+            action: .step(.right),
+            source: .gesture,
+            wraps: false,
+            velocity: 100
+        )
+        try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
         await sleeper.resumeFirst()
-        try await waitUntil { poster.posts.count == 2 }
+        try await waitUntil { recorder.count == 1 }
     }
 }

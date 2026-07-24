@@ -106,7 +106,6 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
         let windows = rawWindows.compactMap { value -> WindowDescriptor? in
             guard
                 let ownerName = value[kCGWindowOwnerName as String] as? String,
-                let ownerPID = value[kCGWindowOwnerPID as String] as? pid_t,
                 let layer = value[kCGWindowLayer as String] as? Int,
                 let rawBounds = value[kCGWindowBounds as String] as? NSDictionary,
                 let bounds = CGRect(dictionaryRepresentation: rawBounds)
@@ -114,11 +113,20 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
                 return nil
             }
 
+            let ownerBundleID: String? =
+                if ownerName == "Dock",
+                    let ownerPID = value[kCGWindowOwnerPID as String] as? pid_t
+                {
+                    NSRunningApplication(
+                        processIdentifier: ownerPID
+                    )?.bundleIdentifier
+                } else {
+                    nil
+                }
+
             return WindowDescriptor(
                 ownerName: ownerName,
-                ownerBundleID: NSRunningApplication(
-                    processIdentifier: ownerPID
-                )?.bundleIdentifier,
+                ownerBundleID: ownerBundleID,
                 layer: layer,
                 bounds: bounds,
                 name: value[kCGWindowName as String] as? String

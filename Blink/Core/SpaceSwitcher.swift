@@ -28,6 +28,8 @@ nonisolated struct SpaceInfo: Equatable, Sendable {
 @MainActor
 @Observable
 final class SpaceSwitcher {
+    var onMissionControlFailure: (() -> Void)?
+
     private(set) var presentation = SpacePresentation(
         snapshot: nil,
         projectedSpaceByDisplay: [:],
@@ -74,6 +76,11 @@ final class SpaceSwitcher {
             diagnose: { category, message in
                 Task {
                     await DiagnosticsStore.shared.record(category, message)
+                }
+            },
+            missionControlDidFail: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.onMissionControlFailure?()
                 }
             },
             publish: { [weak self] presentation in
@@ -144,8 +151,6 @@ final class SpaceSwitcher {
         _ action: SpaceSwitchAction,
         source: SpaceInputSource
     ) -> Bool {
-        guard canSubmit(action) else { return false }
-
         let wraps = wraps
         let velocity = velocity
         Task { [engine] in

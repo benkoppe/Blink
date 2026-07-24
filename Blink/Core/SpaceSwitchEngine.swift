@@ -9,6 +9,10 @@ actor SpaceSwitchEngine {
         var resolvesConflicts: Bool {
             self != .passive
         }
+
+        var resumesPendingWork: Bool {
+            self != .request
+        }
     }
 
     nonisolated struct Dependencies: Sendable {
@@ -18,6 +22,7 @@ actor SpaceSwitchEngine {
         let poster: any SpaceGesturePosting
         let sleep: @Sendable (Duration) async throws -> Void
         let diagnose: @Sendable (String, String) -> Void
+        let missionControlDidFail: @Sendable () -> Void
         let publish: @Sendable (SpacePresentation) -> Void
 
         init(
@@ -29,6 +34,7 @@ actor SpaceSwitchEngine {
                 try await Task<Never, Never>.sleep(for: $0)
             },
             diagnose: @escaping @Sendable (String, String) -> Void = { _, _ in },
+            missionControlDidFail: @escaping @Sendable () -> Void = {},
             publish: @escaping @Sendable (SpacePresentation) -> Void
         ) {
             self.system = system
@@ -37,15 +43,20 @@ actor SpaceSwitchEngine {
             self.poster = poster
             self.sleep = sleep
             self.diagnose = diagnose
+            self.missionControlDidFail = missionControlDidFail
             self.publish = publish
         }
+    }
+
+    private struct PostedStep {
+        let targetSpaceID: SpaceID
+        let direction: SpaceSwitchDirection
     }
 
     private struct Transaction {
         let originSpaceID: SpaceID
         var desiredSpaceID: SpaceID
-        var projectedSpaceID: SpaceID
-        var postedSpaceIDs: Set<SpaceID>
+        var inFlightStep: PostedStep?
         let mode: SpaceSwitchMode
         var velocity: Double
     }
@@ -57,18 +68,13 @@ actor SpaceSwitchEngine {
         var transaction: Transaction?
     }
 
-    private static let instantBatchSize = 4
-    private static let instantBatchInterval: Duration = .milliseconds(40)
-    private static let missionControlStepInterval: Duration = .milliseconds(10)
     private static let acknowledgementTimeout: Duration = .seconds(2)
 
     private let dependencies: Dependencies
     private var snapshot: SystemSpaceSnapshot?
     private var displayStates: [DisplayID: DisplayState] = [:]
-    private var worker: Task<Void, Never>?
-    private var workerDisplayID: DisplayID?
     private var transactionDisplayID: DisplayID?
-    private var workerGeneration: UInt64 = 0
+    private var acknowledgementGeneration: UInt64 = 0
     private var acknowledgementTask: Task<Void, Never>?
 
     init(dependencies: Dependencies) {
@@ -80,10 +86,7 @@ actor SpaceSwitchEngine {
     }
 
     func stop() {
-        invalidateWorker()
-        acknowledgementTask?.cancel()
-        acknowledgementTask = nil
-        transactionDisplayID = nil
+        cancelExecution()
         snapshot = nil
         displayStates.removeAll()
         publish()
@@ -104,15 +107,16 @@ actor SpaceSwitchEngine {
             return .unavailable
         }
 
-        let request = SpaceSwitchRequest(
-            action: action,
-            source: source,
-            targetDisplayID: displayID,
-            wraps: wraps,
-            velocity: max(1, velocity)
+        return submit(
+            SpaceSwitchRequest(
+                action: action,
+                source: source,
+                targetDisplayID: displayID,
+                wraps: wraps,
+                velocity: max(1, velocity)
+            ),
+            topology: topology
         )
-
-        return submit(request, topology: topology)
     }
 
     func refresh(reason: ReconciliationReason) {
@@ -131,35 +135,28 @@ actor SpaceSwitchEngine {
             return .unavailable
         }
 
-        let planningSpaceID =
-            state.transaction?.desiredSpaceID
-            ?? state.confirmedSpaceID
-
+        let planningSpaceID = state.transaction?.desiredSpaceID ?? state.confirmedSpaceID
         guard let planningIndex = topology.index(of: planningSpaceID) else {
             return .unavailable
         }
 
         let targetSpaceID: SpaceID
-
         switch request.action {
-        case .step(let direction):
-            switch direction {
-            case .left:
-                if planningIndex > 0 {
-                    targetSpaceID = topology.spaceIDs[planningIndex - 1]
-                } else if request.wraps {
-                    targetSpaceID = topology.spaceIDs.last!
-                } else {
-                    return .blockedAtEdge
-                }
-            case .right:
-                if planningIndex + 1 < topology.spaceIDs.count {
-                    targetSpaceID = topology.spaceIDs[planningIndex + 1]
-                } else if request.wraps {
-                    targetSpaceID = topology.spaceIDs.first!
-                } else {
-                    return .blockedAtEdge
-                }
+        case .step(.left):
+            if planningIndex > 0 {
+                targetSpaceID = topology.spaceIDs[planningIndex - 1]
+            } else if request.wraps {
+                targetSpaceID = topology.spaceIDs.last!
+            } else {
+                return .blockedAtEdge
+            }
+        case .step(.right):
+            if planningIndex + 1 < topology.spaceIDs.count {
+                targetSpaceID = topology.spaceIDs[planningIndex + 1]
+            } else if request.wraps {
+                targetSpaceID = topology.spaceIDs.first!
+            } else {
+                return .blockedAtEdge
             }
         case .index(let index):
             guard topology.spaceIDs.indices.contains(index) else {
@@ -182,16 +179,12 @@ actor SpaceSwitchEngine {
         }
 
         let mode = mode(for: topology.displayID)
-        if let transaction = state.transaction,
-            transaction.mode != mode
-        {
-            cancelTransaction(for: topology.displayID)
+        if let transaction = state.transaction, transaction.mode != mode {
+            cancelTransaction(for: topology.displayID, reason: "overlay mode changed")
             return .unavailable
         }
 
-        acquirePostingLease(for: topology.displayID)
-        acknowledgementTask?.cancel()
-        acknowledgementTask = nil
+        acquireTransactionLease(for: topology.displayID)
 
         if var transaction = state.transaction {
             transaction.desiredSpaceID = targetSpaceID
@@ -201,8 +194,7 @@ actor SpaceSwitchEngine {
             state.transaction = Transaction(
                 originSpaceID: state.confirmedSpaceID,
                 desiredSpaceID: targetSpaceID,
-                projectedSpaceID: state.confirmedSpaceID,
-                postedSpaceIDs: [state.confirmedSpaceID],
+                inFlightStep: nil,
                 mode: mode,
                 velocity: request.velocity
             )
@@ -212,10 +204,11 @@ actor SpaceSwitchEngine {
         transactionDisplayID = topology.displayID
         dependencies.diagnose(
             "switch",
-            "accepted source=\(request.source.rawValue) display=\(topology.displayID.rawValue) target=\(targetSpaceID.rawValue) mode=\(mode)"
+            "intent source=\(request.source.rawValue) display=\(topology.displayID.rawValue) "
+                + "confirmed=\(state.confirmedSpaceID.rawValue) desired=\(targetSpaceID.rawValue)"
         )
         publish()
-        startWorker(for: topology.displayID)
+        postNextStepIfPossible(for: topology.displayID)
         return .accepted
     }
 
@@ -226,26 +219,31 @@ actor SpaceSwitchEngine {
     }
 
     @discardableResult
-    private func loadSnapshot(
-        reason: ReconciliationReason
-    ) -> SystemSpaceSnapshot? {
+    private func loadSnapshot(reason: ReconciliationReason) -> SystemSpaceSnapshot? {
         guard let value = try? dependencies.system.loadSnapshot() else {
             return nil
         }
 
         snapshot = value
-        reconcile(snapshot: value, reason: reason)
+        let resumableDisplays = reconcile(snapshot: value, reason: reason)
         publish()
+
+        if reason.resumesPendingWork {
+            for displayID in resumableDisplays {
+                postNextStepIfPossible(for: displayID)
+            }
+        }
         return value
     }
 
     private func reconcile(
         snapshot: SystemSpaceSnapshot,
         reason: ReconciliationReason
-    ) {
+    ) -> [DisplayID] {
+        var resumableDisplays: [DisplayID] = []
         let removed = Set(displayStates.keys).subtracting(snapshot.topologiesByDisplay.keys)
         for displayID in removed {
-            cancelPostingIfNeeded(for: displayID)
+            cancelExecution(for: displayID)
             displayStates.removeValue(forKey: displayID)
         }
 
@@ -261,9 +259,8 @@ actor SpaceSwitchEngine {
             }
 
             let previousConfirmed = state.confirmedSpaceID
-
             guard state.topology.spaceIDs == topology.spaceIDs else {
-                cancelPostingIfNeeded(for: displayID)
+                cancelExecution(for: displayID)
                 state.topology = topology
                 state.confirmedSpaceID = topology.currentSpaceID
                 state.transaction = nil
@@ -279,28 +276,52 @@ actor SpaceSwitchEngine {
 
             state.topology = topology
 
-            if let transaction = state.transaction {
-                if topology.currentSpaceID == transaction.desiredSpaceID {
-                    state.confirmedSpaceID = topology.currentSpaceID
-                    settleTransaction(in: &state)
-                    acknowledgementTask?.cancel()
-                    acknowledgementTask = nil
-                    cancelPostingIfNeeded(for: displayID)
-                    dependencies.diagnose(
-                        "switch",
-                        "acknowledged display=\(displayID.rawValue) space=\(topology.currentSpaceID.rawValue)"
-                    )
-                } else if transaction.postedSpaceIDs.contains(topology.currentSpaceID) {
-                    state.confirmedSpaceID = topology.currentSpaceID
-                } else if reason.resolvesConflicts {
-                    cancelPostingIfNeeded(for: displayID)
-                    state.transaction = nil
-                    state.confirmedSpaceID = topology.currentSpaceID
-                    if topology.spaceIDs.contains(previousConfirmed),
-                        previousConfirmed != topology.currentSpaceID
+            if var transaction = state.transaction {
+                if let inFlightStep = transaction.inFlightStep {
+                    if topology.currentSpaceID == inFlightStep.targetSpaceID {
+                        cancelAcknowledgement(for: displayID)
+                        state.confirmedSpaceID = topology.currentSpaceID
+                        transaction.inFlightStep = nil
+                        state.transaction = transaction
+                        dependencies.diagnose(
+                            "switch",
+                            "acknowledged display=\(displayID.rawValue) "
+                                + "space=\(topology.currentSpaceID.rawValue)"
+                        )
+
+                        if transaction.desiredSpaceID == topology.currentSpaceID {
+                            settleTransaction(in: &state, displayID: displayID)
+                        } else {
+                            resumableDisplays.append(displayID)
+                        }
+                    } else if topology.currentSpaceID != state.confirmedSpaceID,
+                        reason.resolvesConflicts
                     {
-                        state.lastSpaceID = previousConfirmed
+                        cancelExecution(for: displayID)
+                        state.transaction = nil
+                        state.confirmedSpaceID = topology.currentSpaceID
+                        if topology.spaceIDs.contains(previousConfirmed) {
+                            state.lastSpaceID = previousConfirmed
+                        }
+                        dependencies.diagnose(
+                            "switch",
+                            "unexpected authoritative space display=\(displayID.rawValue) "
+                                + "space=\(topology.currentSpaceID.rawValue)"
+                        )
                     }
+                } else if topology.currentSpaceID != state.confirmedSpaceID {
+                    if reason.resolvesConflicts {
+                        cancelExecution(for: displayID)
+                        state.transaction = nil
+                        state.confirmedSpaceID = topology.currentSpaceID
+                        if topology.spaceIDs.contains(previousConfirmed) {
+                            state.lastSpaceID = previousConfirmed
+                        }
+                    }
+                } else if transaction.desiredSpaceID == state.confirmedSpaceID {
+                    settleTransaction(in: &state, displayID: displayID)
+                } else {
+                    resumableDisplays.append(displayID)
                 }
             } else if previousConfirmed != topology.currentSpaceID {
                 state.confirmedSpaceID = topology.currentSpaceID
@@ -312,144 +333,99 @@ actor SpaceSwitchEngine {
             pruneHistory(in: &state)
             displayStates[displayID] = state
         }
+
+        return resumableDisplays
     }
 
-    private func startWorker(for displayID: DisplayID) {
+    private func postNextStepIfPossible(for displayID: DisplayID) {
         guard
-            worker == nil,
-            let transaction = displayStates[displayID]?.transaction,
-            transaction.projectedSpaceID != transaction.desiredSpaceID
+            var state = displayStates[displayID],
+            var transaction = state.transaction,
+            transaction.inFlightStep == nil
         else {
             return
         }
 
-        workerGeneration &+= 1
-        let generation = workerGeneration
-        workerDisplayID = displayID
-        worker = Task { [weak self] in
-            await self?.runWorker(for: displayID, generation: generation)
+        guard transaction.desiredSpaceID != state.confirmedSpaceID else {
+            settleTransaction(in: &state, displayID: displayID)
+            displayStates[displayID] = state
+            publish()
+            return
         }
-    }
 
-    private func runWorker(
-        for displayID: DisplayID,
-        generation: UInt64
-    ) async {
-        while isCurrentWorker(for: displayID, generation: generation) {
-            guard
-                let state = displayStates[displayID],
-                let transaction = state.transaction,
-                transaction.projectedSpaceID != transaction.desiredSpaceID
-            else {
-                finishWorker(for: displayID, generation: generation)
-                return
-            }
-
-            guard
-                let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
-                cursorDisplayID == displayID,
-                let freshSnapshot = try? dependencies.system.loadSnapshot(),
-                let freshTopology = freshSnapshot.topologiesByDisplay[displayID],
-                freshTopology.spaceIDs == state.topology.spaceIDs,
-                mode(for: displayID) == transaction.mode,
-                let projectedIndex = state.topology.index(of: transaction.projectedSpaceID),
-                let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
-            else {
-                abortTransaction(for: displayID, generation: generation)
-                return
-            }
-
-            let remaining = abs(desiredIndex - projectedIndex)
-            let batchSize = transaction.mode == .instant
-                ? min(Self.instantBatchSize, remaining)
-                : 1
-            let interval = transaction.mode == .instant
-                ? Self.instantBatchInterval
-                : Self.missionControlStepInterval
-
-            for _ in 0..<batchSize {
-                guard
-                    isCurrentWorker(for: displayID, generation: generation),
-                    var updatedState = displayStates[displayID],
-                    var updatedTransaction = updatedState.transaction,
-                    let currentIndex = updatedState.topology.index(
-                        of: updatedTransaction.projectedSpaceID
-                    ),
-                    let targetIndex = updatedState.topology.index(
-                        of: updatedTransaction.desiredSpaceID
-                    ),
-                    currentIndex != targetIndex
-                else {
-                    return
-                }
-
-                let direction: SpaceSwitchDirection = targetIndex > currentIndex
-                    ? .right
-                    : .left
-                let nextIndex = currentIndex + (direction == .right ? 1 : -1)
-                guard updatedState.topology.spaceIDs.indices.contains(nextIndex) else {
-                    abortTransaction(for: displayID, generation: generation)
-                    return
-                }
-
-                let remainingSteps = abs(targetIndex - currentIndex)
-                guard dependencies.poster.postStep(
-                    mode: updatedTransaction.mode,
-                    direction: direction,
-                    velocity: updatedTransaction.velocity * Double(max(1, remainingSteps))
-                ) else {
-                    abortTransaction(for: displayID, generation: generation)
-                    return
-                }
-
-                let nextSpaceID = updatedState.topology.spaceIDs[nextIndex]
-                updatedTransaction.projectedSpaceID = nextSpaceID
-                updatedTransaction.postedSpaceIDs.insert(nextSpaceID)
-                updatedState.transaction = updatedTransaction
-                displayStates[displayID] = updatedState
-                publish()
-            }
-
-            guard
-                let updatedTransaction = displayStates[displayID]?.transaction
-            else {
-                return
-            }
-
-            if updatedTransaction.projectedSpaceID == updatedTransaction.desiredSpaceID {
-                finishWorker(for: displayID, generation: generation)
-                scheduleAcknowledgementDeadline(
-                    for: displayID,
-                    generation: generation
-                )
-                return
-            }
-
-            do {
-                try await dependencies.sleep(interval)
-            } catch {
-                if isCurrentWorker(for: displayID, generation: generation) {
-                    abortTransaction(for: displayID, generation: generation)
-                }
-                return
-            }
+        guard
+            let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
+            cursorDisplayID == displayID,
+            mode(for: displayID) == transaction.mode,
+            let confirmedIndex = state.topology.index(of: state.confirmedSpaceID),
+            let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
+        else {
+            abortTransaction(for: displayID, reason: "posting context changed")
+            return
         }
+
+        let direction: SpaceSwitchDirection = desiredIndex > confirmedIndex ? .right : .left
+        let nextIndex = confirmedIndex + (direction == .right ? 1 : -1)
+        guard state.topology.spaceIDs.indices.contains(nextIndex) else {
+            abortTransaction(for: displayID, reason: "next target is outside topology")
+            return
+        }
+
+        let nextSpaceID = state.topology.spaceIDs[nextIndex]
+        let remainingSteps = abs(desiredIndex - confirmedIndex)
+        guard dependencies.poster.postStep(
+            mode: transaction.mode,
+            direction: direction,
+            velocity: transaction.velocity * Double(max(1, remainingSteps))
+        ) else {
+            abortTransaction(
+                for: displayID,
+                reason: "event posting failed",
+                reportsMissionControlFailure: true
+            )
+            return
+        }
+
+        transaction.inFlightStep = PostedStep(
+            targetSpaceID: nextSpaceID,
+            direction: direction
+        )
+        state.transaction = transaction
+        displayStates[displayID] = state
+        dependencies.diagnose(
+            "switch",
+            "posted display=\(displayID.rawValue) mode=\(transaction.mode) direction=\(direction) "
+                + "target=\(nextSpaceID.rawValue) desired=\(transaction.desiredSpaceID.rawValue)"
+        )
+        publish()
+        scheduleAcknowledgementDeadline(
+            for: displayID,
+            targetSpaceID: nextSpaceID,
+            mode: transaction.mode
+        )
     }
 
     private func scheduleAcknowledgementDeadline(
         for displayID: DisplayID,
-        generation: UInt64
+        targetSpaceID: SpaceID,
+        mode: SpaceSwitchMode
     ) {
         acknowledgementTask?.cancel()
+        acknowledgementGeneration &+= 1
+        let generation = acknowledgementGeneration
         acknowledgementTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.dependencies.sleep(Self.acknowledgementTimeout)
+                let timeout = mode == .missionControl
+                    ? Duration.milliseconds(400)
+                    : Self.acknowledgementTimeout
+                try await self.dependencies.sleep(timeout)
             } catch {
                 return
             }
             await self.handleAcknowledgementDeadline(
                 for: displayID,
+                targetSpaceID: targetSpaceID,
                 generation: generation
             )
         }
@@ -457,86 +433,78 @@ actor SpaceSwitchEngine {
 
     private func handleAcknowledgementDeadline(
         for displayID: DisplayID,
+        targetSpaceID: SpaceID,
         generation: UInt64
     ) {
         guard
-            generation == workerGeneration,
-            var state = displayStates[displayID],
-            state.transaction != nil
+            generation == acknowledgementGeneration,
+            let state = displayStates[displayID],
+            state.transaction?.inFlightStep?.targetSpaceID == targetSpaceID
         else {
             return
         }
 
         if let fresh = try? dependencies.system.loadSnapshot(),
-            let topology = fresh.topologiesByDisplay[displayID]
+            let topology = fresh.topologiesByDisplay[displayID],
+            topology.currentSpaceID != state.confirmedSpaceID
         {
             snapshot = fresh
-            if topology.currentSpaceID == state.transaction?.desiredSpaceID {
-                reconcile(snapshot: fresh, reason: .activeSpaceChanged)
-                publish()
-                return
+            let resumableDisplays = reconcile(snapshot: fresh, reason: .activeSpaceChanged)
+            publish()
+            for resumableDisplayID in resumableDisplays {
+                postNextStepIfPossible(for: resumableDisplayID)
             }
-            state.topology = topology
-            state.confirmedSpaceID = topology.currentSpaceID
+            return
         }
 
-        state.transaction = nil
-        displayStates[displayID] = state
-        if transactionDisplayID == displayID {
-            transactionDisplayID = nil
-        }
-        acknowledgementTask = nil
-        dependencies.diagnose(
-            "switch",
-            "acknowledgement timeout display=\(displayID.rawValue)"
+        abortTransaction(
+            for: displayID,
+            reason: "acknowledgement timeout",
+            reportsMissionControlFailure: true
         )
-        publish()
     }
 
-    private func acquirePostingLease(for displayID: DisplayID) {
-        guard let activeDisplayID = transactionDisplayID else { return }
-        invalidateWorker()
-        if activeDisplayID != displayID,
-            var state = displayStates[activeDisplayID]
-        {
+    private func acquireTransactionLease(for displayID: DisplayID) {
+        guard let activeDisplayID = transactionDisplayID, activeDisplayID != displayID else {
+            return
+        }
+
+        cancelExecution(for: activeDisplayID)
+        if var state = displayStates[activeDisplayID] {
             state.transaction = nil
             displayStates[activeDisplayID] = state
-            transactionDisplayID = nil
-            dependencies.diagnose(
-                "switch",
-                "superseded display=\(activeDisplayID.rawValue) by display=\(displayID.rawValue)"
-            )
         }
+        dependencies.diagnose(
+            "switch",
+            "superseded display=\(activeDisplayID.rawValue) by display=\(displayID.rawValue)"
+        )
     }
 
-    private func cancelTransaction(for displayID: DisplayID) {
-        cancelPostingIfNeeded(for: displayID)
+    private func cancelTransaction(for displayID: DisplayID, reason: String) {
+        cancelExecution(for: displayID)
         if var state = displayStates[displayID] {
             state.transaction = nil
             displayStates[displayID] = state
         }
-        if transactionDisplayID == displayID {
-            transactionDisplayID = nil
-        }
+        dependencies.diagnose("switch", "cancelled display=\(displayID.rawValue) reason=\(reason)")
         publish()
     }
 
     private func abortTransaction(
         for displayID: DisplayID,
-        generation: UInt64
+        reason: String,
+        reportsMissionControlFailure: Bool = false
     ) {
-        guard isCurrentWorker(for: displayID, generation: generation) else {
-            return
-        }
-        invalidateWorker()
+        let mode = displayStates[displayID]?.transaction?.mode
+        cancelExecution(for: displayID)
         if var state = displayStates[displayID] {
             state.transaction = nil
             displayStates[displayID] = state
         }
-        if transactionDisplayID == displayID {
-            transactionDisplayID = nil
+        dependencies.diagnose("switch", "aborted display=\(displayID.rawValue) reason=\(reason)")
+        if reportsMissionControlFailure, mode == .missionControl {
+            dependencies.missionControlDidFail()
         }
-        dependencies.diagnose("switch", "aborted display=\(displayID.rawValue)")
         publish()
     }
 
@@ -550,7 +518,7 @@ actor SpaceSwitchEngine {
         return state
     }
 
-    private func settleTransaction(in state: inout DisplayState) {
+    private func settleTransaction(in state: inout DisplayState, displayID: DisplayID) {
         guard let transaction = state.transaction else { return }
         if transaction.originSpaceID != transaction.desiredSpaceID,
             state.topology.spaceIDs.contains(transaction.originSpaceID)
@@ -558,6 +526,7 @@ actor SpaceSwitchEngine {
             state.lastSpaceID = transaction.originSpaceID
         }
         state.transaction = nil
+        cancelExecution(for: displayID)
     }
 
     private func pruneHistory(in state: inout DisplayState) {
@@ -569,52 +538,30 @@ actor SpaceSwitchEngine {
         }
     }
 
-    private func cancelPostingIfNeeded(for displayID: DisplayID) {
-        if workerDisplayID == displayID || transactionDisplayID == displayID {
-            invalidateWorker()
-        }
-        if transactionDisplayID == displayID {
-            transactionDisplayID = nil
-        }
-    }
-
-    private func invalidateWorker() {
-        workerGeneration &+= 1
-        worker?.cancel()
-        worker = nil
-        workerDisplayID = nil
+    private func cancelAcknowledgement(for displayID: DisplayID) {
+        guard transactionDisplayID == displayID else { return }
+        acknowledgementGeneration &+= 1
         acknowledgementTask?.cancel()
         acknowledgementTask = nil
     }
 
-    private func isCurrentWorker(
-        for displayID: DisplayID,
-        generation: UInt64
-    ) -> Bool {
-        !Task.isCancelled
-            && workerGeneration == generation
-            && workerDisplayID == displayID
+    private func cancelExecution(for displayID: DisplayID) {
+        guard transactionDisplayID == displayID else { return }
+        cancelExecution()
     }
 
-    private func finishWorker(
-        for displayID: DisplayID,
-        generation: UInt64
-    ) {
-        guard
-            workerGeneration == generation,
-            workerDisplayID == displayID
-        else {
-            return
-        }
-        worker = nil
-        workerDisplayID = nil
+    private func cancelExecution() {
+        acknowledgementGeneration &+= 1
+        acknowledgementTask?.cancel()
+        acknowledgementTask = nil
+        transactionDisplayID = nil
     }
 
     private func makePresentation() -> SpacePresentation {
         SpacePresentation(
             snapshot: snapshot,
             projectedSpaceByDisplay: displayStates.mapValues {
-                $0.transaction?.projectedSpaceID ?? $0.confirmedSpaceID
+                $0.transaction?.desiredSpaceID ?? $0.confirmedSpaceID
             },
             lastSpaceByDisplay: displayStates.compactMapValues(\.lastSpaceID)
         )

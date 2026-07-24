@@ -112,11 +112,13 @@ final class SwipeGestureMonitor {
         ) { [weak self] result in
             guard let result else { return }
             Task { @MainActor [weak self] in
-                await DiagnosticsStore.shared.record(
-                    "gesture",
-                    "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
-                )
                 self?.onSwipe?(result.direction, result.fingerCount)
+                Task {
+                    await DiagnosticsStore.shared.record(
+                        "gesture",
+                        "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
+                    )
+                }
             }
         }
     }

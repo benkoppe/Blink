@@ -94,6 +94,42 @@ struct GestureAndPlatformTests {
         )
     }
 
+    @Test("Gesture routing fails open and keeps overlay paths exclusive")
+    func gestureRoutingPolicy() {
+        let now = 100.0
+
+        #expect(GestureRoutingSnapshot.unknown.route(at: now) == .system)
+        #expect(
+            GestureRoutingSnapshot(
+                overlayMode: .none,
+                sampledAtUptime: now
+            ).route(at: now) == .blink
+        )
+        #expect(
+            GestureRoutingSnapshot(
+                overlayMode: .appExpose,
+                sampledAtUptime: now
+            ).route(at: now) == .system
+        )
+        let missionControl = GestureRoutingSnapshot(
+            overlayMode: .missionControl,
+            sampledAtUptime: now
+        )
+        #expect(missionControl.route(at: now) == .blink)
+        #expect(
+            missionControl.route(
+                at: now,
+                missionControlSyntheticEnabled: false
+            ) == .system
+        )
+        #expect(
+            GestureRoutingSnapshot(
+                overlayMode: .none,
+                sampledAtUptime: now - 1
+            ).route(at: now) == .system
+        )
+    }
+
     @Test("CGS parser rejects an active Space absent from topology")
     func parserRejectsInvalidCurrentSpace() {
         let display: NSDictionary = [
@@ -111,6 +147,32 @@ struct GestureAndPlatformTests {
                 globalActiveSpaceID: 999
             ) == nil
         )
+    }
+
+    @Test("Mission Control uses the Tahoe Dock-only payload")
+    func missionControlPayload() {
+        let right = DockGesturePoster.missionControlPayloads(
+            direction: .right,
+            velocity: 2_000
+        )
+        #expect(
+            right.map(\.phase) == [
+                SyntheticGestureProtocol.began,
+                SyntheticGestureProtocol.changed,
+                SyntheticGestureProtocol.ended,
+            ]
+        )
+        #expect(right.allSatisfy { $0.progress > 0 })
+        #expect(right.allSatisfy { $0.velocityX == 2_000 })
+        #expect(right.allSatisfy { $0.velocityY == 2_000 })
+
+        let left = DockGesturePoster.missionControlPayloads(
+            direction: .left,
+            velocity: 2_000
+        )
+        #expect(left.allSatisfy { $0.progress < 0 })
+        #expect(left.allSatisfy { $0.velocityX == -2_000 })
+        #expect(left.allSatisfy { $0.velocityY == -2_000 })
     }
 
     private func touches(at x: CGFloat) -> [GestureTouchSample] {
