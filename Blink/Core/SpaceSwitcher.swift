@@ -73,13 +73,8 @@ final class SpaceSwitcher {
             displays: displayLocator,
             overlays: overlayDetector,
             poster: DockGesturePoster(),
-            diagnose: { category, message in
-                Task {
-                    await DiagnosticsStore.shared.record(category, message)
-                }
-            },
             missionControlDidFail: { [weak self] in
-                Task { @MainActor [weak self] in
+                DispatchQueue.main.async { [weak self] in
                     self?.onMissionControlFailure?()
                 }
             },
@@ -111,14 +106,7 @@ final class SpaceSwitcher {
 
     deinit {
         MainActor.assumeIsolated {
-            let workspaceCenter = NSWorkspace.shared.notificationCenter
-            let defaultCenter = NotificationCenter.default
-
-            for observer in observers {
-                workspaceCenter.removeObserver(observer)
-                defaultCenter.removeObserver(observer)
-            }
-
+            removeObservers()
             let engine = engine
             Task {
                 await engine.stop()
@@ -151,17 +139,39 @@ final class SpaceSwitcher {
         _ action: SpaceSwitchAction,
         source: SpaceInputSource
     ) -> Bool {
-        let wraps = wraps
-        let velocity = velocity
+        guard let request = makeRequest(action: action, source: source) else {
+            return false
+        }
         Task { [engine] in
-            _ = await engine.submit(
-                action: action,
-                source: source,
-                wraps: wraps,
-                velocity: velocity
-            )
+            _ = await engine.submit(request)
         }
         return true
+    }
+
+    func makeRequest(
+        action: SpaceSwitchAction,
+        source: SpaceInputSource
+    ) -> SpaceSwitchRequest? {
+        guard let targetDisplayID = try? displayLocator.cursorDisplayID() else {
+            return nil
+        }
+
+        return SpaceSwitchRequest(
+            action: action,
+            source: source,
+            targetDisplayID: targetDisplayID,
+            wraps: wraps,
+            velocity: velocity
+        )
+    }
+
+    func submit(_ request: SpaceSwitchRequest) async -> SpaceSwitchOutcome {
+        await engine.submit(request)
+    }
+
+    func shutdown() async {
+        removeObservers()
+        await engine.stop()
     }
 
     func canMoveLeft() -> Bool {
@@ -229,6 +239,16 @@ final class SpaceSwitcher {
         (try? displayLocator.cursorDisplayID())
             ?? presentation.snapshot?.menuBarDisplayID
             ?? presentation.snapshot?.menuBarTopology?.displayID
+    }
+
+    private func removeObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let defaultCenter = NotificationCenter.default
+        for observer in observers {
+            workspaceCenter.removeObserver(observer)
+            defaultCenter.removeObserver(observer)
+        }
+        observers.removeAll()
     }
 
     private func observeWorkspace() {

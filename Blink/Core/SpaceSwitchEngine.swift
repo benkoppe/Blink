@@ -99,24 +99,31 @@ actor SpaceSwitchEngine {
         wraps: Bool,
         velocity: Double
     ) -> SpaceSwitchOutcome {
-        guard
-            let freshSnapshot = loadSnapshot(reason: .request),
-            let displayID = try? dependencies.displays.cursorDisplayID(),
-            let topology = freshSnapshot.topologiesByDisplay[displayID]
-        else {
+        guard let displayID = try? dependencies.displays.cursorDisplayID() else {
             return .unavailable
         }
-
         return submit(
             SpaceSwitchRequest(
                 action: action,
                 source: source,
                 targetDisplayID: displayID,
                 wraps: wraps,
-                velocity: max(1, velocity)
-            ),
-            topology: topology
+                velocity: velocity
+            )
         )
+    }
+
+    @discardableResult
+    func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
+        guard
+            let freshSnapshot = loadSnapshot(reason: .request),
+            let topology = freshSnapshot.topologiesByDisplay[request.targetDisplayID],
+            postingContextIsValid(for: request.targetDisplayID, topology: topology)
+        else {
+            return .unavailable
+        }
+
+        return submit(request, topology: topology)
     }
 
     func refresh(reason: ReconciliationReason) {
@@ -192,7 +199,7 @@ actor SpaceSwitchEngine {
 
         if var transaction = state.transaction {
             transaction.desiredSpaceID = targetSpaceID
-            transaction.velocity = request.velocity
+            transaction.velocity = max(1, request.velocity)
             state.transaction = transaction
         } else {
             state.transaction = Transaction(
@@ -200,7 +207,7 @@ actor SpaceSwitchEngine {
                 desiredSpaceID: targetSpaceID,
                 inFlightStep: nil,
                 mode: mode,
-                velocity: request.velocity
+                velocity: max(1, request.velocity)
             )
         }
 
@@ -376,8 +383,7 @@ actor SpaceSwitchEngine {
         }
 
         guard
-            let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
-            cursorDisplayID == displayID,
+            postingContextIsValid(for: displayID, topology: state.topology),
             mode(for: displayID) == transaction.mode,
             let confirmedIndex = state.topology.index(of: state.confirmedSpaceID),
             let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
@@ -528,6 +534,23 @@ actor SpaceSwitchEngine {
             dependencies.missionControlDidFail()
         }
         publish()
+    }
+
+    private func postingContextIsValid(
+        for displayID: DisplayID,
+        topology: DisplayTopology
+    ) -> Bool {
+        guard
+            dependencies.displays.bounds(for: displayID) != nil,
+            (try? dependencies.displays.cursorDisplayID()) == displayID,
+            let currentSnapshot = try? dependencies.system.loadSnapshot(),
+            let currentTopology = currentSnapshot.topologiesByDisplay[displayID]
+        else {
+            return false
+        }
+
+        return currentTopology.spaceIDs == topology.spaceIDs
+            && currentTopology.currentSpaceID == topology.currentSpaceID
     }
 
     private func matchingState(for topology: DisplayTopology) -> DisplayState? {

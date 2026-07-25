@@ -275,10 +275,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let outcome = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         #expect(outcome == .accepted)
 
@@ -294,18 +297,24 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         for _ in 0..<20 { await Task.yield() }
         #expect(poster.posts.count == 1)
@@ -325,10 +334,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .hotkey,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -345,10 +357,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
@@ -371,10 +386,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(7),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(7),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -399,18 +417,24 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
         _ = await engine.submit(
-            action: .step(.left),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.left),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         for _ in 0..<20 { await Task.yield() }
         #expect(poster.posts.count == 1)
@@ -437,10 +461,13 @@ struct SpaceSwitchEngineTests {
             .right,
         ] {
             _ = await engine.submit(
-                action: .step(direction),
-                source: .gesture,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(direction),
+                    source: .gesture,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             )
         }
         try await waitUntil { poster.posts.count == 1 }
@@ -463,10 +490,13 @@ struct SpaceSwitchEngineTests {
 
         #expect(
             await engine.submit(
-                action: .step(.right),
-                source: .gesture,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(.right),
+                    source: .gesture,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         try await waitUntil { poster.posts.count == 1 }
@@ -475,10 +505,13 @@ struct SpaceSwitchEngineTests {
         display.setDisplayID(displayB)
         #expect(
             await engine.submit(
-                action: .step(.right),
-                source: .hotkey,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(.right),
+                    source: .hotkey,
+                    targetDisplayID: displayB,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         try await waitUntil { poster.posts.count == 2 }
@@ -511,10 +544,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(3),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(3),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         #expect(poster.posts.first?.mode == .missionControl)
@@ -535,10 +571,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
@@ -553,10 +592,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let outcome = await engine.submit(
-            action: .step(.right),
-            source: .hotkey,
-            wraps: true,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: true,
+                velocity: 100
+            )
         )
         let presentation = await engine.presentation()
 
@@ -575,22 +617,31 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let left = await engine.submit(
-            action: .step(.left),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.left),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         let wrappedRight = await engine.submit(
-            action: .step(.right),
-            source: .menu,
-            wraps: true,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: true,
+                velocity: 100
+            )
         )
         let currentIndex = await engine.submit(
-            action: .index(0),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(0),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         let presentation = await engine.presentation()
 
@@ -607,16 +658,22 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let negative = await engine.submit(
-            action: .index(-1),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(-1),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         let pastEnd = await engine.submit(
-            action: .index(4),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(4),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         let presentation = await engine.presentation()
 
@@ -632,10 +689,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let outcome = await engine.submit(
-            action: .step(.left),
-            source: .gesture,
-            wraps: true,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.left),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: true,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         #expect(outcome == .accepted)
@@ -662,10 +722,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let outcome = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: true,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: true,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         #expect(outcome == .accepted)
@@ -693,20 +756,26 @@ struct SpaceSwitchEngineTests {
 
         #expect(
             await engine.submit(
-                action: .index(3),
-                source: .gesture,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .index(3),
+                    source: .gesture,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         try await waitUntil { poster.posts.count == 1 }
 
         #expect(
             await engine.submit(
-                action: .index(1),
-                source: .menu,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .index(1),
+                    source: .menu,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         #expect(poster.posts.count == 1)
@@ -728,29 +797,38 @@ struct SpaceSwitchEngineTests {
         display.setDisplayID(nil)
         #expect(
             await engine.submit(
-                action: .step(.right),
-                source: .gesture,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(.right),
+                    source: .gesture,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .unavailable
         )
         display.setDisplayID(displayB)
         #expect(
             await engine.submit(
-                action: .step(.right),
-                source: .gesture,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(.right),
+                    source: .gesture,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .unavailable
         )
         #expect(poster.posts.isEmpty)
 
         display.setDisplayID(displayA)
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -773,10 +851,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
@@ -796,10 +877,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -819,10 +903,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(3),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(3),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -856,10 +943,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
 
@@ -879,10 +969,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         let outcome = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         let presentation = await engine.presentation()
 
@@ -905,10 +998,13 @@ struct SpaceSwitchEngineTests {
         #expect((await engine.presentation()).lastSpaceByDisplay[displayA] == space(103))
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         system.setSnapshot(snapshot(currentA: 101))
@@ -937,18 +1033,24 @@ struct SpaceSwitchEngineTests {
         await engine.refresh(reason: .activeSpaceChanged)
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         #expect(
             await engine.submit(
-                action: .index(0),
-                source: .menu,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .index(0),
+                    source: .menu,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(100))
@@ -973,20 +1075,26 @@ struct SpaceSwitchEngineTests {
 
         system.failNextLoad()
         let unavailable = await engine.submit(
-            action: .step(.right),
-            source: .hotkey,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         #expect(unavailable == .unavailable)
         #expect(poster.posts.isEmpty)
 
         #expect(
             await engine.submit(
-                action: .step(.right),
-                source: .hotkey,
-                wraps: false,
-                velocity: 100
+                SpaceSwitchRequest(
+                    action: .step(.right),
+                    source: .hotkey,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
             ) == .accepted
         )
         try await waitUntil { poster.posts.count == 1 }
@@ -1008,10 +1116,13 @@ struct SpaceSwitchEngineTests {
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(2),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(2),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
@@ -1029,16 +1140,42 @@ struct SpaceSwitchEngineTests {
         #expect(presentation.lastSpaceByDisplay[displayA] == space(100))
     }
 
+    @Test("A captured display is not retargeted when the cursor moves")
+    func capturedDisplayIsNotRetargeted() async {
+        let initial = snapshot(currentA: 100, currentB: 200)
+        let (engine, _, display, poster, _) = makeEngine(snapshot: initial)
+        await engine.start()
+        let request = SpaceSwitchRequest(
+            action: .step(.right),
+            source: .hotkey,
+            targetDisplayID: displayA,
+            wraps: false,
+            velocity: 100
+        )
+
+        display.setDisplayID(displayB)
+        let outcome = await engine.submit(request)
+        let presentation = await engine.presentation()
+
+        #expect(outcome == .unavailable)
+        #expect(poster.posts.isEmpty)
+        #expect(presentation.projectedSpaceByDisplay[displayA] == space(100))
+        #expect(presentation.projectedSpaceByDisplay[displayB] == space(200))
+    }
+
     @Test("Stopping while acknowledgement is pending cancels all work")
     func stopCancelsPendingWork() async throws {
         let (engine, system, _, poster, sleeper) = makeEngine(snapshot: snapshot(currentA: 100))
         await engine.start()
 
         _ = await engine.submit(
-            action: .index(3),
-            source: .menu,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .index(3),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
@@ -1064,10 +1201,13 @@ struct SpaceSwitchEngineTests {
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(100))
 
         _ = await engine.submit(
-            action: .step(.right),
-            source: .gesture,
-            wraps: false,
-            velocity: 100
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
         )
         try await waitUntil { poster.posts.count == 1 }
         await engine.start()
