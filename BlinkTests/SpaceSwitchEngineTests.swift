@@ -7,6 +7,7 @@ import Testing
 private actor ControlledSleeper {
     private struct Waiter {
         let id: UUID
+        let duration: Duration
         let continuation: CheckedContinuation<Void, Never>
     }
 
@@ -14,8 +15,11 @@ private actor ControlledSleeper {
 
     var waitingCount: Int { waiters.count }
 
+    func waitingCount(for duration: Duration) -> Int {
+        waiters.count { $0.duration == duration }
+    }
+
     func sleep(_ duration: Duration) async throws {
-        _ = duration
         try Task.checkCancellation()
 
         let id = UUID()
@@ -24,7 +28,9 @@ private actor ControlledSleeper {
                 if Task.isCancelled {
                     continuation.resume()
                 } else {
-                    waiters.append(Waiter(id: id, continuation: continuation))
+                    waiters.append(
+                        Waiter(id: id, duration: duration, continuation: continuation)
+                    )
                 }
             }
         } onCancel: {
@@ -37,6 +43,11 @@ private actor ControlledSleeper {
     func resumeFirst() {
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().continuation.resume()
+    }
+
+    func resumeFirst(for duration: Duration) {
+        guard let index = waiters.firstIndex(where: { $0.duration == duration }) else { return }
+        waiters.remove(at: index).continuation.resume()
     }
 
     func resumeAll() {
@@ -182,8 +193,6 @@ private enum EngineTestError: Error {
 @MainActor
 @Suite("Space switch engine")
 struct SpaceSwitchEngineTests {
-    // The deleted optimistic four-step batching assertions are intentionally omitted:
-    // the engine now permits exactly one synthetic step before acknowledgement.
     private let displayA = DisplayID(rawValue: "display-a")!
     private let displayB = DisplayID(rawValue: "display-b")!
 
@@ -294,6 +303,58 @@ struct SpaceSwitchEngineTests {
         #expect(poster.posts.first?.direction == .right)
     }
 
+    @Test("An instant direct jump posts up to four steps without waiting for acknowledgement")
+    func instantDirectJumpPostsAsOneBatch() async {
+        let (engine, _, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        await engine.start()
+
+        let outcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .index(3),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+
+        #expect(outcome == .accepted)
+        #expect(poster.posts.count == 3)
+        #expect(poster.posts.map(\.direction) == [.right, .right, .right])
+        #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(103))
+    }
+
+    @Test("Instant jumps larger than four steps continue after the production delay")
+    func largeInstantJumpPostsInDelayedBatches() async throws {
+        let (engine, _, _, poster, sleeper) = makeEngine(
+            snapshot: snapshot(
+                currentA: 100,
+                spacesA: Array(UInt64(100)...UInt64(107))
+            )
+        )
+        await engine.start()
+
+        let outcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .index(7),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+        #expect(outcome == .accepted)
+        #expect(poster.posts.count == 4)
+        try await waitUntil {
+            await sleeper.waitingCount(for: .milliseconds(40)) == 1
+        }
+
+        await sleeper.resumeFirst(for: .milliseconds(40))
+        try await waitUntil { poster.posts.count == 7 }
+        #expect(poster.posts.allSatisfy { $0.direction == .right })
+        #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(107))
+    }
+
     @Test("Repeated requests plan from the desired endpoint")
     func repeatedRequestsAccumulate() async throws {
         let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
@@ -397,20 +458,20 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 4 }
 
         display.setDisplayID(displayB)
         system.setSnapshot(
             snapshot(
-                currentA: 101,
+                currentA: 104,
                 spacesA: Array(UInt64(100)...UInt64(107)),
                 currentB: 200
             )
         )
         await engine.refresh(reason: .activeSpaceChanged)
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
-        #expect(presentation.projectedSpaceByDisplay[displayA] == space(101))
+        #expect(poster.posts.count == 4)
+        #expect(presentation.projectedSpaceByDisplay[displayA] == space(104))
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
     }
 
@@ -775,7 +836,7 @@ struct SpaceSwitchEngineTests {
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(101))
     }
 
-    @Test("Wrapping left from the first Space advances right one acknowledgement at a time")
+    @Test("Wrapping left from the first Space posts one instant batch")
     func wrappingLeftTravelsRight() async throws {
         let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
         await engine.start()
@@ -789,16 +850,10 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 3 }
         #expect(outcome == .accepted)
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(103))
 
-        system.setSnapshot(snapshot(currentA: 101))
-        await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 2 }
-        system.setSnapshot(snapshot(currentA: 102))
-        await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 3 }
         system.setSnapshot(snapshot(currentA: 103))
         await engine.refresh(reason: .activeSpaceChanged)
 
@@ -808,7 +863,7 @@ struct SpaceSwitchEngineTests {
         #expect(presentation.lastSpaceByDisplay[displayA] == space(100))
     }
 
-    @Test("Wrapping right from the last Space advances left one acknowledgement at a time")
+    @Test("Wrapping right from the last Space posts one instant batch")
     func wrappingRightTravelsLeft() async throws {
         let (engine, system, _, poster, _) = makeEngine(snapshot: snapshot(currentA: 103))
         await engine.start()
@@ -822,16 +877,10 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 3 }
         #expect(outcome == .accepted)
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(100))
 
-        system.setSnapshot(snapshot(currentA: 102))
-        await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 2 }
-        system.setSnapshot(snapshot(currentA: 101))
-        await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 3 }
         system.setSnapshot(snapshot(currentA: 100))
         await engine.refresh(reason: .activeSpaceChanged)
 
@@ -857,7 +906,7 @@ struct SpaceSwitchEngineTests {
                 )
             ) == .accepted
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 3 }
 
         #expect(
             await engine.submit(
@@ -870,20 +919,27 @@ struct SpaceSwitchEngineTests {
                 )
             ) == .accepted
         )
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 3)
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(101))
+
+        system.setSnapshot(snapshot(currentA: 103))
+        await engine.refresh(reason: .activeSpaceChanged)
+        #expect(poster.posts.count == 5)
+        #expect(poster.posts.map(\.direction) == [.right, .right, .right, .left, .left])
 
         system.setSnapshot(snapshot(currentA: 101))
         await engine.refresh(reason: .activeSpaceChanged)
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(101))
         #expect(presentation.lastSpaceByDisplay[displayA] == space(100))
     }
 
     @Test("Missing cursor or display context fails closed")
     func missingCursorOrDisplayContextCancelsWork() async throws {
-        let (engine, system, display, poster, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        let spaces = Array(UInt64(100)...UInt64(107))
+        let (engine, system, display, poster, _) = makeEngine(
+            snapshot: snapshot(currentA: 100, spacesA: spaces)
+        )
         await engine.start()
 
         display.setDisplayID(nil)
@@ -915,21 +971,21 @@ struct SpaceSwitchEngineTests {
         display.setDisplayID(displayA)
         _ = await engine.submit(
             SpaceSwitchRequest(
-                action: .index(2),
+                action: .index(7),
                 source: .menu,
                 targetDisplayID: displayA,
                 wraps: false,
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 4 }
 
         display.setDisplayID(nil)
-        system.setSnapshot(snapshot(currentA: 101))
+        system.setSnapshot(snapshot(currentA: 104, spacesA: spaces))
         await engine.refresh(reason: .activeSpaceChanged)
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
-        #expect(presentation.projectedSpaceByDisplay[displayA] == space(101))
+        #expect(poster.posts.count == 4)
+        #expect(presentation.projectedSpaceByDisplay[displayA] == space(104))
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
     }
 
@@ -951,14 +1007,14 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
         try await waitUntil { await sleeper.waitingCount == 1 }
 
         overlays.setMode(.missionControl)
         await engine.refresh(reason: .passive)
         try await waitUntil { await sleeper.waitingCount == 0 }
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 2)
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(100))
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
     }
@@ -977,13 +1033,13 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
 
         system.setSnapshot(snapshot(currentA: 100, spacesA: [100, 102, 101, 103]))
         await engine.refresh(reason: .passive)
         try await waitUntil { await sleeper.waitingCount == 0 }
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 2)
         #expect(
             presentation.snapshot?.topologiesByDisplay[displayA]?.spaceIDs
                 == [100, 102, 101, 103].map(space))
@@ -1005,13 +1061,13 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 3 }
 
         system.setSnapshot(emptySnapshot())
         await engine.refresh(reason: .passive)
         try await waitUntil { await sleeper.waitingCount == 0 }
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 3)
         #expect(presentation.projectedSpaceByDisplay[displayA] == nil)
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
         #expect(presentation.snapshot?.topologiesByDisplay.isEmpty == true)
@@ -1045,13 +1101,13 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
 
         system.setSnapshot(snapshot(currentA: 103))
         await engine.refresh(reason: .activeSpaceChanged)
         try await waitUntil { await sleeper.waitingCount == 0 }
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 2)
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(103))
         #expect(presentation.lastSpaceByDisplay[displayA] == space(100))
     }
@@ -1100,10 +1156,10 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
         system.setSnapshot(snapshot(currentA: 101))
         await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 2 }
+        #expect(poster.posts.count == 2)
 
         let intermediate = await engine.presentation()
         #expect(intermediate.projectedSpaceByDisplay[displayA] == space(102))
@@ -1135,7 +1191,7 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
         #expect(
             await engine.submit(
                 SpaceSwitchRequest(
@@ -1149,10 +1205,10 @@ struct SpaceSwitchEngineTests {
         )
         #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(100))
 
-        system.setSnapshot(snapshot(currentA: 101))
+        system.setSnapshot(snapshot(currentA: 102))
         await engine.refresh(reason: .activeSpaceChanged)
-        try await waitUntil { poster.posts.count == 2 }
-        #expect(poster.posts.map(\.direction) == [.right, .left])
+        try await waitUntil { poster.posts.count == 4 }
+        #expect(poster.posts.map(\.direction) == [.right, .right, .left, .left])
         #expect((await engine.presentation()).lastSpaceByDisplay[displayA] == space(103))
 
         system.setSnapshot(snapshot(currentA: 100))
@@ -1204,7 +1260,7 @@ struct SpaceSwitchEngineTests {
         #expect((await engine.presentation()).lastSpaceByDisplay[displayA] == nil)
     }
 
-    @Test("A timeout reconciles a fresh snapshot that already advanced")
+    @Test("A timeout keeps waiting when a batched jump only partially advanced")
     func timeoutReconcilesFreshAdvancedSnapshot() async throws {
         let (engine, system, _, poster, sleeper) = makeEngine(snapshot: snapshot(currentA: 100))
         await engine.start()
@@ -1218,12 +1274,12 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 2 }
         try await waitUntil { await sleeper.waitingCount == 1 }
 
         system.setSnapshot(snapshot(currentA: 101))
         await sleeper.resumeFirst()
-        try await waitUntil { poster.posts.count == 2 }
+        try await waitUntil { await sleeper.waitingCount == 1 }
         #expect(poster.posts.map(\.direction) == [.right, .right])
         #expect((await engine.presentation()).lastSpaceByDisplay[displayA] == nil)
 
@@ -1319,7 +1375,7 @@ struct SpaceSwitchEngineTests {
                 velocity: 100
             )
         )
-        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { poster.posts.count == 3 }
         try await waitUntil { await sleeper.waitingCount == 1 }
 
         await engine.stop()
@@ -1329,7 +1385,7 @@ struct SpaceSwitchEngineTests {
         for _ in 0..<20 { await Task.yield() }
 
         let presentation = await engine.presentation()
-        #expect(poster.posts.count == 1)
+        #expect(poster.posts.count == 3)
         #expect(presentation.snapshot == nil)
         #expect(presentation.projectedSpaceByDisplay.isEmpty)
         #expect(presentation.lastSpaceByDisplay.isEmpty)

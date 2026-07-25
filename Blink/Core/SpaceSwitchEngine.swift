@@ -47,13 +47,12 @@ actor SpaceSwitchEngine {
 
     private struct PostedStep {
         let targetSpaceID: SpaceID
-        let direction: SpaceSwitchDirection
     }
 
     private struct Transaction {
         let originSpaceID: SpaceID
         var desiredSpaceID: SpaceID
-        var inFlightStep: PostedStep?
+        var inFlightSteps: [PostedStep]
         let mode: SpaceSwitchMode
         var velocity: Double
     }
@@ -65,6 +64,8 @@ actor SpaceSwitchEngine {
         var transaction: Transaction?
     }
 
+    private static let instantBatchSize = 4
+    private static let instantBatchInterval: Duration = .milliseconds(40)
     private static let acknowledgementTimeout: Duration = .seconds(2)
 
     nonisolated let presentations: AsyncStream<SpacePresentation>
@@ -76,6 +77,8 @@ actor SpaceSwitchEngine {
     private var transactionDisplayID: DisplayID?
     private var acknowledgementGeneration: UInt64 = 0
     private var acknowledgementTask: Task<Void, Never>?
+    private var instantBatchGeneration: UInt64 = 0
+    private var instantBatchTask: Task<Void, Never>?
 
     init(dependencies: Dependencies) {
         let (presentations, continuation) = AsyncStream.makeStream(
@@ -200,7 +203,7 @@ actor SpaceSwitchEngine {
             state.transaction = Transaction(
                 originSpaceID: state.confirmedSpaceID,
                 desiredSpaceID: targetSpaceID,
-                inFlightStep: nil,
+                inFlightSteps: [],
                 mode: mode,
                 velocity: max(1, request.velocity)
             )
@@ -214,7 +217,7 @@ actor SpaceSwitchEngine {
                 + "confirmed=\(state.confirmedSpaceID.rawValue) desired=\(targetSpaceID.rawValue)"
         )
         publish()
-        postNextStepIfPossible(for: topology.displayID)
+        postNextBatchIfPossible(for: topology.displayID)
         if mode == .missionControl,
             dependencies.missionControlCapability.state != .available
         {
@@ -246,7 +249,7 @@ actor SpaceSwitchEngine {
 
         if reason.resumesPendingWork {
             for displayID in resumableDisplays {
-                postNextStepIfPossible(for: displayID)
+                postNextBatchIfPossible(for: displayID)
             }
         }
         return value
@@ -311,11 +314,12 @@ actor SpaceSwitchEngine {
                     continue
                 }
 
-                if let inFlightStep = transaction.inFlightStep {
-                    if topology.currentSpaceID == inFlightStep.targetSpaceID {
-                        cancelAcknowledgement(for: displayID)
+                if !transaction.inFlightSteps.isEmpty {
+                    if let acknowledgedIndex = transaction.inFlightSteps.firstIndex(where: {
+                        $0.targetSpaceID == topology.currentSpaceID
+                    }) {
                         state.confirmedSpaceID = topology.currentSpaceID
-                        transaction.inFlightStep = nil
+                        transaction.inFlightSteps.removeFirst(acknowledgedIndex + 1)
                         state.transaction = transaction
                         dependencies.diagnose(
                             "switch",
@@ -323,10 +327,13 @@ actor SpaceSwitchEngine {
                                 + "space=\(topology.currentSpaceID.rawValue)"
                         )
 
-                        if transaction.desiredSpaceID == topology.currentSpaceID {
-                            settleTransaction(in: &state, displayID: displayID)
-                        } else {
-                            resumableDisplays.append(displayID)
+                        if transaction.inFlightSteps.isEmpty {
+                            cancelAcknowledgement(for: displayID)
+                            if transaction.desiredSpaceID == topology.currentSpaceID {
+                                settleTransaction(in: &state, displayID: displayID)
+                            } else {
+                                resumableDisplays.append(displayID)
+                            }
                         }
                     } else if topology.currentSpaceID != state.confirmedSpaceID,
                         reason.resolvesConflicts
@@ -371,38 +378,69 @@ actor SpaceSwitchEngine {
         return resumableDisplays
     }
 
-    private func postNextStepIfPossible(for displayID: DisplayID) {
+    private func postNextBatchIfPossible(
+        for displayID: DisplayID,
+        continuesInstantBatch: Bool = false
+    ) {
         guard
             var state = displayStates[displayID],
-            var transaction = state.transaction,
-            transaction.inFlightStep == nil
+            var transaction = state.transaction
         else {
             return
         }
 
-        guard transaction.desiredSpaceID != state.confirmedSpaceID else {
-            settleTransaction(in: &state, displayID: displayID)
-            displayStates[displayID] = state
-            publish()
+        let startingSpaceID: SpaceID
+        if continuesInstantBatch {
+            guard
+                transaction.mode == .instant,
+                let lastPostedSpaceID = transaction.inFlightSteps.last?.targetSpaceID
+            else {
+                return
+            }
+            startingSpaceID = lastPostedSpaceID
+        } else {
+            guard transaction.inFlightSteps.isEmpty else { return }
+            cancelInstantBatchContinuation()
+            startingSpaceID = state.confirmedSpaceID
+        }
+
+        guard transaction.desiredSpaceID != startingSpaceID else {
+            if !continuesInstantBatch {
+                settleTransaction(in: &state, displayID: displayID)
+                displayStates[displayID] = state
+                publish()
+            }
             return
         }
 
         guard
-            postingContextIsValid(for: displayID, topology: state.topology),
+            postingContextIsValid(
+                for: displayID,
+                topology: state.topology,
+                requiresCurrentSpaceMatch: !continuesInstantBatch
+            ),
             mode(for: displayID) == transaction.mode,
-            let confirmedIndex = state.topology.index(of: state.confirmedSpaceID),
+            let startingIndex = state.topology.index(of: startingSpaceID),
             let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
         else {
             abortTransaction(for: displayID, reason: "posting context changed")
             return
         }
 
-        let direction: SpaceSwitchDirection = desiredIndex > confirmedIndex ? .right : .left
-        let nextIndex = confirmedIndex + (direction == .right ? 1 : -1)
-        guard state.topology.spaceIDs.indices.contains(nextIndex) else {
-            abortTransaction(for: displayID, reason: "next target is outside topology")
-            return
+        if continuesInstantBatch {
+            guard let confirmedIndex = state.topology.index(of: state.confirmedSpaceID) else {
+                return
+            }
+            let continuesForward = confirmedIndex < startingIndex && startingIndex < desiredIndex
+            let continuesBackward = confirmedIndex > startingIndex && startingIndex > desiredIndex
+            guard continuesForward || continuesBackward else { return }
         }
+
+        let direction: SpaceSwitchDirection = desiredIndex > startingIndex ? .right : .left
+        let remainingSteps = abs(desiredIndex - startingIndex)
+        let batchSize = transaction.mode == .instant
+            ? min(Self.instantBatchSize, remainingSteps)
+            : 1
 
         if transaction.mode == .missionControl,
             dependencies.missionControlCapability.state != .available
@@ -411,38 +449,75 @@ actor SpaceSwitchEngine {
             return
         }
 
-        let nextSpaceID = state.topology.spaceIDs[nextIndex]
-        let remainingSteps = abs(desiredIndex - confirmedIndex)
-        guard dependencies.poster.postStep(
-            mode: transaction.mode,
-            direction: direction,
-            velocity: transaction.velocity * Double(max(1, remainingSteps))
-        ) else {
-            abortTransaction(
-                for: displayID,
-                reason: "event posting failed",
-                reportsMissionControlFailure: true
+        let velocity = transaction.velocity * Double(max(1, remainingSteps))
+        var postedSteps: [PostedStep] = []
+        for offset in 1...batchSize {
+            let nextIndex = startingIndex + (direction == .right ? offset : -offset)
+            guard state.topology.spaceIDs.indices.contains(nextIndex) else {
+                abortTransaction(for: displayID, reason: "next target is outside topology")
+                return
+            }
+
+            guard dependencies.poster.postStep(
+                mode: transaction.mode,
+                direction: direction,
+                velocity: velocity
+            ) else {
+                abortTransaction(
+                    for: displayID,
+                    reason: "event posting failed",
+                    reportsMissionControlFailure: true
+                )
+                return
+            }
+
+            postedSteps.append(
+                PostedStep(targetSpaceID: state.topology.spaceIDs[nextIndex])
             )
-            return
         }
 
-        transaction.inFlightStep = PostedStep(
-            targetSpaceID: nextSpaceID,
-            direction: direction
-        )
+        transaction.inFlightSteps.append(contentsOf: postedSteps)
         state.transaction = transaction
         displayStates[displayID] = state
+        let lastPostedSpaceID = postedSteps.last!.targetSpaceID
         dependencies.diagnose(
             "switch",
             "posted display=\(displayID.rawValue) mode=\(transaction.mode) direction=\(direction) "
-                + "target=\(nextSpaceID.rawValue) desired=\(transaction.desiredSpaceID.rawValue)"
+                + "steps=\(postedSteps.count) target=\(lastPostedSpaceID.rawValue) "
+                + "desired=\(transaction.desiredSpaceID.rawValue)"
         )
         publish()
         scheduleAcknowledgementDeadline(
             for: displayID,
-            targetSpaceID: nextSpaceID,
+            targetSpaceID: lastPostedSpaceID,
             mode: transaction.mode
         )
+        if transaction.mode == .instant,
+            lastPostedSpaceID != transaction.desiredSpaceID
+        {
+            scheduleInstantBatchContinuation(for: displayID)
+        }
+    }
+
+    private func scheduleInstantBatchContinuation(for displayID: DisplayID) {
+        instantBatchTask?.cancel()
+        instantBatchGeneration &+= 1
+        let generation = instantBatchGeneration
+        instantBatchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.dependencies.sleep(Self.instantBatchInterval)
+            } catch {
+                return
+            }
+            await self.continueInstantBatch(for: displayID, generation: generation)
+        }
+    }
+
+    private func continueInstantBatch(for displayID: DisplayID, generation: UInt64) {
+        guard generation == instantBatchGeneration else { return }
+        instantBatchTask = nil
+        postNextBatchIfPossible(for: displayID, continuesInstantBatch: true)
     }
 
     private func scheduleAcknowledgementDeadline(
@@ -479,7 +554,7 @@ actor SpaceSwitchEngine {
         guard
             generation == acknowledgementGeneration,
             let state = displayStates[displayID],
-            state.transaction?.inFlightStep?.targetSpaceID == targetSpaceID
+            state.transaction?.inFlightSteps.last?.targetSpaceID == targetSpaceID
         else {
             return
         }
@@ -492,7 +567,17 @@ actor SpaceSwitchEngine {
             let resumableDisplays = reconcile(snapshot: fresh, reason: .activeSpaceChanged)
             publish()
             for resumableDisplayID in resumableDisplays {
-                postNextStepIfPossible(for: resumableDisplayID)
+                postNextBatchIfPossible(for: resumableDisplayID)
+            }
+            if !resumableDisplays.contains(displayID),
+                let transaction = displayStates[displayID]?.transaction,
+                let pendingTargetSpaceID = transaction.inFlightSteps.last?.targetSpaceID
+            {
+                scheduleAcknowledgementDeadline(
+                    for: displayID,
+                    targetSpaceID: pendingTargetSpaceID,
+                    mode: transaction.mode
+                )
             }
             return
         }
@@ -555,7 +640,8 @@ actor SpaceSwitchEngine {
 
     private func postingContextIsValid(
         for displayID: DisplayID,
-        topology: DisplayTopology
+        topology: DisplayTopology,
+        requiresCurrentSpaceMatch: Bool = true
     ) -> Bool {
         guard
             dependencies.displays.bounds(for: displayID) != nil,
@@ -567,7 +653,8 @@ actor SpaceSwitchEngine {
         }
 
         return currentTopology.spaceIDs == topology.spaceIDs
-            && currentTopology.currentSpaceID == topology.currentSpaceID
+            && (!requiresCurrentSpaceMatch
+                || currentTopology.currentSpaceID == topology.currentSpaceID)
     }
 
     private func matchingState(for topology: DisplayTopology) -> DisplayState? {
@@ -612,10 +699,17 @@ actor SpaceSwitchEngine {
         cancelExecution()
     }
 
+    private func cancelInstantBatchContinuation() {
+        instantBatchGeneration &+= 1
+        instantBatchTask?.cancel()
+        instantBatchTask = nil
+    }
+
     private func cancelExecution() {
         acknowledgementGeneration &+= 1
         acknowledgementTask?.cancel()
         acknowledgementTask = nil
+        cancelInstantBatchContinuation()
         transactionDisplayID = nil
     }
 
