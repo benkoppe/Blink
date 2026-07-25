@@ -11,7 +11,7 @@ nonisolated struct GestureSample: Equatable, Sendable {
     let touches: [GestureTouchSample]
 
     var activeFingerCount: Int {
-        touches.allSatisfy(\.isEnded) ? 0 : touches.count
+        touches.count { !$0.isEnded }
     }
 }
 
@@ -28,7 +28,7 @@ nonisolated struct SwipeRecognizer: Sendable {
     private var isActive = false
     private var ignoresCurrentGesture = false
     private var lastDirection: SwipeDirection?
-    private var postFireAccumulator = 0.0
+    private var movementSinceLastFireX = 0.0
     private var accumulatedX = 0.0
     private var accumulatedY = 0.0
     private var previousPositions: [String: CGPoint] = [:]
@@ -38,8 +38,9 @@ nonisolated struct SwipeRecognizer: Sendable {
         configuration: Configuration,
         ignoreNewGesture: Bool
     ) -> (direction: SwipeDirection, fingerCount: Int)? {
-        let fingerCount = sample.activeFingerCount
-        guard !sample.touches.isEmpty, fingerCount > 0 else {
+        let activeTouches = sample.touches.filter { !$0.isEnded }
+        let fingerCount = activeTouches.count
+        guard fingerCount > 0 else {
             reset()
             return nil
         }
@@ -51,24 +52,30 @@ nonisolated struct SwipeRecognizer: Sendable {
 
         guard !ignoresCurrentGesture else { return nil }
 
+        let activeIdentities = Set(activeTouches.map(\.identity))
+        previousPositions = previousPositions.filter {
+            activeIdentities.contains($0.key)
+        }
+
         var deltaX = 0.0
         var deltaY = 0.0
-
-        for touch in sample.touches {
+        for touch in activeTouches {
             if let previous = previousPositions[touch.identity] {
                 deltaX += touch.position.x - previous.x
                 deltaY += touch.position.y - previous.y
             }
+            previousPositions[touch.identity] = touch.position
+        }
 
-            if touch.isEnded {
-                previousPositions.removeValue(forKey: touch.identity)
-            } else {
-                previousPositions[touch.identity] = touch.position
-            }
+        if startsHorizontalWindow(deltaX: deltaX, deltaY: deltaY) {
+            resetRecognitionWindow()
+        } else if isHorizontalReversal(deltaX: deltaX, deltaY: deltaY) {
+            resetRecognitionWindow()
         }
 
         accumulatedX += deltaX
         accumulatedY += deltaY
+        movementSinceLastFireX += deltaX
 
         guard
             abs(accumulatedX) > abs(accumulatedY) * Self.horizontalDominance,
@@ -83,19 +90,24 @@ nonisolated struct SwipeRecognizer: Sendable {
             : rawDirection
 
         if direction == lastDirection {
-            postFireAccumulator += abs(deltaX)
+            let signedDistance = direction == (configuration.flipsDirection ? .left : .right)
+                ? movementSinceLastFireX
+                : -movementSinceLastFireX
             guard
                 configuration.allowsSameDirectionRepeat,
-                postFireAccumulator >= configuration.sameDirectionRepeatSensitivity
+                signedDistance >= max(0, configuration.sameDirectionRepeatSensitivity)
             else {
-                accumulatedX = 0
+                // Keep horizontal distance so every delta since the previous
+                // fire contributes to repeat sensitivity. Vertical movement is
+                // scoped to the completed recognition window.
+                accumulatedY = 0
                 return nil
             }
         }
 
         lastDirection = direction
-        postFireAccumulator = 0
-        accumulatedX = 0
+        movementSinceLastFireX = 0
+        resetRecognitionWindow()
         return (direction, fingerCount)
     }
 
@@ -103,9 +115,25 @@ nonisolated struct SwipeRecognizer: Sendable {
         isActive = false
         ignoresCurrentGesture = false
         lastDirection = nil
-        postFireAccumulator = 0
+        movementSinceLastFireX = 0
+        resetRecognitionWindow()
+        previousPositions.removeAll(keepingCapacity: true)
+    }
+
+    private func startsHorizontalWindow(deltaX: Double, deltaY: Double) -> Bool {
+        abs(deltaX) > abs(deltaY) * Self.horizontalDominance
+            && abs(accumulatedY) > abs(accumulatedX)
+    }
+
+    private func isHorizontalReversal(deltaX: Double, deltaY: Double) -> Bool {
+        guard abs(deltaX) > abs(deltaY) * Self.horizontalDominance else {
+            return false
+        }
+        return accumulatedX != 0 && deltaX.sign != accumulatedX.sign
+    }
+
+    private mutating func resetRecognitionWindow() {
         accumulatedX = 0
         accumulatedY = 0
-        previousPositions.removeAll(keepingCapacity: true)
     }
 }
