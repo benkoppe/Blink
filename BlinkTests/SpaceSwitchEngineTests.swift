@@ -690,13 +690,19 @@ struct SpaceSwitchEngineTests {
         await sleeper.resumeFirst()
         try await waitUntil { capability.state == .unavailableUntilOverlayExit }
 
-        let routing = GestureRoutingSnapshot(
+        let routing = OverlayRoutingLease(
+            generation: 1,
+            targetDisplayID: displayA,
             overlayMode: .missionControl,
-            sampledAtUptime: 100
+            sampledAtUptime: 100,
+            expirationUptime: 130,
+            requestSequence: 1
         )
         #expect(
             routing.route(
                 at: 100,
+                requiredGeneration: 1,
+                currentTargetDisplayID: displayA,
                 missionControlSyntheticState: capability.state
             ) == .system
         )
