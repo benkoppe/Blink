@@ -228,12 +228,37 @@ struct GestureAndPlatformTests {
         #expect(capability.state == .available)
     }
 
-    @Test("Mission Control uses the Tahoe Dock-only payload")
-    func missionControlPayload() {
+    @Test("Mission Control payload strategy has explicit macOS boundaries")
+    func missionControlPayloadStrategyBoundaries() {
+        #expect(MissionControlPayloadStrategy.select(for: version(13, 6)) == .unsupported)
+        #expect(MissionControlPayloadStrategy.select(for: version(14, 0)) == .legacyProgress)
+        #expect(MissionControlPayloadStrategy.select(for: version(25, 9)) == .legacyProgress)
+        #expect(MissionControlPayloadStrategy.select(for: version(26, 0)) == .tahoeCompact)
+        #expect(MissionControlPayloadStrategy.select(for: version(26, 1)) == .tahoeCompact)
+        #expect(
+            DockGesturePoster(operatingSystemVersion: version(25, 9)).missionControlStrategy
+                == .legacyProgress
+        )
+        #expect(
+            DockGesturePoster(operatingSystemVersion: version(26, 0)).missionControlStrategy
+                == .tahoeCompact
+        )
+        #expect(
+            DockGesturePoster.missionControlPayloads(
+                strategy: .unsupported,
+                direction: .right,
+                velocity: 2_000
+            ) == nil
+        )
+    }
+
+    @Test("Tahoe Mission Control payload is the compact Dock-only trace")
+    func tahoeMissionControlPayload() {
         let right = DockGesturePoster.missionControlPayloads(
+            strategy: .tahoeCompact,
             direction: .right,
             velocity: 2_000
-        )
+        )!
         #expect(
             right.map(\.phase) == [
                 SyntheticGestureProtocol.began,
@@ -241,17 +266,79 @@ struct GestureAndPlatformTests {
                 SyntheticGestureProtocol.ended,
             ]
         )
-        #expect(right.allSatisfy { $0.progress > 0 })
+        #expect(right.allSatisfy { $0.eventType == SyntheticGestureProtocol.dockControlEventType })
+        #expect(right.allSatisfy { $0.hidType == SyntheticGestureProtocol.dockSwipeHIDType })
+        #expect(right.allSatisfy { $0.swipeMotion == SyntheticGestureProtocol.horizontalMotion })
+        #expect(right.allSatisfy { ($0.progress ?? 0) > 0 })
         #expect(right.allSatisfy { $0.velocityX == 2_000 })
         #expect(right.allSatisfy { $0.velocityY == 2_000 })
 
         let left = DockGesturePoster.missionControlPayloads(
+            strategy: .tahoeCompact,
             direction: .left,
             velocity: 2_000
-        )
-        #expect(left.allSatisfy { $0.progress < 0 })
+        )!
+        #expect(left.allSatisfy { ($0.progress ?? 0) < 0 })
         #expect(left.allSatisfy { $0.velocityX == -2_000 })
         #expect(left.allSatisfy { $0.velocityY == -2_000 })
+    }
+
+    @Test("Pre-Tahoe Mission Control payload is the legacy progress trace")
+    func legacyMissionControlPayload() {
+        let right = DockGesturePoster.missionControlPayloads(
+            strategy: .legacyProgress,
+            direction: .right,
+            velocity: 9_999
+        )!
+        #expect(
+            right.map(\.eventType) == [
+                SyntheticGestureProtocol.gestureEventType,
+                SyntheticGestureProtocol.dockControlEventType,
+                SyntheticGestureProtocol.dockControlEventType,
+                SyntheticGestureProtocol.dockControlEventType,
+                SyntheticGestureProtocol.dockControlEventType,
+                SyntheticGestureProtocol.gestureEventType,
+                SyntheticGestureProtocol.dockControlEventType,
+            ]
+        )
+        #expect(
+            right.map(\.phase) == [
+                nil,
+                SyntheticGestureProtocol.began,
+                SyntheticGestureProtocol.changed,
+                SyntheticGestureProtocol.changed,
+                SyntheticGestureProtocol.changed,
+                nil,
+                SyntheticGestureProtocol.ended,
+            ]
+        )
+        #expect(right.compactMap(\.progress) == [0.25, 0.5, 0.75, 1.05])
+        let rightDock = right.filter {
+            $0.eventType == SyntheticGestureProtocol.dockControlEventType
+        }
+        #expect(rightDock.allSatisfy { $0.hidType == SyntheticGestureProtocol.dockSwipeHIDType })
+        #expect(rightDock.allSatisfy { $0.scrollFlags != nil })
+        #expect(
+            rightDock.allSatisfy { $0.swipeMotion == SyntheticGestureProtocol.horizontalMotion })
+        #expect(rightDock.allSatisfy { $0.scrollY == 0 && $0.zoomDeltaX != nil })
+        #expect(right.compactMap(\.velocityX) == [200, 200, 200, 200])
+        #expect(right.compactMap(\.velocityY) == [0, 0, 0, 0])
+
+        let left = DockGesturePoster.missionControlPayloads(
+            strategy: .legacyProgress,
+            direction: .left,
+            velocity: 9_999
+        )!
+        #expect(left.compactMap(\.progress) == [-0.25, -0.5, -0.75, -1.05])
+        #expect(left.compactMap(\.velocityX) == [-200, -200, -200, -200])
+        let leftFlags = left.compactMap(\.scrollFlags)
+        #expect(!leftFlags.isEmpty)
+        #expect(Set(leftFlags).count == 1)
+        #expect(leftFlags.first != rightDock.first?.scrollFlags)
+    }
+
+    private func version(_ major: Int, _ minor: Int) -> OperatingSystemVersion {
+        OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: 0)
     }
 
     private func touches(at x: CGFloat) -> [GestureTouchSample] {

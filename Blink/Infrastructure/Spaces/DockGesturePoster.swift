@@ -36,14 +36,47 @@ nonisolated protocol SpaceGesturePosting: Sendable {
     ) -> Bool
 }
 
+nonisolated enum MissionControlPayloadStrategy: Equatable, Sendable {
+    // Validated progress trace used by the supported macOS 14–25 deployments.
+    case legacyProgress
+    // Compact Dock-only trace required by Tahoe (macOS 26) and later.
+    case tahoeCompact
+    case unsupported
+
+    static func select(for version: OperatingSystemVersion) -> Self {
+        if version.majorVersion >= 26 {
+            return .tahoeCompact
+        }
+        if version.majorVersion >= 14 {
+            return .legacyProgress
+        }
+        return .unsupported
+    }
+}
+
 nonisolated struct MissionControlGesturePayload: Equatable, Sendable {
-    let phase: Int64
-    let progress: Double
-    let velocityX: Double
-    let velocityY: Double
+    let eventType: Int64
+    let hidType: Int64?
+    let phase: Int64?
+    let scrollFlags: Int64?
+    let swipeMotion: Int64?
+    let scrollY: Double?
+    let progress: Double?
+    let velocityX: Double?
+    let velocityY: Double?
+    let zoomDeltaX: Double?
 }
 
 nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
+    let missionControlStrategy: MissionControlPayloadStrategy
+
+    init(
+        operatingSystemVersion: OperatingSystemVersion = ProcessInfo.processInfo
+            .operatingSystemVersion
+    ) {
+        missionControlStrategy = .select(for: operatingSystemVersion)
+    }
+
     func postStep(
         mode: SpaceSwitchMode,
         direction: SpaceSwitchDirection,
@@ -136,48 +169,38 @@ nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
         direction: SpaceSwitchDirection,
         velocity: Double
     ) -> Bool {
-        // Tahoe accepts the compact Dock-only trace while the older companion
-        // gesture/progress sequence can conflict with Mission Control itself.
-        for payload in Self.missionControlPayloads(
-            direction: direction,
-            velocity: velocity
-        ) {
-            guard let event = CGEvent(source: nil) else { return false }
-            event.setIntegerValueField(
-                SyntheticGestureProtocol.eventType,
-                value: SyntheticGestureProtocol.dockControlEventType
+        guard
+            let payloads = Self.missionControlPayloads(
+                strategy: missionControlStrategy,
+                direction: direction,
+                velocity: velocity
             )
-            event.setIntegerValueField(
-                SyntheticGestureProtocol.hidType,
-                value: SyntheticGestureProtocol.dockSwipeHIDType
-            )
-            event.setIntegerValueField(
-                SyntheticGestureProtocol.phase,
-                value: payload.phase
-            )
-            event.setIntegerValueField(
-                SyntheticGestureProtocol.swipeMotion,
-                value: SyntheticGestureProtocol.horizontalMotion
-            )
-            event.setDoubleValueField(
-                SyntheticGestureProtocol.swipeProgress,
-                value: payload.progress
-            )
-            event.setDoubleValueField(
-                SyntheticGestureProtocol.velocityX,
-                value: payload.velocityX
-            )
-            event.setDoubleValueField(
-                SyntheticGestureProtocol.velocityY,
-                value: payload.velocityY
-            )
-            markSynthetic(event)
-            event.post(tap: .cgSessionEventTap)
+        else {
+            return false
         }
+
+        let events = payloads.compactMap(makeMissionControlEvent)
+        guard events.count == payloads.count else { return false }
+        events.forEach { $0.post(tap: .cgSessionEventTap) }
         return true
     }
 
     static func missionControlPayloads(
+        strategy: MissionControlPayloadStrategy,
+        direction: SpaceSwitchDirection,
+        velocity: Double
+    ) -> [MissionControlGesturePayload]? {
+        switch strategy {
+        case .tahoeCompact:
+            return tahoePayloads(direction: direction, velocity: velocity)
+        case .legacyProgress:
+            return legacyPayloads(direction: direction)
+        case .unsupported:
+            return nil
+        }
+    }
+
+    private static func tahoePayloads(
         direction: SpaceSwitchDirection,
         velocity: Double
     ) -> [MissionControlGesturePayload] {
@@ -191,20 +214,127 @@ nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
             SyntheticGestureProtocol.ended,
         ].map {
             MissionControlGesturePayload(
+                eventType: SyntheticGestureProtocol.dockControlEventType,
+                hidType: SyntheticGestureProtocol.dockSwipeHIDType,
                 phase: $0,
+                scrollFlags: nil,
+                swipeMotion: SyntheticGestureProtocol.horizontalMotion,
+                scrollY: nil,
                 progress: signedProgress,
                 velocityX: signedVelocity,
-                velocityY: signedVelocity
+                velocityY: signedVelocity,
+                zoomDeltaX: nil
             )
         }
     }
 
-    private func flagBits(for direction: SpaceSwitchDirection) -> Int64 {
+    private static func legacyPayloads(
+        direction: SpaceSwitchDirection
+    ) -> [MissionControlGesturePayload] {
+        let sign = direction == .right ? 1.0 : -1.0
+        let signedVelocity = sign * 200
+        let flags = flagBits(for: direction)
+
+        func gesture() -> MissionControlGesturePayload {
+            MissionControlGesturePayload(
+                eventType: SyntheticGestureProtocol.gestureEventType,
+                hidType: nil,
+                phase: nil,
+                scrollFlags: nil,
+                swipeMotion: nil,
+                scrollY: nil,
+                progress: nil,
+                velocityX: nil,
+                velocityY: nil,
+                zoomDeltaX: nil
+            )
+        }
+
+        func dock(
+            phase: Int64,
+            progress: Double? = nil,
+            velocityX: Double? = nil
+        ) -> MissionControlGesturePayload {
+            MissionControlGesturePayload(
+                eventType: SyntheticGestureProtocol.dockControlEventType,
+                hidType: SyntheticGestureProtocol.dockSwipeHIDType,
+                phase: phase,
+                scrollFlags: flags,
+                swipeMotion: SyntheticGestureProtocol.horizontalMotion,
+                scrollY: 0,
+                progress: progress,
+                velocityX: velocityX,
+                velocityY: velocityX == nil ? nil : 0,
+                zoomDeltaX: Double(Float.leastNonzeroMagnitude)
+            )
+        }
+
+        return [
+            gesture(),
+            dock(phase: SyntheticGestureProtocol.began),
+            dock(
+                phase: SyntheticGestureProtocol.changed, progress: sign * 0.25,
+                velocityX: signedVelocity),
+            dock(
+                phase: SyntheticGestureProtocol.changed, progress: sign * 0.5,
+                velocityX: signedVelocity),
+            dock(
+                phase: SyntheticGestureProtocol.changed, progress: sign * 0.75,
+                velocityX: signedVelocity),
+            gesture(),
+            dock(
+                phase: SyntheticGestureProtocol.ended, progress: sign * 1.05,
+                velocityX: signedVelocity),
+        ]
+    }
+
+    private func makeMissionControlEvent(
+        payload: MissionControlGesturePayload
+    ) -> CGEvent? {
+        guard let event = CGEvent(source: nil) else { return nil }
+
+        event.setIntegerValueField(SyntheticGestureProtocol.eventType, value: payload.eventType)
+        if let value = payload.hidType {
+            event.setIntegerValueField(SyntheticGestureProtocol.hidType, value: value)
+        }
+        if let value = payload.phase {
+            event.setIntegerValueField(SyntheticGestureProtocol.phase, value: value)
+        }
+        if let value = payload.scrollFlags {
+            event.setIntegerValueField(SyntheticGestureProtocol.scrollFlags, value: value)
+        }
+        if let value = payload.swipeMotion {
+            event.setIntegerValueField(SyntheticGestureProtocol.swipeMotion, value: value)
+        }
+        if let value = payload.scrollY {
+            event.setDoubleValueField(SyntheticGestureProtocol.scrollY, value: value)
+        }
+        if let value = payload.progress {
+            event.setDoubleValueField(SyntheticGestureProtocol.swipeProgress, value: value)
+        }
+        if let value = payload.velocityX {
+            event.setDoubleValueField(SyntheticGestureProtocol.velocityX, value: value)
+        }
+        if let value = payload.velocityY {
+            event.setDoubleValueField(SyntheticGestureProtocol.velocityY, value: value)
+        }
+        if let value = payload.zoomDeltaX {
+            event.setDoubleValueField(SyntheticGestureProtocol.zoomDeltaX, value: value)
+        }
+        markSynthetic(event)
+        return event
+    }
+
+    private static func flagBits(for direction: SpaceSwitchDirection) -> Int64 {
         var value = Float.leastNonzeroMagnitude
         if direction == .left {
             value.negate()
         }
         return Int64(Int32(bitPattern: value.bitPattern))
+    }
+
+    private func flagBits(for direction: SpaceSwitchDirection) -> Int64 {
+        Self.flagBits(for: direction)
     }
 
     private func markSynthetic(_ event: CGEvent) {
