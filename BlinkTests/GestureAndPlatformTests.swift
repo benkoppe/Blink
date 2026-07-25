@@ -130,6 +130,50 @@ struct GestureAndPlatformTests {
         )
     }
 
+    @Test("Space identifiers and topologies reject invalid values")
+    func topologyRejectsInvalidValues() {
+        #expect(DisplayID(rawValue: "") == nil)
+        #expect(SpaceID(rawValue: 0) == nil)
+
+        let displayID = DisplayID(rawValue: "display-a")!
+        let first = SpaceID(rawValue: 100)!
+        let second = SpaceID(rawValue: 101)!
+        let missing = SpaceID(rawValue: 999)!
+
+        #expect(
+            DisplayTopology(
+                displayID: displayID,
+                spaceIDs: [],
+                currentSpaceID: first,
+                currentSpaceKind: .desktop
+            ) == nil
+        )
+        #expect(
+            DisplayTopology(
+                displayID: displayID,
+                spaceIDs: [first, first],
+                currentSpaceID: first,
+                currentSpaceKind: .desktop
+            ) == nil
+        )
+        #expect(
+            DisplayTopology(
+                displayID: displayID,
+                spaceIDs: [first, second],
+                currentSpaceID: missing,
+                currentSpaceKind: .desktop
+            ) == nil
+        )
+        #expect(
+            DisplayTopology(
+                displayID: displayID,
+                spaceIDs: [first, second],
+                currentSpaceID: first,
+                currentSpaceKind: .desktop
+            ) != nil
+        )
+    }
+
     @Test("CGS parser rejects an active Space absent from topology")
     func parserRejectsInvalidCurrentSpace() {
         let display: NSDictionary = [

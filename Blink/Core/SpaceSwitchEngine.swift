@@ -140,6 +140,10 @@ actor SpaceSwitchEngine {
             return .unavailable
         }
 
+        if case .step = request.action, topology.spaceIDs.count == 1 {
+            return .blockedAtEdge
+        }
+
         let targetSpaceID: SpaceID
         switch request.action {
         case .step(.left):
@@ -277,6 +281,24 @@ actor SpaceSwitchEngine {
             state.topology = topology
 
             if var transaction = state.transaction {
+                guard transaction.mode == mode(for: displayID) else {
+                    cancelExecution(for: displayID)
+                    state.transaction = nil
+                    state.confirmedSpaceID = topology.currentSpaceID
+                    if topology.spaceIDs.contains(previousConfirmed),
+                        previousConfirmed != topology.currentSpaceID
+                    {
+                        state.lastSpaceID = previousConfirmed
+                    }
+                    pruneHistory(in: &state)
+                    displayStates[displayID] = state
+                    dependencies.diagnose(
+                        "switch",
+                        "cancelled display=\(displayID.rawValue) reason=overlay mode changed"
+                    )
+                    continue
+                }
+
                 if let inFlightStep = transaction.inFlightStep {
                     if topology.currentSpaceID == inFlightStep.targetSpaceID {
                         cancelAcknowledgement(for: displayID)
