@@ -2,51 +2,109 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-private final class SwipeRecognitionWorker: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.thekoppe.Blink.swipe-recognition")
+nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
+    typealias Recognition = (
+        context: GestureSessionContext,
+        direction: SwipeDirection,
+        fingerCount: Int
+    )
+
+    private let queue: DispatchQueue
     private var recognizer = SwipeRecognizer()
+    private var sessionContext: GestureSessionContext?
+
+    init(queue: DispatchQueue = DispatchQueue(
+        label: "com.thekoppe.Blink.swipe-recognition"
+    )) {
+        self.queue = queue
+    }
 
     func consume(
         _ sample: GestureSample,
         configuration: SwipeRecognizer.Configuration,
-        ignoreNewGesture: Bool,
-        completion: @escaping @Sendable (
-            (direction: SwipeDirection, fingerCount: Int)?
-        ) -> Void
+        proposedContext: GestureSessionContext?,
+        completion: @escaping @Sendable (Recognition?) -> Void
     ) {
         queue.async { [self] in
-            completion(
-                recognizer.consume(
+            if sample.activeFingerCount == 0 {
+                _ = recognizer.consume(
                     sample,
                     configuration: configuration,
-                    ignoreNewGesture: ignoreNewGesture
+                    ignoreNewGesture: true
                 )
+                sessionContext = nil
+                completion(nil)
+                return
+            }
+
+            if sessionContext == nil {
+                guard let proposedContext else {
+                    // HID delivery can precede route selection. Do not feed that
+                    // movement to the recognizer without an authoritative owner.
+                    completion(nil)
+                    return
+                }
+                sessionContext = proposedContext
+            }
+
+            guard let context = sessionContext else {
+                completion(nil)
+                return
+            }
+            let result = recognizer.consume(
+                sample,
+                configuration: configuration,
+                ignoreNewGesture: !context.isAuthoritativeBlinkContext
             )
+            completion(result.map {
+                Recognition(
+                    context: context,
+                    direction: $0.direction,
+                    fingerCount: $0.fingerCount
+                )
+            })
         }
     }
 
     func reset() {
         queue.async { [self] in
             recognizer.reset()
+            sessionContext = nil
         }
     }
 }
 
+@MainActor
 final class SwipeGestureMonitor {
-    var onSwipe: ((SwipeDirection, Int) -> Void)?
+    var onSwipe: ((GestureSessionContext, SwipeDirection, Int) -> Void)?
     var flipSwipeDirection = false
     var allowSameDirectionRepeat = false
     var sameDirectionRepeatSensitivity = 0.06
-    var shouldIgnoreSwipe: (() -> Bool)?
+    var contextForRecognition: (() -> GestureSessionContext?)?
+    var isContextValidBeforeDispatch: ((GestureSessionContext) -> Bool)?
+    var onRecognitionSessionEnded: (() -> Void)?
 
     private var eventTap: EventTap?
-    private let worker = SwipeRecognitionWorker()
+    private let worker: SwipeRecognitionWorker
+    private let requiresHealthyTapForDispatch: Bool
+    private var monitorEpoch: UInt64 = 0
+
+    init(
+        worker: SwipeRecognitionWorker = SwipeRecognitionWorker(),
+        requiresHealthyTapForDispatch: Bool = true
+    ) {
+        self.worker = worker
+        self.requiresHealthyTapForDispatch = requiresHealthyTapForDispatch
+    }
 
     func startMonitoring() {
         if let eventTap, eventTap.isHealthy {
             return
         }
 
+        if eventTap != nil {
+            invalidateRecognition()
+        }
         eventTap?.disable()
 
         let tap = EventTap(
@@ -60,7 +118,7 @@ final class SwipeGestureMonitor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    self.worker.reset()
+                    self.invalidateRecognition()
                     return event
                 case .gesture:
                     guard
@@ -72,9 +130,7 @@ final class SwipeGestureMonitor {
                         return event
                     }
 
-                    DispatchQueue.main.async { [weak self] in
-                        self?.consume(sample)
-                    }
+                    self.consume(sample)
                     return event
                 default:
                     return event
@@ -87,6 +143,7 @@ final class SwipeGestureMonitor {
     }
 
     func stopMonitoring() {
+        monitorEpoch &+= 1
         eventTap?.disable()
         eventTap = nil
         worker.reset()
@@ -97,24 +154,46 @@ final class SwipeGestureMonitor {
         startMonitoring()
     }
 
-    private func consume(_ sample: GestureSample) {
+    func invalidateRecognition() {
+        monitorEpoch &+= 1
+        worker.reset()
+    }
+
+    func consume(_ sample: GestureSample) {
+        if sample.activeFingerCount == 0 {
+            onRecognitionSessionEnded?()
+        }
         let configuration = SwipeRecognizer.Configuration(
             flipsDirection: flipSwipeDirection,
             allowsSameDirectionRepeat: allowSameDirectionRepeat,
             sameDirectionRepeatSensitivity: sameDirectionRepeatSensitivity
         )
-        let shouldIgnore = shouldIgnoreSwipe?() ?? false
+        let context = contextForRecognition?()
+        let queuedEpoch = monitorEpoch
 
         worker.consume(
             sample,
             configuration: configuration,
-            ignoreNewGesture: shouldIgnore
+            proposedContext: context
         ) { [weak self] result in
             guard let result else { return }
             DispatchQueue.main.async { [weak self] in
-                self?.onSwipe?(result.direction, result.fingerCount)
+                guard
+                    let self,
+                    self.monitorEpoch == queuedEpoch,
+                    (!self.requiresHealthyTapForDispatch
+                        || self.eventTap?.isHealthy == true),
+                    self.isContextValidBeforeDispatch?(result.context) ?? true
+                else {
+                    return
+                }
+                self.onSwipe?(
+                    result.context,
+                    result.direction,
+                    result.fingerCount
+                )
                 Logger.swipeGestureMonitor.debug(
-                    "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
+                    "recognized direction=\(result.direction) fingers=\(result.fingerCount) session=\(result.context.generation)"
                 )
             }
         }
