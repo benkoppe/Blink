@@ -55,8 +55,13 @@ struct BlinkMenu: View {
             set: { newValue in
                 guard let selection = newValue else { return }
                 switch selection {
-                case .lastSpace: switcher.switchToLastSpace()
-                case .index(let index): switcher.switchToIndex(index)
+                case .lastSpace:
+                    appState.actionDispatcher.dispatch(
+                        SpaceSwitchAction.lastSpace,
+                        source: .menu
+                    )
+                case .index(let index):
+                    appState.actionDispatcher.dispatch(.index(index), source: .menu)
                 }
             }
         )

@@ -68,6 +68,11 @@ final class AppState {
         userNotificationManager.performSetup()
     }
 
+    func shutdown() async {
+        await actionDispatcher.shutdown()
+        await spaceSwitcher.shutdown()
+    }
+
     /// Assigns the app delegate to the app state.
     func assignAppDelegate(_ appDelegate: AppDelegate) {
         guard self.appDelegate == nil else {

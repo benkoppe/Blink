@@ -111,14 +111,11 @@ final class SwipeGestureMonitor {
             ignoreNewGesture: shouldIgnore
         ) { [weak self] result in
             guard let result else { return }
-            Task { @MainActor [weak self] in
+            DispatchQueue.main.async { [weak self] in
                 self?.onSwipe?(result.direction, result.fingerCount)
-                Task {
-                    await DiagnosticsStore.shared.record(
-                        "gesture",
-                        "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
-                    )
-                }
+                Logger.swipeGestureMonitor.debug(
+                    "recognized direction=\(result.direction) fingers=\(result.fingerCount)"
+                )
             }
         }
     }
@@ -135,4 +132,8 @@ final class SwipeGestureMonitor {
         }
         return GestureSample(touches: touches)
     }
+}
+
+extension Logger {
+    fileprivate static let swipeGestureMonitor = Logger(category: "SwipeGestureMonitor")
 }

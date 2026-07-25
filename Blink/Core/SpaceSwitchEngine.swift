@@ -93,27 +93,6 @@ actor SpaceSwitchEngine {
     }
 
     @discardableResult
-    func submit(
-        action: SpaceSwitchAction,
-        source: SpaceInputSource,
-        wraps: Bool,
-        velocity: Double
-    ) -> SpaceSwitchOutcome {
-        guard let displayID = try? dependencies.displays.cursorDisplayID() else {
-            return .unavailable
-        }
-        return submit(
-            SpaceSwitchRequest(
-                action: action,
-                source: source,
-                targetDisplayID: displayID,
-                wraps: wraps,
-                velocity: velocity
-            )
-        )
-    }
-
-    @discardableResult
     func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
         guard
             let freshSnapshot = loadSnapshot(reason: .request),

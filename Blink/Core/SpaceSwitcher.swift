@@ -114,40 +114,6 @@ final class SpaceSwitcher {
         }
     }
 
-    @discardableResult
-    func switchLeft() -> Bool {
-        submit(.step(.left), source: .menu)
-    }
-
-    @discardableResult
-    func switchRight() -> Bool {
-        submit(.step(.right), source: .menu)
-    }
-
-    @discardableResult
-    func switchToIndex(_ index: Int) -> Bool {
-        submit(.index(index), source: .menu)
-    }
-
-    @discardableResult
-    func switchToLastSpace() -> Bool {
-        submit(.lastSpace, source: .menu)
-    }
-
-    @discardableResult
-    func submit(
-        _ action: SpaceSwitchAction,
-        source: SpaceInputSource
-    ) -> Bool {
-        guard let request = makeRequest(action: action, source: source) else {
-            return false
-        }
-        Task { [engine] in
-            _ = await engine.submit(request)
-        }
-        return true
-    }
-
     func makeRequest(
         action: SpaceSwitchAction,
         source: SpaceInputSource
