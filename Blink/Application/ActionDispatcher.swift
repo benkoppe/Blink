@@ -6,6 +6,10 @@ final class ActionDispatcher {
         SpaceSwitchAction,
         SpaceInputSource
     ) -> SpaceSwitchRequest?
+    typealias GestureRequestCapture = @MainActor (
+        SpaceSwitchAction,
+        GestureSessionContext
+    ) -> SpaceSwitchRequest?
     typealias RequestSubmission = @MainActor @Sendable (
         SpaceSwitchRequest
     ) async -> SpaceSwitchOutcome
@@ -15,6 +19,7 @@ final class ActionDispatcher {
     ) async -> Void
 
     private let captureRequest: RequestCapture
+    private let captureGestureRequest: GestureRequestCapture
     private let continuation: AsyncStream<SpaceSwitchRequest>.Continuation
     private var consumerTask: Task<Void, Never>?
 
@@ -22,6 +27,9 @@ final class ActionDispatcher {
         self.init(
             captureRequest: { [weak spaceSwitcher] action, source in
                 spaceSwitcher?.makeRequest(action: action, source: source)
+            },
+            captureGestureRequest: { [weak spaceSwitcher] action, context in
+                spaceSwitcher?.makeGestureRequest(action: action, context: context)
             },
             submitRequest: { [weak spaceSwitcher] request in
                 guard let spaceSwitcher else { return .unavailable }
@@ -39,6 +47,7 @@ final class ActionDispatcher {
 
     init(
         captureRequest: @escaping RequestCapture,
+        captureGestureRequest: GestureRequestCapture? = nil,
         submitRequest: @escaping RequestSubmission,
         diagnoseOutcome: @escaping OutcomeDiagnosis = { _, _ in }
     ) {
@@ -46,6 +55,23 @@ final class ActionDispatcher {
             of: SpaceSwitchRequest.self
         )
         self.captureRequest = captureRequest
+        self.captureGestureRequest = captureGestureRequest ?? { action, context in
+            guard
+                context.isAuthoritativeBlinkContext,
+                let request = captureRequest(action, .gesture),
+                request.targetDisplayID == context.targetDisplayID
+            else {
+                return nil
+            }
+            return SpaceSwitchRequest(
+                action: request.action,
+                source: request.source,
+                targetDisplayID: context.targetDisplayID,
+                wraps: request.wraps,
+                velocity: request.velocity,
+                requiredMode: context.requiredPostingMode
+            )
+        }
         self.continuation = continuation
         self.consumerTask = Task {
             for await request in stream {
@@ -72,6 +98,25 @@ final class ActionDispatcher {
         source: SpaceInputSource
     ) {
         dispatch(action.spaceSwitchAction, source: source)
+    }
+
+    func dispatch(
+        _ action: BoundAction,
+        gestureContext: GestureSessionContext
+    ) {
+        guard
+            gestureContext.isAuthoritativeBlinkContext,
+            let request = captureGestureRequest(
+                action.spaceSwitchAction,
+                gestureContext
+            )
+        else {
+            Logger.actionDispatcher.warning(
+                "Rejected gesture without an authoritative Blink context"
+            )
+            return
+        }
+        continuation.yield(request)
     }
 
     func dispatch(

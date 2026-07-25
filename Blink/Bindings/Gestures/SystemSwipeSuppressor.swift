@@ -23,17 +23,21 @@ final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
     private var suppressingNativeSwipe = false
     private var bypassingNativeSwipe = false
+    private var activeContext: GestureSessionContext?
 
-    var routeForNewGesture: (() -> GestureRoute)?
+    var contextForNewGesture: (() -> GestureSessionContext?)?
     var onGestureMayBegin: (() -> Void)?
     var onPotentialOverlayTransition: (() -> Void)?
-    var onRouteSelected: ((GestureRoute) -> Void)?
+    var onContextSelected: ((GestureSessionContext?) -> Void)?
     var onGestureEnded: (() -> Void)?
 
     func startMonitoring() {
         if let eventTap, eventTap.isHealthy { return }
 
-        eventTap?.disable()
+        if eventTap != nil {
+            eventTap?.disable()
+            endGesture()
+        }
 
         let tap = EventTap(
             label: "SystemSwipeSuppressor",
@@ -46,9 +50,7 @@ final class SystemSwipeSuppressor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    self.suppressingNativeSwipe = false
-                    self.bypassingNativeSwipe = false
-                    self.onGestureEnded?()
+                    self.endGesture()
                     proxy.enable()
                     return cgEvent
 
@@ -76,8 +78,7 @@ final class SystemSwipeSuppressor {
     func stopMonitoring() {
         eventTap?.disable()
         eventTap = nil
-        suppressingNativeSwipe = false
-        bypassingNativeSwipe = false
+        endGesture()
     }
 
     private func handleGestureEvent(_ event: CGEvent) -> CGEvent? {
@@ -117,17 +118,20 @@ final class SystemSwipeSuppressor {
             onGestureMayBegin?()
             return event
         case kGesturePhaseBegan:
-            let route = routeForNewGesture?() ?? .system
-            onRouteSelected?(route)
+            let context = contextForNewGesture?()
+            let route = context?.route ?? .system
+            activeContext = context
+            onContextSelected?(context)
             bypassingNativeSwipe = route == .system
             suppressingNativeSwipe = route == .blink
             return route == .system ? event : nil
 
         case kGesturePhaseEnded, kGesturePhaseCancelled:
             let isBypassing = bypassingNativeSwipe
-            bypassingNativeSwipe = false
-            suppressingNativeSwipe = false
-            onGestureEnded?()
+            endGesture()
+            if isBypassing {
+                onPotentialOverlayTransition?()
+            }
             return isBypassing ? event : nil
 
         default:
@@ -136,6 +140,13 @@ final class SystemSwipeSuppressor {
             }
             return suppressingNativeSwipe ? nil : event
         }
+    }
+
+    private func endGesture() {
+        suppressingNativeSwipe = false
+        bypassingNativeSwipe = false
+        activeContext = nil
+        onGestureEnded?()
     }
 
     private func isHorizontalDockSwipe(_ event: CGEvent) -> Bool {

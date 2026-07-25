@@ -54,6 +54,7 @@ actor SpaceSwitchEngine {
         var desiredSpaceID: SpaceID
         var inFlightSteps: [PostedStep]
         let mode: SpaceSwitchMode
+        var requiredMode: SpaceSwitchMode?
         var velocity: Double
     }
 
@@ -103,21 +104,33 @@ actor SpaceSwitchEngine {
 
     @discardableResult
     func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
-        _ = mode(for: request.targetDisplayID)
-        guard dependencies.missionControlCapability.state == .available else {
+        guard let initialMode = mode(
+            for: request.targetDisplayID,
+            requiredMode: request.requiredMode
+        ) else {
+            return .unavailable
+        }
+        if initialMode == .missionControl,
+            dependencies.missionControlCapability.state != .available
+        {
             return .missionControlSyntheticUnavailable
         }
 
         guard
             let freshSnapshot = loadSnapshot(reason: .request),
             let topology = freshSnapshot.topologiesByDisplay[request.targetDisplayID],
-            postingContextIsValid(for: request.targetDisplayID, topology: topology)
+            postingContextIsValid(for: request.targetDisplayID, topology: topology),
+            let mode = mode(
+                for: request.targetDisplayID,
+                requiredMode: request.requiredMode
+            )
         else {
             return .unavailable
         }
 
-        let mode = mode(for: request.targetDisplayID)
-        guard dependencies.missionControlCapability.state == .available else {
+        if mode == .missionControl,
+            dependencies.missionControlCapability.state != .available
+        {
             return .missionControlSyntheticUnavailable
         }
 
@@ -197,6 +210,7 @@ actor SpaceSwitchEngine {
 
         if var transaction = state.transaction {
             transaction.desiredSpaceID = targetSpaceID
+            transaction.requiredMode = request.requiredMode ?? transaction.requiredMode
             transaction.velocity = max(1, request.velocity)
             state.transaction = transaction
         } else {
@@ -205,6 +219,7 @@ actor SpaceSwitchEngine {
                 desiredSpaceID: targetSpaceID,
                 inFlightSteps: [],
                 mode: mode,
+                requiredMode: request.requiredMode,
                 velocity: max(1, request.velocity)
             )
         }
@@ -226,10 +241,23 @@ actor SpaceSwitchEngine {
         return .accepted
     }
 
-    private func mode(for displayID: DisplayID) -> SpaceSwitchMode {
+    private func mode(
+        for displayID: DisplayID,
+        requiredMode: SpaceSwitchMode? = nil
+    ) -> SpaceSwitchMode? {
         let overlayMode = dependencies.overlays.detect(on: displayID)
         dependencies.missionControlCapability.observeOverlay(overlayMode)
-        return overlayMode == .missionControl ? .missionControl : .instant
+
+        guard let requiredMode else {
+            return overlayMode == .missionControl ? .missionControl : .instant
+        }
+        switch (overlayMode, requiredMode) {
+        case (.none, .instant), (.missionControl, .missionControl):
+            return requiredMode
+        case (.none, .missionControl), (.missionControl, .instant),
+            (.appExpose, _), (.unknown, _):
+            return nil
+        }
     }
 
     @discardableResult
@@ -296,7 +324,10 @@ actor SpaceSwitchEngine {
             state.topology = topology
 
             if var transaction = state.transaction {
-                guard transaction.mode == mode(for: displayID) else {
+                guard transaction.mode == mode(
+                    for: displayID,
+                    requiredMode: transaction.requiredMode
+                ) else {
                     cancelExecution(for: displayID)
                     state.transaction = nil
                     state.confirmedSpaceID = topology.currentSpaceID
@@ -419,7 +450,10 @@ actor SpaceSwitchEngine {
                 topology: state.topology,
                 requiresCurrentSpaceMatch: !continuesInstantBatch
             ),
-            mode(for: displayID) == transaction.mode,
+            mode(
+                for: displayID,
+                requiredMode: transaction.requiredMode
+            ) == transaction.mode,
             let startingIndex = state.topology.index(of: startingSpaceID),
             let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
         else {

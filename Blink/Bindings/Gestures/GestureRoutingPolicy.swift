@@ -5,11 +5,45 @@ nonisolated enum GestureRoute: String, Equatable, Sendable {
     case system
 }
 
+nonisolated struct GestureSessionContext: Equatable, Sendable {
+    let generation: UInt64
+    let route: GestureRoute
+    let targetDisplayID: DisplayID
+    let capturedOverlayMode: OverlayMode
+    let missionControlSyntheticState: MissionControlSyntheticState
+    let requiredPostingMode: SpaceSwitchMode?
+
+    var isAuthoritativeBlinkContext: Bool {
+        guard route == .blink else { return false }
+        switch (capturedOverlayMode, requiredPostingMode) {
+        case (.none, .instant), (.missionControl, .missionControl):
+            return missionControlSyntheticState == .available
+                || requiredPostingMode == .instant
+        default:
+            return false
+        }
+    }
+}
+
 nonisolated struct GestureRoutingSnapshot: Equatable, Sendable {
     private static let maximumAge: TimeInterval = 0.3
 
     let overlayMode: OverlayMode
     let sampledAtUptime: TimeInterval
+    let targetDisplayID: DisplayID?
+    let generation: UInt64
+
+    init(
+        overlayMode: OverlayMode,
+        sampledAtUptime: TimeInterval,
+        targetDisplayID: DisplayID? = nil,
+        generation: UInt64 = 0
+    ) {
+        self.overlayMode = overlayMode
+        self.sampledAtUptime = sampledAtUptime
+        self.targetDisplayID = targetDisplayID
+        self.generation = generation
+    }
 
     static let unknown = GestureRoutingSnapshot(
         overlayMode: .unknown,
@@ -20,12 +54,7 @@ nonisolated struct GestureRoutingSnapshot: Equatable, Sendable {
         at uptime: TimeInterval,
         missionControlSyntheticState: MissionControlSyntheticState = .available
     ) -> GestureRoute {
-        guard
-            sampledAtUptime > 0,
-            uptime - sampledAtUptime <= Self.maximumAge
-        else {
-            return .system
-        }
+        guard isFresh(at: uptime) else { return .system }
 
         switch overlayMode {
         case .none:
@@ -36,15 +65,66 @@ nonisolated struct GestureRoutingSnapshot: Equatable, Sendable {
             return .system
         }
     }
+
+    func makeContext(
+        sessionGeneration: UInt64,
+        currentDisplayID: DisplayID,
+        at uptime: TimeInterval,
+        missionControlSyntheticState: MissionControlSyntheticState
+    ) -> GestureSessionContext {
+        let agreesWithSample = targetDisplayID == currentDisplayID
+        let selectedRoute = agreesWithSample
+            ? route(
+                at: uptime,
+                missionControlSyntheticState: missionControlSyntheticState
+            )
+            : .system
+        let capturedMode = agreesWithSample && isFresh(at: uptime)
+            ? overlayMode
+            : .unknown
+        let postingMode: SpaceSwitchMode? =
+            if selectedRoute == .blink {
+                switch capturedMode {
+                case .none: .instant
+                case .missionControl: .missionControl
+                case .appExpose, .unknown: nil
+                }
+            } else {
+                nil
+            }
+
+        return GestureSessionContext(
+            generation: sessionGeneration,
+            route: postingMode == nil && selectedRoute == .blink ? .system : selectedRoute,
+            targetDisplayID: currentDisplayID,
+            capturedOverlayMode: capturedMode,
+            missionControlSyntheticState: missionControlSyntheticState,
+            requiredPostingMode: postingMode
+        )
+    }
+
+    private func isFresh(at uptime: TimeInterval) -> Bool {
+        sampledAtUptime > 0
+            && uptime >= sampledAtUptime
+            && uptime - sampledAtUptime <= Self.maximumAge
+    }
 }
 
-actor OverlayModePoller {
-    private static let interval: Duration = .milliseconds(100)
-
+actor OverlayModeSampler {
     private let displayLocator: any DisplayLocating
     private let detector: any OverlayDetecting
-    private var pollingTask: Task<Void, Never>?
+    private var samplingTask: Task<Void, Never>?
+    private var requestSequence: UInt64 = 0
+    private var acceptedGeneration: UInt64 = 0
     private var onUpdate: (@Sendable (GestureRoutingSnapshot) -> Void)?
+
+    init(
+        displayLocator: any DisplayLocating,
+        detector: any OverlayDetecting
+    ) {
+        self.displayLocator = displayLocator
+        self.detector = detector
+    }
 
     init() {
         let displayLocator = DisplayLocator()
@@ -53,51 +133,75 @@ actor OverlayModePoller {
     }
 
     func start(
+        generation: UInt64,
         onUpdate: @escaping @Sendable (GestureRoutingSnapshot) -> Void
     ) {
         self.onUpdate = onUpdate
-        guard pollingTask == nil else {
-            sample()
-            return
-        }
-
-        pollingTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                await self.sample()
-                do {
-                    try await Task<Never, Never>.sleep(for: Self.interval)
-                } catch {
-                    return
-                }
-            }
-        }
+        refresh(generation: generation)
     }
 
     func stop() {
-        pollingTask?.cancel()
-        pollingTask = nil
+        requestSequence &+= 1
+        acceptedGeneration &+= 1
+        samplingTask?.cancel()
+        samplingTask = nil
         onUpdate = nil
     }
 
-    func refresh() {
-        guard onUpdate != nil else { return }
-        sample()
+    func invalidate(generation: UInt64) {
+        acceptedGeneration = max(acceptedGeneration, generation)
+        requestSequence &+= 1
+        samplingTask?.cancel()
+        samplingTask = nil
     }
 
-    private func sample() {
-        let mode: OverlayMode
-        if let displayID = try? displayLocator.cursorDisplayID() {
-            mode = detector.detect(on: displayID)
-        } else {
-            mode = .unknown
-        }
+    func refresh(generation: UInt64) {
+        guard onUpdate != nil, generation >= acceptedGeneration else { return }
+        acceptedGeneration = generation
+        requestSequence &+= 1
+        let sequence = requestSequence
+        samplingTask?.cancel()
 
-        onUpdate?(
-            GestureRoutingSnapshot(
-                overlayMode: mode,
-                sampledAtUptime: ProcessInfo.processInfo.systemUptime
+        let displayLocator = displayLocator
+        let detector = detector
+        samplingTask = Task { [weak self] in
+            let snapshot = await Task.detached {
+                guard let displayID = try? displayLocator.cursorDisplayID() else {
+                    return GestureRoutingSnapshot(
+                        overlayMode: .unknown,
+                        sampledAtUptime: ProcessInfo.processInfo.systemUptime,
+                        generation: generation
+                    )
+                }
+                return GestureRoutingSnapshot(
+                    overlayMode: detector.detect(on: displayID),
+                    sampledAtUptime: ProcessInfo.processInfo.systemUptime,
+                    targetDisplayID: displayID,
+                    generation: generation
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            await self?.complete(
+                snapshot,
+                sequence: sequence,
+                generation: generation
             )
-        )
+        }
+    }
+
+    private func complete(
+        _ snapshot: GestureRoutingSnapshot,
+        sequence: UInt64,
+        generation: UInt64
+    ) {
+        guard
+            sequence == requestSequence,
+            generation == acceptedGeneration,
+            onUpdate != nil
+        else {
+            return
+        }
+        samplingTask = nil
+        onUpdate?(snapshot)
     }
 }

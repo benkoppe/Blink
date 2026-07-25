@@ -139,6 +139,21 @@ final class SpaceSwitcher {
         )
     }
 
+    func makeGestureRequest(
+        action: SpaceSwitchAction,
+        context: GestureSessionContext
+    ) -> SpaceSwitchRequest? {
+        guard context.isAuthoritativeBlinkContext else { return nil }
+        return SpaceSwitchRequest(
+            action: action,
+            source: .gesture,
+            targetDisplayID: context.targetDisplayID,
+            wraps: wraps,
+            velocity: velocity,
+            requiredMode: context.requiredPostingMode
+        )
+    }
+
     func submit(_ request: SpaceSwitchRequest) async -> SpaceSwitchOutcome {
         await engine.submit(request)
     }

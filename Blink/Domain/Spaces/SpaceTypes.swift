@@ -182,6 +182,23 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
     let targetDisplayID: DisplayID
     let wraps: Bool
     let velocity: Double
+    let requiredMode: SpaceSwitchMode?
+
+    init(
+        action: SpaceSwitchAction,
+        source: SpaceInputSource,
+        targetDisplayID: DisplayID,
+        wraps: Bool,
+        velocity: Double,
+        requiredMode: SpaceSwitchMode? = nil
+    ) {
+        self.action = action
+        self.source = source
+        self.targetDisplayID = targetDisplayID
+        self.wraps = wraps
+        self.velocity = velocity
+        self.requiredMode = requiredMode
+    }
 }
 
 nonisolated enum SpaceSwitchOutcome: Equatable, Sendable {

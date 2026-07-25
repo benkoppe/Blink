@@ -1019,6 +1019,42 @@ struct SpaceSwitchEngineTests {
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
     }
 
+    @Test("A captured gesture posting mode is rejected instead of reinterpreted")
+    func requiredPostingModeDisagreementIsRejected() async {
+        let overlays = TestOverlayDetector(mode: .missionControl)
+        let (engine, _, _, poster, _) = makeEngine(
+            snapshot: snapshot(currentA: 100),
+            overlayDetector: overlays
+        )
+        await engine.start()
+
+        let instantOutcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100,
+                requiredMode: .instant
+            )
+        )
+        #expect(instantOutcome == .unavailable)
+
+        overlays.setMode(.none)
+        let missionControlOutcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100,
+                requiredMode: .missionControl
+            )
+        )
+        #expect(missionControlOutcome == .unavailable)
+        #expect(poster.posts.isEmpty)
+    }
+
     @Test("A topology reorder cancels active work")
     func topologyReorderCancelsTransaction() async throws {
         let (engine, system, _, poster, sleeper) = makeEngine(snapshot: snapshot(currentA: 100))
