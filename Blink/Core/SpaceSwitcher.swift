@@ -77,11 +77,6 @@ final class SpaceSwitcher {
                 DispatchQueue.main.async { [weak self] in
                     self?.onMissionControlFailure?()
                 }
-            },
-            publish: { [weak self] presentation in
-                Task { @MainActor [weak self] in
-                    self?.presentation = presentation
-                }
             }
         )
     )
@@ -89,13 +84,21 @@ final class SpaceSwitcher {
     @ObservationIgnored
     private var observers: [NSObjectProtocol] = []
 
+    @ObservationIgnored
+    private var presentationConsumer: Task<Void, Never>?
+
     private var wraps = false
     private var velocity = 999_999.0
 
     init() {
         observeWorkspace()
-        Task { [engine] in
+        let engine = self.engine
+        presentationConsumer = Task { @MainActor [weak self] in
             await engine.start()
+            for await presentation in engine.presentations {
+                guard !Task.isCancelled else { break }
+                self?.presentation = presentation
+            }
         }
     }
 
@@ -107,6 +110,7 @@ final class SpaceSwitcher {
     deinit {
         MainActor.assumeIsolated {
             removeObservers()
+            presentationConsumer?.cancel()
             let engine = engine
             Task {
                 await engine.stop()
@@ -138,6 +142,9 @@ final class SpaceSwitcher {
     func shutdown() async {
         removeObservers()
         await engine.stop()
+        presentationConsumer?.cancel()
+        await presentationConsumer?.value
+        presentationConsumer = nil
     }
 
     func canMoveLeft() -> Bool {

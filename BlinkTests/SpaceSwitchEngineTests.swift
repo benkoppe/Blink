@@ -244,8 +244,7 @@ struct SpaceSwitchEngineTests {
                 sleep: { try await sleeper.sleep($0) },
                 missionControlDidFail: {
                     failureRecorder?.record()
-                },
-                publish: { _ in }
+                }
             )
         )
         return (engine, system, display, poster, sleeper)
@@ -1161,6 +1160,54 @@ struct SpaceSwitchEngineTests {
         #expect(poster.posts.isEmpty)
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(100))
         #expect(presentation.projectedSpaceByDisplay[displayB] == space(200))
+    }
+
+    @Test("Presentations publish projections and rollback in order")
+    func presentationsRemainOrderedThroughRollback() async throws {
+        let (engine, _, _, poster, sleeper) = makeEngine(snapshot: snapshot(currentA: 100))
+        let valuesTask = Task { @MainActor in
+            var values: [SpaceID?] = []
+            for await presentation in engine.presentations {
+                values.append(presentation.projectedSpaceByDisplay[self.displayA])
+                if values.count == 5 { break }
+            }
+            return values
+        }
+
+        await engine.start()
+        _ = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .gesture,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+        try await waitUntil { poster.posts.count == 1 }
+        try await waitUntil { await sleeper.waitingCount == 1 }
+        await sleeper.resumeFirst()
+
+        let values = await valuesTask.value
+        #expect(values == [space(100), space(100), space(101), space(101), space(100)])
+        #expect((await engine.presentation()).projectedSpaceByDisplay[displayA] == space(100))
+    }
+
+    @Test("Stopping finishes the presentation stream")
+    func stopFinishesPresentationStream() async {
+        let (engine, _, _, _, _) = makeEngine(snapshot: snapshot(currentA: 100))
+        let consumer = Task { @MainActor in
+            var count = 0
+            for await _ in engine.presentations {
+                count += 1
+            }
+            return count
+        }
+
+        await engine.start()
+        await engine.stop()
+
+        #expect(await consumer.value == 2)
     }
 
     @Test("Stopping while acknowledgement is pending cancels all work")

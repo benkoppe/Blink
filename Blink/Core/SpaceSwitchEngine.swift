@@ -23,7 +23,6 @@ actor SpaceSwitchEngine {
         let sleep: @Sendable (Duration) async throws -> Void
         let diagnose: @Sendable (String, String) -> Void
         let missionControlDidFail: @Sendable () -> Void
-        let publish: @Sendable (SpacePresentation) -> Void
 
         init(
             system: any SpaceSystemClient,
@@ -34,8 +33,7 @@ actor SpaceSwitchEngine {
                 try await Task<Never, Never>.sleep(for: $0)
             },
             diagnose: @escaping @Sendable (String, String) -> Void = { _, _ in },
-            missionControlDidFail: @escaping @Sendable () -> Void = {},
-            publish: @escaping @Sendable (SpacePresentation) -> Void
+            missionControlDidFail: @escaping @Sendable () -> Void = {}
         ) {
             self.system = system
             self.displays = displays
@@ -44,7 +42,6 @@ actor SpaceSwitchEngine {
             self.sleep = sleep
             self.diagnose = diagnose
             self.missionControlDidFail = missionControlDidFail
-            self.publish = publish
         }
     }
 
@@ -70,7 +67,10 @@ actor SpaceSwitchEngine {
 
     private static let acknowledgementTimeout: Duration = .seconds(2)
 
+    nonisolated let presentations: AsyncStream<SpacePresentation>
+
     private let dependencies: Dependencies
+    private let presentationContinuation: AsyncStream<SpacePresentation>.Continuation
     private var snapshot: SystemSpaceSnapshot?
     private var displayStates: [DisplayID: DisplayState] = [:]
     private var transactionDisplayID: DisplayID?
@@ -78,6 +78,11 @@ actor SpaceSwitchEngine {
     private var acknowledgementTask: Task<Void, Never>?
 
     init(dependencies: Dependencies) {
+        let (presentations, continuation) = AsyncStream.makeStream(
+            of: SpacePresentation.self
+        )
+        self.presentations = presentations
+        self.presentationContinuation = continuation
         self.dependencies = dependencies
     }
 
@@ -90,6 +95,7 @@ actor SpaceSwitchEngine {
         snapshot = nil
         displayStates.removeAll()
         publish()
+        presentationContinuation.finish()
     }
 
     @discardableResult
@@ -592,6 +598,6 @@ actor SpaceSwitchEngine {
     }
 
     private func publish() {
-        dependencies.publish(makePresentation())
+        presentationContinuation.yield(makePresentation())
     }
 }
