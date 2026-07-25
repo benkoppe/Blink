@@ -23,14 +23,11 @@ final class SettingsManager {
             dispatcher: dispatcher,
             generalSettings: generalSettings
         )
-        let gestureSettings = GestureSettingsManager(
+        self.gestureSettingsManager = GestureSettingsManager(
             dispatcher: dispatcher,
-            generalSettings: generalSettings
+            generalSettings: generalSettings,
+            missionControlCapability: spaceSwitcher.missionControlSyntheticCapability
         )
-        self.gestureSettingsManager = gestureSettings
-        spaceSwitcher.onMissionControlFailure = { [weak gestureSettings] in
-            gestureSettings?.disableMissionControlSyntheticForCurrentSession()
-        }
     }
 
     func performSetup() {

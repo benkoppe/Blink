@@ -18,7 +18,7 @@ nonisolated struct GestureRoutingSnapshot: Equatable, Sendable {
 
     func route(
         at uptime: TimeInterval,
-        missionControlSyntheticEnabled: Bool = true
+        missionControlSyntheticState: MissionControlSyntheticState = .available
     ) -> GestureRoute {
         guard
             sampledAtUptime > 0,
@@ -31,7 +31,7 @@ nonisolated struct GestureRoutingSnapshot: Equatable, Sendable {
         case .none:
             return .blink
         case .missionControl:
-            return missionControlSyntheticEnabled ? .blink : .system
+            return missionControlSyntheticState == .available ? .blink : .system
         case .appExpose, .unknown:
             return .system
         }

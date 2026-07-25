@@ -119,7 +119,7 @@ struct GestureAndPlatformTests {
         #expect(
             missionControl.route(
                 at: now,
-                missionControlSyntheticEnabled: false
+                missionControlSyntheticState: .unavailableUntilOverlayExit
             ) == .system
         )
         #expect(
@@ -191,6 +191,41 @@ struct GestureAndPlatformTests {
                 globalActiveSpaceID: 999
             ) == nil
         )
+    }
+
+    @Test("Mission Control capability publishes state transitions")
+    func missionControlCapabilityPublishesTransitions() async {
+        let capability = MissionControlSyntheticCapability()
+        let transitions = Task { @MainActor in
+            var values: [MissionControlSyntheticState] = []
+            for await state in capability.changes {
+                values.append(state)
+                if values.count == 2 { break }
+            }
+            return values
+        }
+
+        capability.markUnavailable()
+        capability.observeOverlay(.none)
+        #expect(
+            await transitions.value == [
+                .unavailableUntilOverlayExit,
+                .available,
+            ]
+        )
+    }
+
+    @Test("Mission Control capability resets only after a confirmed overlay exit")
+    func missionControlCapabilityResetPolicy() {
+        let capability = MissionControlSyntheticCapability()
+        #expect(capability.markUnavailable())
+        #expect(capability.state == .unavailableUntilOverlayExit)
+        #expect(!capability.observeOverlay(.unknown))
+        #expect(!capability.observeOverlay(.appExpose))
+        #expect(!capability.observeOverlay(.missionControl))
+        #expect(capability.state == .unavailableUntilOverlayExit)
+        #expect(capability.observeOverlay(.none))
+        #expect(capability.state == .available)
     }
 
     @Test("Mission Control uses the Tahoe Dock-only payload")

@@ -223,6 +223,7 @@ struct SpaceSwitchEngineTests {
         snapshot: SystemSpaceSnapshot,
         mode: OverlayMode = .none,
         overlayDetector: TestOverlayDetector? = nil,
+        missionControlCapability: MissionControlSyntheticCapability = .init(),
         failureRecorder: TestFailureRecorder? = nil
     ) -> (
         SpaceSwitchEngine,
@@ -241,9 +242,12 @@ struct SpaceSwitchEngineTests {
                 displays: display,
                 overlays: overlayDetector ?? TestOverlayDetector(mode: mode),
                 poster: poster,
+                missionControlCapability: missionControlCapability,
                 sleep: { try await sleeper.sleep($0) },
-                missionControlDidFail: {
-                    failureRecorder?.record()
+                diagnose: { category, _ in
+                    if category == "mission-control" {
+                        failureRecorder?.record()
+                    }
                 }
             )
         )
@@ -559,12 +563,54 @@ struct SpaceSwitchEngineTests {
         try await waitUntil { poster.posts.count == 2 }
     }
 
-    @Test("Mission Control failure opens the native fallback circuit")
-    func missionControlFailureReportsFallback() async throws {
+    @Test("An immediate Mission Control post failure opens the circuit")
+    func missionControlPostFailureOpensCircuit() async {
+        let capability = MissionControlSyntheticCapability()
         let recorder = TestFailureRecorder()
-        let (engine, _, _, poster, sleeper) = makeEngine(
+        let (engine, _, _, poster, _) = makeEngine(
             snapshot: snapshot(currentA: 100),
             mode: .missionControl,
+            missionControlCapability: capability,
+            failureRecorder: recorder
+        )
+        poster.fail(attempt: 1)
+        await engine.start()
+
+        let outcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+        let laterOutcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+
+        #expect(outcome == .missionControlSyntheticUnavailable)
+        #expect(laterOutcome == .missionControlSyntheticUnavailable)
+        #expect(capability.state == .unavailableUntilOverlayExit)
+        #expect(poster.attempts == 1)
+        #expect(recorder.count == 1)
+    }
+
+    @Test("A Mission Control timeout stays open until none and permits a new session")
+    func missionControlTimeoutCircuitLifecycle() async throws {
+        let capability = MissionControlSyntheticCapability()
+        let recorder = TestFailureRecorder()
+        let overlays = TestOverlayDetector(mode: .missionControl)
+        let (engine, _, _, poster, sleeper) = makeEngine(
+            snapshot: snapshot(currentA: 100),
+            overlayDetector: overlays,
+            missionControlCapability: capability,
             failureRecorder: recorder
         )
         await engine.start()
@@ -581,7 +627,54 @@ struct SpaceSwitchEngineTests {
         try await waitUntil { poster.posts.count == 1 }
         try await waitUntil { await sleeper.waitingCount == 1 }
         await sleeper.resumeFirst()
-        try await waitUntil { recorder.count == 1 }
+        try await waitUntil { capability.state == .unavailableUntilOverlayExit }
+
+        let routing = GestureRoutingSnapshot(
+            overlayMode: .missionControl,
+            sampledAtUptime: 100
+        )
+        #expect(
+            routing.route(
+                at: 100,
+                missionControlSyntheticState: capability.state
+            ) == .system
+        )
+        let unavailable = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .menu,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+        #expect(unavailable == .missionControlSyntheticUnavailable)
+        #expect(poster.attempts == 1)
+        #expect(recorder.count == 1)
+
+        overlays.setMode(.unknown)
+        await engine.refresh(reason: .passive)
+        #expect(capability.state == .unavailableUntilOverlayExit)
+        overlays.setMode(.appExpose)
+        await engine.refresh(reason: .passive)
+        #expect(capability.state == .unavailableUntilOverlayExit)
+
+        overlays.setMode(.none)
+        await engine.refresh(reason: .passive)
+        #expect(capability.state == .available)
+
+        overlays.setMode(.missionControl)
+        let newSessionOutcome = await engine.submit(
+            SpaceSwitchRequest(
+                action: .step(.right),
+                source: .hotkey,
+                targetDisplayID: displayA,
+                wraps: false,
+                velocity: 100
+            )
+        )
+        #expect(newSessionOutcome == .accepted)
+        #expect(poster.attempts == 2)
     }
 
     @Test("An empty system topology is unavailable")
@@ -891,7 +984,9 @@ struct SpaceSwitchEngineTests {
         try await waitUntil { await sleeper.waitingCount == 0 }
         let presentation = await engine.presentation()
         #expect(poster.posts.count == 1)
-        #expect(presentation.snapshot?.topologiesByDisplay[displayA]?.spaceIDs == [100, 102, 101, 103].map(space))
+        #expect(
+            presentation.snapshot?.topologiesByDisplay[displayA]?.spaceIDs
+                == [100, 102, 101, 103].map(space))
         #expect(presentation.projectedSpaceByDisplay[displayA] == space(100))
         #expect(presentation.lastSpaceByDisplay[displayA] == nil)
     }

@@ -51,7 +51,12 @@ final class ActionDispatcher {
             for await request in stream {
                 guard !Task.isCancelled else { break }
                 let outcome = await submitRequest(request)
-                guard outcome != .accepted else { continue }
+                guard
+                    outcome != .accepted,
+                    outcome != .missionControlSyntheticUnavailable
+                else {
+                    continue
+                }
                 await diagnoseOutcome(request, outcome)
             }
         }

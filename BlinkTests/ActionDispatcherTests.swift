@@ -168,6 +168,41 @@ struct ActionDispatcherTests {
         await dispatcher.shutdown()
     }
 
+    @Test("Circuit-open outcomes do not emit repeated rejection diagnostics")
+    func circuitOpenOutcomesDoNotRepeatDiagnostics() async throws {
+        let submissionProbe = DispatcherSubmissionProbe(
+            outcomes: [
+                .missionControlSyntheticUnavailable,
+                .missionControlSyntheticUnavailable,
+            ]
+        )
+        let diagnosisProbe = DispatcherDiagnosisProbe()
+        let dispatcher = ActionDispatcher(
+            captureRequest: { [displayA] action, source in
+                SpaceSwitchRequest(
+                    action: action,
+                    source: source,
+                    targetDisplayID: displayA,
+                    wraps: false,
+                    velocity: 100
+                )
+            },
+            submitRequest: { request in
+                await submissionProbe.submit(request)
+            },
+            diagnoseOutcome: { request, outcome in
+                await diagnosisProbe.record(request, outcome)
+            }
+        )
+
+        dispatcher.dispatch(SpaceSwitchAction.step(.left), source: .menu)
+        dispatcher.dispatch(SpaceSwitchAction.step(.right), source: .hotkey)
+        try await waitUntil { await submissionProbe.requests.count == 2 }
+        #expect(await diagnosisProbe.values.isEmpty)
+
+        await dispatcher.shutdown()
+    }
+
     @Test("Shutdown cancels the sole consumer")
     func shutdownCancelsConsumer() async {
         let started = AsyncStream<Void>.makeStream()

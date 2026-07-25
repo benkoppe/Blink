@@ -28,7 +28,7 @@ nonisolated struct SpaceInfo: Equatable, Sendable {
 @MainActor
 @Observable
 final class SpaceSwitcher {
-    var onMissionControlFailure: (() -> Void)?
+    nonisolated let missionControlSyntheticCapability: MissionControlSyntheticCapability
 
     private(set) var presentation = SpacePresentation(
         snapshot: nil,
@@ -73,9 +73,10 @@ final class SpaceSwitcher {
             displays: displayLocator,
             overlays: overlayDetector,
             poster: DockGesturePoster(),
-            missionControlDidFail: { [weak self] in
-                DispatchQueue.main.async { [weak self] in
-                    self?.onMissionControlFailure?()
+            missionControlCapability: missionControlSyntheticCapability,
+            diagnose: { category, message in
+                Task {
+                    await DiagnosticsStore.shared.record(category, message)
                 }
             }
         )
@@ -90,7 +91,10 @@ final class SpaceSwitcher {
     private var wraps = false
     private var velocity = 999_999.0
 
-    init() {
+    init(
+        missionControlSyntheticCapability: MissionControlSyntheticCapability = .init()
+    ) {
+        self.missionControlSyntheticCapability = missionControlSyntheticCapability
         observeWorkspace()
         let engine = self.engine
         presentationConsumer = Task { @MainActor [weak self] in

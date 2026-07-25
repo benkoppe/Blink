@@ -91,6 +91,57 @@ nonisolated enum SpaceSwitchMode: Equatable, Sendable {
     case missionControl
 }
 
+nonisolated enum MissionControlSyntheticState: Equatable, Sendable {
+    case available
+    case unavailableUntilOverlayExit
+}
+
+nonisolated final class MissionControlSyntheticCapability: @unchecked Sendable {
+    let changes: AsyncStream<MissionControlSyntheticState>
+
+    private let lock = NSLock()
+    private let continuation: AsyncStream<MissionControlSyntheticState>.Continuation
+    private var storedState: MissionControlSyntheticState
+
+    init(initialState: MissionControlSyntheticState = .available) {
+        storedState = initialState
+        (changes, continuation) = AsyncStream.makeStream(
+            of: MissionControlSyntheticState.self
+        )
+    }
+
+    var state: MissionControlSyntheticState {
+        lock.withLock { storedState }
+    }
+
+    @discardableResult
+    func markUnavailable() -> Bool {
+        transition(to: .unavailableUntilOverlayExit)
+    }
+
+    @discardableResult
+    func observeOverlay(_ mode: OverlayMode) -> Bool {
+        guard mode == .none else { return false }
+        return transition(to: .available)
+    }
+
+    private func transition(to newState: MissionControlSyntheticState) -> Bool {
+        let changed = lock.withLock {
+            guard storedState != newState else { return false }
+            storedState = newState
+            return true
+        }
+        if changed {
+            continuation.yield(newState)
+        }
+        return changed
+    }
+
+    deinit {
+        continuation.finish()
+    }
+}
+
 nonisolated struct SpacePresentation: Equatable, Sendable {
     let snapshot: SystemSpaceSnapshot?
     let projectedSpaceByDisplay: [DisplayID: SpaceID]
@@ -137,6 +188,7 @@ nonisolated enum SpaceSwitchOutcome: Equatable, Sendable {
     case accepted
     case alreadyAtTarget
     case unavailable
+    case missionControlSyntheticUnavailable
     case blockedAtEdge
     case invalidTarget
 }

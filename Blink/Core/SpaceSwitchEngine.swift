@@ -20,28 +20,28 @@ actor SpaceSwitchEngine {
         let displays: any DisplayLocating
         let overlays: any OverlayDetecting
         let poster: any SpaceGesturePosting
+        let missionControlCapability: MissionControlSyntheticCapability
         let sleep: @Sendable (Duration) async throws -> Void
         let diagnose: @Sendable (String, String) -> Void
-        let missionControlDidFail: @Sendable () -> Void
 
         init(
             system: any SpaceSystemClient,
             displays: any DisplayLocating,
             overlays: any OverlayDetecting,
             poster: any SpaceGesturePosting,
+            missionControlCapability: MissionControlSyntheticCapability,
             sleep: @escaping @Sendable (Duration) async throws -> Void = {
                 try await Task<Never, Never>.sleep(for: $0)
             },
-            diagnose: @escaping @Sendable (String, String) -> Void = { _, _ in },
-            missionControlDidFail: @escaping @Sendable () -> Void = {}
+            diagnose: @escaping @Sendable (String, String) -> Void = { _, _ in }
         ) {
             self.system = system
             self.displays = displays
             self.overlays = overlays
             self.poster = poster
+            self.missionControlCapability = missionControlCapability
             self.sleep = sleep
             self.diagnose = diagnose
-            self.missionControlDidFail = missionControlDidFail
         }
     }
 
@@ -100,6 +100,11 @@ actor SpaceSwitchEngine {
 
     @discardableResult
     func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
+        _ = mode(for: request.targetDisplayID)
+        guard dependencies.missionControlCapability.state == .available else {
+            return .missionControlSyntheticUnavailable
+        }
+
         guard
             let freshSnapshot = loadSnapshot(reason: .request),
             let topology = freshSnapshot.topologiesByDisplay[request.targetDisplayID],
@@ -108,7 +113,12 @@ actor SpaceSwitchEngine {
             return .unavailable
         }
 
-        return submit(request, topology: topology)
+        let mode = mode(for: request.targetDisplayID)
+        guard dependencies.missionControlCapability.state == .available else {
+            return .missionControlSyntheticUnavailable
+        }
+
+        return submit(request, topology: topology, mode: mode)
     }
 
     func refresh(reason: ReconciliationReason) {
@@ -121,7 +131,8 @@ actor SpaceSwitchEngine {
 
     private func submit(
         _ request: SpaceSwitchRequest,
-        topology: DisplayTopology
+        topology: DisplayTopology,
+        mode: SpaceSwitchMode
     ) -> SpaceSwitchOutcome {
         guard var state = matchingState(for: topology) else {
             return .unavailable
@@ -174,7 +185,6 @@ actor SpaceSwitchEngine {
             return .alreadyAtTarget
         }
 
-        let mode = mode(for: topology.displayID)
         if let transaction = state.transaction, transaction.mode != mode {
             cancelTransaction(for: topology.displayID, reason: "overlay mode changed")
             return .unavailable
@@ -205,13 +215,18 @@ actor SpaceSwitchEngine {
         )
         publish()
         postNextStepIfPossible(for: topology.displayID)
+        if mode == .missionControl,
+            dependencies.missionControlCapability.state != .available
+        {
+            return .missionControlSyntheticUnavailable
+        }
         return .accepted
     }
 
     private func mode(for displayID: DisplayID) -> SpaceSwitchMode {
-        dependencies.overlays.detect(on: displayID) == .missionControl
-            ? .missionControl
-            : .instant
+        let overlayMode = dependencies.overlays.detect(on: displayID)
+        dependencies.missionControlCapability.observeOverlay(overlayMode)
+        return overlayMode == .missionControl ? .missionControl : .instant
     }
 
     @discardableResult
@@ -221,6 +236,11 @@ actor SpaceSwitchEngine {
         }
 
         snapshot = value
+        if let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
+            value.topologiesByDisplay[cursorDisplayID] != nil
+        {
+            _ = mode(for: cursorDisplayID)
+        }
         let resumableDisplays = reconcile(snapshot: value, reason: reason)
         publish()
 
@@ -384,6 +404,13 @@ actor SpaceSwitchEngine {
             return
         }
 
+        if transaction.mode == .missionControl,
+            dependencies.missionControlCapability.state != .available
+        {
+            abortTransaction(for: displayID, reason: "Mission Control synthetic unavailable")
+            return
+        }
+
         let nextSpaceID = state.topology.spaceIDs[nextIndex]
         let remainingSteps = abs(desiredIndex - confirmedIndex)
         guard dependencies.poster.postStep(
@@ -515,8 +542,13 @@ actor SpaceSwitchEngine {
             displayStates[displayID] = state
         }
         dependencies.diagnose("switch", "aborted display=\(displayID.rawValue) reason=\(reason)")
-        if reportsMissionControlFailure, mode == .missionControl {
-            dependencies.missionControlDidFail()
+        if reportsMissionControlFailure, mode == .missionControl,
+            dependencies.missionControlCapability.markUnavailable()
+        {
+            dependencies.diagnose(
+                "mission-control",
+                "synthetic path unavailable until confirmed overlay exit; gestures route to macOS and hotkey/menu actions fail fast"
+            )
         }
         publish()
     }
