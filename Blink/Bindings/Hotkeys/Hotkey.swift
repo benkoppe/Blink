@@ -1,17 +1,49 @@
 import Observation
 
+enum HotkeyRegistrationFailure: Equatable {
+    case duplicateBinding(conflictingActions: [BoundAction])
+    case monitoringUnavailable(HotkeyMonitoringFailure)
+    case registryConflict
+
+    var description: String {
+        switch self {
+        case .duplicateBinding(let actions):
+            let names = actions.map(\.displayName).joined(separator: ", ")
+            return "This shortcut is also configured for \(names). Duplicate shortcuts are disabled."
+        case .monitoringUnavailable(let reason):
+            return reason.description
+        case .registryConflict:
+            return "This shortcut conflicts with another registered Blink shortcut."
+        }
+    }
+}
+
+enum HotkeyRegistrationState: Equatable {
+    case disabled
+    case active
+    case failed(HotkeyRegistrationFailure)
+}
+
 @Observable
 final class Hotkey: Codable, Equatable, Hashable {
     let action: BoundAction
     var keyCombination: KeyCombination?
 
-    var isEnabled: Bool {
+    /// Whether the user has assigned a combination. This says nothing about
+    /// whether the shared event tap is currently operational.
+    var isConfigured: Bool {
         keyCombination != nil
     }
+
+    private(set) var registrationState: HotkeyRegistrationState = .disabled
 
     init(keyCombination: KeyCombination?, action: BoundAction) {
         self.keyCombination = keyCombination
         self.action = action
+    }
+
+    func setRegistrationState(_ state: HotkeyRegistrationState) {
+        registrationState = state
     }
 
     private enum CodingKeys: CodingKey {

@@ -40,14 +40,6 @@ struct HotkeyRecorder<Label: View>: View {
                     dimension[VerticalAlignment.center]
                 }
         }
-        .alert(
-            "Hotkey is reserved by macOS",
-            isPresented: $model.isPresentingReservedByMacOSError
-        ) {
-            Button("OK") {
-                model.isPresentingReservedByMacOSError = false
-            }
-        }
         .onDisappear {
             model.stopRecording()
         }
@@ -73,7 +65,7 @@ struct HotkeyRecorder<Label: View>: View {
         Button {
             if model.isRecording {
                 model.stopRecording()
-            } else if model.hotkey.isEnabled {
+            } else if model.hotkey.isConfigured {
                 model.hotkey.keyCombination = nil
             } else {
                 model.stopRecording()
@@ -94,7 +86,7 @@ struct HotkeyRecorder<Label: View>: View {
     private var leadingSegmentLabel: some View {
         if model.isRecording {
             Text("Type Hotkey")
-        } else if model.hotkey.isEnabled {
+        } else if model.hotkey.isConfigured {
             if let keyCombination = model.hotkey.keyCombination {
                 HStack(spacing: 0) {
                     Text(keyCombination.modifiers.symbolicValue)
@@ -113,7 +105,7 @@ struct HotkeyRecorder<Label: View>: View {
         let symbolicString =
             if model.isRecording {
                 "escape"
-            } else if model.hotkey.isEnabled {
+            } else if model.hotkey.isConfigured {
                 "xmark.circle.fill"
             } else {
                 "record.circle"

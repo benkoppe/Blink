@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ObservableDefaults
 
@@ -8,15 +9,23 @@ final class HotkeySettingsManager {
     @ObservableOnly private(set) var hotkeys = BoundAction.allCases.map {
         Hotkey(keyCombination: nil, action: $0)
     }
+    @ObservableOnly private(set) var monitoringState: HotkeyMonitoringState = .disabled
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
+    private struct RegisteredBinding {
+        let id: UInt32
+        let keyCombination: KeyCombination
+    }
+
     @Ignore private let registry: HotkeyRegistry
     @Ignore private let dispatcher: ActionDispatcher
     @Ignore private let generalSettings: GeneralSettingsManager
-    @Ignore private var registrationIDs: [BoundAction: UInt32] = [:]
+    @Ignore private var registeredBindings: [BoundAction: RegisteredBinding] = [:]
+    @Ignore private var registrationFailures: [BoundAction: HotkeyRegistrationFailure] = [:]
     @Ignore private var recordingActions: Set<BoundAction> = []
+    @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
 
     init(
         registry: HotkeyRegistry,
@@ -26,16 +35,26 @@ final class HotkeySettingsManager {
         self.registry = registry
         self.dispatcher = dispatcher
         self.generalSettings = generalSettings
+        self.monitoringState = registry.monitoringState
+        registry.onMonitoringStateChanged = { [weak self] state in
+            guard let self else { return }
+            monitoringState = state
+            refreshRegistrationStates()
+        }
     }
 
     deinit {
         MainActor.assumeIsolated {
-            registrationIDs.values.forEach(registry.unregister)
+            registry.onMonitoringStateChanged = nil
+            registeredBindings.values.forEach { registry.unregister($0.id) }
+            let center = NSWorkspace.shared.notificationCenter
+            lifecycleObservers.forEach(center.removeObserver)
         }
     }
 
     func performSetup() {
         loadInitialState()
+        observeLifecycle()
         observeConfiguration()
     }
 
@@ -66,6 +85,26 @@ final class HotkeySettingsManager {
         }
     }
 
+    private func observeLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+        ] {
+            lifecycleObservers.append(
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.registry.ensureMonitoring()
+                        self.reconfigure()
+                    }
+                }
+            )
+        }
+    }
+
     private func observeConfiguration() {
         withObservationTracking {
             _ = generalSettings.bindingsEnabled
@@ -79,23 +118,112 @@ final class HotkeySettingsManager {
         }
     }
 
+    /// Reconciles individual registrations so recording or editing one action
+    /// does not interrupt unrelated hotkeys.
     private func reconfigure() {
-        registrationIDs.values.forEach(registry.unregister)
-        registrationIDs.removeAll()
+        let duplicateConflicts = duplicateConflictsByAction()
+        registrationFailures = duplicateConflicts.mapValues {
+            .duplicateBinding(conflictingActions: $0)
+        }
 
-        guard generalSettings.bindingsEnabled else { return }
+        let desiredCombinations: [BoundAction: KeyCombination] = Dictionary(
+            uniqueKeysWithValues: hotkeys.compactMap { hotkey in
+                guard
+                    generalSettings.bindingsEnabled,
+                    let combination = hotkey.keyCombination,
+                    !recordingActions.contains(hotkey.action),
+                    duplicateConflicts[hotkey.action] == nil
+                else { return nil }
+                return (hotkey.action, combination)
+            }
+        )
 
-        for hotkey in hotkeys where !recordingActions.contains(hotkey.action) {
-            guard hotkey.keyCombination != nil else { continue }
-
-            let action = hotkey.action
-            registrationIDs[action] = registry.register(
-                hotkey: hotkey,
-                eventKind: .keyDown
-            ) { [weak dispatcher] in
-                dispatcher?.dispatch(action, source: .hotkey)
+        for action in BoundAction.allCases {
+            guard let registered = registeredBindings[action] else { continue }
+            if desiredCombinations[action] != registered.keyCombination {
+                registry.unregister(registered.id)
+                registeredBindings.removeValue(forKey: action)
             }
         }
+
+        if desiredCombinations.isEmpty && registeredBindings.isEmpty {
+            registry.stopMonitoring()
+        }
+
+        for action in BoundAction.allCases {
+            guard
+                registeredBindings[action] == nil,
+                let combination = desiredCombinations[action]
+            else { continue }
+
+            switch registry.register(keyCombination: combination, handler: { [weak dispatcher] in
+                dispatcher?.dispatch(action, source: .hotkey)
+            }) {
+            case .success(let id):
+                registeredBindings[action] = RegisteredBinding(
+                    id: id,
+                    keyCombination: combination
+                )
+            case .failure(.monitoringFailed(let reason)):
+                registrationFailures[action] = .monitoringUnavailable(reason)
+            case .failure(.duplicate):
+                registrationFailures[action] = .registryConflict
+            case .failure(.notConfigured):
+                break
+            }
+        }
+
+        monitoringState = registry.monitoringState
+        refreshRegistrationStates(duplicateConflicts: duplicateConflicts)
+    }
+
+    private func refreshRegistrationStates(
+        duplicateConflicts: [BoundAction: [BoundAction]]? = nil
+    ) {
+        let conflicts = duplicateConflicts ?? duplicateConflictsByAction()
+
+        for hotkey in hotkeys {
+            let state: HotkeyRegistrationState
+            if !generalSettings.bindingsEnabled
+                || !hotkey.isConfigured
+                || recordingActions.contains(hotkey.action)
+            {
+                state = .disabled
+            } else if let conflictingActions = conflicts[hotkey.action] {
+                state = .failed(.duplicateBinding(conflictingActions: conflictingActions))
+            } else if let failure = registrationFailures[hotkey.action] {
+                state = .failed(failure)
+            } else if registeredBindings[hotkey.action] != nil {
+                switch monitoringState {
+                case .active:
+                    state = .active
+                case .failed(let reason):
+                    state = .failed(.monitoringUnavailable(reason))
+                case .disabled:
+                    state = .failed(.monitoringUnavailable(.eventTapUnavailable))
+                }
+            } else if case .failed(let reason) = monitoringState {
+                state = .failed(.monitoringUnavailable(reason))
+            } else {
+                state = .disabled
+            }
+            hotkey.setRegistrationState(state)
+        }
+    }
+
+    /// Duplicate combinations reject every involved action. No action receives
+    /// an implicit priority based on registration or dictionary iteration order.
+    private func duplicateConflictsByAction() -> [BoundAction: [BoundAction]] {
+        var result: [BoundAction: [BoundAction]] = [:]
+        for hotkey in hotkeys {
+            guard let combination = hotkey.keyCombination else { continue }
+            let matchingActions = hotkeys.compactMap { candidate in
+                candidate.keyCombination == combination ? candidate.action : nil
+            }
+            guard matchingActions.count > 1 else { continue }
+            result[hotkey.action] = matchingActions.filter { $0 != hotkey.action }
+        }
+        return result
     }
 
     private func persistHotkeys() {

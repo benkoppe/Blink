@@ -11,7 +11,6 @@ import SwiftUI
 @MainActor @Observable
 final class HotkeyRecorderModel {
     private(set) var isRecording = false
-    var isPresentingReservedByMacOSError = false
 
     let hotkey: Hotkey
     private let onRecordingChanged: (Bool) -> Void
@@ -35,18 +34,26 @@ final class HotkeyRecorderModel {
         self.onRecordingChanged = onRecordingChanged
     }
 
+    deinit {
+        MainActor.assumeIsolated {
+            guard isRecording else { return }
+            monitor.stop()
+            onRecordingChanged(false)
+        }
+    }
+
     func startRecording() {
         guard !isRecording else { return }
+        isRecording = true
         onRecordingChanged(true)
         monitor.start()
-        isRecording = true
     }
 
     func stopRecording() {
         guard isRecording else { return }
+        isRecording = false
         monitor.stop()
         onRecordingChanged(false)
-        isRecording = false
     }
 
     private func handleKeyDown(event: NSEvent) {
@@ -63,11 +70,6 @@ final class HotkeyRecorderModel {
 
         guard keyCombination.modifiers != .shift else {
             NSSound.beep()
-            return
-        }
-
-        guard !keyCombination.isReservedBySystem else {
-            isPresentingReservedByMacOSError = true
             return
         }
 
