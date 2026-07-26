@@ -61,21 +61,29 @@ nonisolated struct OverlayRoutingFreshnessPolicy: Equatable, Sendable {
     // mayBegin retry without returning to continuous window enumeration.
     static let standard = OverlayRoutingFreshnessPolicy(
         leaseDuration: 30,
-        safetyRenewalLeadTime: 5
+        safetyRenewalLeadTime: 5,
+        uncertaintyRetryDelays: [0.2, 0.6]
     )
 
     let leaseDuration: TimeInterval
     let safetyRenewalLeadTime: TimeInterval
+    // A transition sample can legitimately land inside Dock animation. These
+    // two event-bound retries settle that uncertainty without creating an idle
+    // polling loop.
+    let uncertaintyRetryDelays: [TimeInterval]
 
     init(
         leaseDuration: TimeInterval,
-        safetyRenewalLeadTime: TimeInterval
+        safetyRenewalLeadTime: TimeInterval,
+        uncertaintyRetryDelays: [TimeInterval] = [0.2, 0.6]
     ) {
         precondition(leaseDuration > 0)
         precondition(safetyRenewalLeadTime > 0)
         precondition(safetyRenewalLeadTime < leaseDuration)
+        precondition(uncertaintyRetryDelays.allSatisfy { $0 > 0 })
         self.leaseDuration = leaseDuration
         self.safetyRenewalLeadTime = safetyRenewalLeadTime
+        self.uncertaintyRetryDelays = uncertaintyRetryDelays
     }
 
     func expirationUptime(forSampleAt sampleUptime: TimeInterval) -> TimeInterval {
@@ -237,6 +245,13 @@ actor OverlayModeSampler {
     typealias UptimeProvider = @Sendable () -> TimeInterval
     typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
 
+    private enum RefreshPurpose: Sendable {
+        case confirmation(attempt: Int)
+        case opportunistic
+        case forced
+        case safetyRenewal
+    }
+
     private let displayLocator: any DisplayLocating
     private let detector: any OverlayDetecting
     private let freshnessPolicy: OverlayRoutingFreshnessPolicy
@@ -245,9 +260,11 @@ actor OverlayModeSampler {
 
     private var samplingTask: Task<Void, Never>?
     private var safetyRenewalTask: Task<Void, Never>?
+    private var uncertaintyRetryTask: Task<Void, Never>?
     private var requestSequence: UInt64 = 0
     private var lifecycleSequence: UInt64 = 0
     private var renewalSequence: UInt64 = 0
+    private var uncertaintyRetrySequence: UInt64 = 0
     private var acceptedGeneration: UInt64 = 0
     private var isRunning = false
     private var onUpdate: (@Sendable (OverlayRoutingLease) -> Void)?
@@ -295,7 +312,10 @@ actor OverlayModeSampler {
         lifecycleSequence &+= 1
         isRunning = true
         self.onUpdate = onUpdate
-        beginRefresh(generation: generation)
+        beginRefresh(
+            generation: generation,
+            purpose: .confirmation(attempt: 0)
+        )
     }
 
     func stop(generation: UInt64? = nil) {
@@ -316,11 +336,12 @@ actor OverlayModeSampler {
         samplingTask?.cancel()
         samplingTask = nil
         cancelSafetyRenewal()
+        cancelUncertaintyRetry()
     }
 
     func refresh(generation: UInt64) {
         guard canRefresh(generation: generation) else { return }
-        beginRefresh(generation: generation)
+        beginRefresh(generation: generation, purpose: .forced)
     }
 
     func opportunisticRefresh(generation: UInt64) {
@@ -330,7 +351,7 @@ actor OverlayModeSampler {
         else {
             return
         }
-        beginRefresh(generation: generation)
+        beginRefresh(generation: generation, purpose: .opportunistic)
     }
 
     private func canRefresh(generation: UInt64) -> Bool {
@@ -339,7 +360,10 @@ actor OverlayModeSampler {
             && generation == acceptedGeneration
     }
 
-    private func beginRefresh(generation: UInt64) {
+    private func beginRefresh(
+        generation: UInt64,
+        purpose: RefreshPurpose
+    ) {
         requestSequence &+= 1
         let sequence = requestSequence
         let lifecycle = lifecycleSequence
@@ -362,7 +386,8 @@ actor OverlayModeSampler {
                 observation,
                 sequence: sequence,
                 generation: generation,
-                lifecycle: lifecycle
+                lifecycle: lifecycle,
+                purpose: purpose
             )
         }
     }
@@ -371,7 +396,8 @@ actor OverlayModeSampler {
         _ observation: (DisplayID, OverlayMode, TimeInterval)?,
         sequence: UInt64,
         generation: UInt64,
-        lifecycle: UInt64
+        lifecycle: UInt64,
+        purpose: RefreshPurpose
     ) {
         guard
             isRunning,
@@ -385,9 +411,17 @@ actor OverlayModeSampler {
 
         samplingTask = nil
         guard let (displayID, overlayMode, sampledAtUptime) = observation else {
+            if case .confirmation(let attempt) = purpose {
+                scheduleUncertaintyRetry(
+                    afterFailedAttempt: attempt,
+                    generation: generation,
+                    lifecycle: lifecycle
+                )
+            }
             return
         }
 
+        cancelUncertaintyRetry()
         let lease = OverlayRoutingLease(
             generation: generation,
             targetDisplayID: displayID,
@@ -400,6 +434,15 @@ actor OverlayModeSampler {
         )
         onUpdate?(lease)
         scheduleSafetyRenewal(for: lease, lifecycle: lifecycle)
+        if overlayMode == .appExpose,
+            case .confirmation(let attempt) = purpose
+        {
+            scheduleUncertaintyRetry(
+                afterFailedAttempt: attempt,
+                generation: generation,
+                lifecycle: lifecycle
+            )
+        }
     }
 
     private func scheduleSafetyRenewal(
@@ -443,7 +486,65 @@ actor OverlayModeSampler {
             return
         }
         safetyRenewalTask = nil
-        beginRefresh(generation: generation)
+        beginRefresh(generation: generation, purpose: .safetyRenewal)
+    }
+
+    private func scheduleUncertaintyRetry(
+        afterFailedAttempt attempt: Int,
+        generation: UInt64,
+        lifecycle: UInt64
+    ) {
+        guard freshnessPolicy.uncertaintyRetryDelays.indices.contains(attempt) else {
+            return
+        }
+        cancelUncertaintyRetry()
+        uncertaintyRetrySequence &+= 1
+        let retry = uncertaintyRetrySequence
+        let delay = freshnessPolicy.uncertaintyRetryDelays[attempt]
+        let sleep = sleep
+        uncertaintyRetryTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.performUncertaintyRetry(
+                nextAttempt: attempt + 1,
+                generation: generation,
+                lifecycle: lifecycle,
+                retry: retry
+            )
+        }
+    }
+
+    private func performUncertaintyRetry(
+        nextAttempt: Int,
+        generation: UInt64,
+        lifecycle: UInt64,
+        retry: UInt64
+    ) {
+        guard
+            isRunning,
+            generation == acceptedGeneration,
+            lifecycle == lifecycleSequence,
+            retry == uncertaintyRetrySequence
+        else {
+            return
+        }
+        uncertaintyRetryTask = nil
+        guard samplingTask == nil else {
+            scheduleUncertaintyRetry(
+                afterFailedAttempt: nextAttempt - 1,
+                generation: generation,
+                lifecycle: lifecycle
+            )
+            return
+        }
+        beginRefresh(
+            generation: generation,
+            purpose: .confirmation(attempt: nextAttempt)
+        )
     }
 
     private func cancelAllWork() {
@@ -451,11 +552,18 @@ actor OverlayModeSampler {
         samplingTask?.cancel()
         samplingTask = nil
         cancelSafetyRenewal()
+        cancelUncertaintyRetry()
     }
 
     private func cancelSafetyRenewal() {
         renewalSequence &+= 1
         safetyRenewalTask?.cancel()
         safetyRenewalTask = nil
+    }
+
+    private func cancelUncertaintyRetry() {
+        uncertaintyRetrySequence &+= 1
+        uncertaintyRetryTask?.cancel()
+        uncertaintyRetryTask = nil
     }
 }

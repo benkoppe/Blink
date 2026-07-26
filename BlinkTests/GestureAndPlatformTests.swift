@@ -646,6 +646,76 @@ struct GestureAndPlatformTests {
         await sampler.stop(generation: invalidGeneration + 1)
     }
 
+    @Test("A transient restrictive observation gets bounded settling recovery")
+    func transientRestrictiveObservationRecovers() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let clock = RoutingTestClock(now: 100)
+        let sleeper = RoutingTestSleeper()
+        let detector = ControlledOverlayDetector(modes: [.appExpose, .none])
+        let sink = RoutingLeaseSink()
+        let generation = sink.invalidate()
+        let sampler = OverlayModeSampler(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            freshnessPolicy: .init(
+                leaseDuration: 30,
+                safetyRenewalLeadTime: 5,
+                uncertaintyRetryDelays: [0.5]
+            ),
+            uptime: { clock.now },
+            sleep: { try await sleeper.sleep($0) }
+        )
+
+        await sampler.start(generation: generation) { sink.accept($0) }
+        await waitUntil { detector.startedSamples == 1 }
+        await waitUntil {
+            Set(await sleeper.waitingDurations) == Set([0.5, 25])
+        }
+        #expect(sink.lease?.overlayMode == .appExpose)
+        #expect(
+            sink.lease?.route(
+                at: 100,
+                requiredGeneration: generation,
+                currentTargetDisplayID: display
+            ) == .system
+        )
+
+        await sleeper.resumeFirst(for: 0.5)
+        await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
+        #expect(detector.startedSamples == 2)
+        #expect(await sleeper.waitingDurations == [25])
+        await sampler.stop(generation: generation + 1)
+        await waitUntil { await sleeper.waitingDurations.isEmpty }
+    }
+
+    @Test("Stop cancels pending uncertainty recovery")
+    func stopCancelsUncertaintyRecovery() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let sleeper = RoutingTestSleeper()
+        let detector = ControlledOverlayDetector(modes: [.unknown, .none])
+        let sink = RoutingLeaseSink()
+        let generation = sink.invalidate()
+        let sampler = OverlayModeSampler(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            freshnessPolicy: .init(
+                leaseDuration: 30,
+                safetyRenewalLeadTime: 5,
+                uncertaintyRetryDelays: [0.5]
+            ),
+            sleep: { try await sleeper.sleep($0) }
+        )
+
+        await sampler.start(generation: generation) { sink.accept($0) }
+        await waitUntil { await sleeper.waitingDurations == [0.5] }
+        await sampler.stop(generation: generation + 1)
+        await waitUntil { await sleeper.waitingDurations.isEmpty }
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(detector.startedSamples == 1)
+        #expect(sink.lease == nil)
+    }
+
     @Test("Safety renewal is scheduled from expiration and refreshes before it")
     func safetyRenewalPrecedesExpiration() async {
         let display = DisplayID(rawValue: "display-a")!
@@ -1175,6 +1245,13 @@ private actor RoutingTestSleeper {
     func resumeFirst() {
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().continuation.resume()
+    }
+
+    func resumeFirst(for duration: TimeInterval) {
+        guard let index = waiters.firstIndex(where: { $0.duration == duration }) else {
+            return
+        }
+        waiters.remove(at: index).continuation.resume()
     }
 
     private func resume(id: UUID) {
