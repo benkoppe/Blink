@@ -3,6 +3,7 @@ import Foundation
 nonisolated enum GestureRoute: String, Equatable, Sendable {
     case blink
     case system
+    case pending
 }
 
 nonisolated struct GestureSessionContext: Equatable, Sendable {
@@ -36,6 +37,47 @@ nonisolated struct GestureSessionContext: Equatable, Sendable {
         }
         return requiredPostingMode != .missionControl
             || currentMissionControlSyntheticState == .available
+    }
+
+    static func observed(
+        generation: UInt64,
+        targetDisplayID: DisplayID,
+        overlayMode: OverlayMode,
+        missionControlSyntheticState: MissionControlSyntheticState
+    ) -> GestureSessionContext {
+        let postingMode: SpaceSwitchMode? =
+            switch overlayMode {
+            case .none:
+                .instant
+            case .missionControl where missionControlSyntheticState == .available:
+                .missionControl
+            case .missionControl, .appExpose, .unknown:
+                nil
+            }
+        return GestureSessionContext(
+            generation: generation,
+            route: postingMode == nil ? .system : .blink,
+            targetDisplayID: targetDisplayID,
+            capturedOverlayMode: overlayMode,
+            missionControlSyntheticState: missionControlSyntheticState,
+            requiredPostingMode: postingMode
+        )
+    }
+
+    static func pending(
+        generation: UInt64,
+        targetDisplayID: DisplayID,
+        capturedOverlayMode: OverlayMode,
+        missionControlSyntheticState: MissionControlSyntheticState
+    ) -> GestureSessionContext {
+        GestureSessionContext(
+            generation: generation,
+            route: .pending,
+            targetDisplayID: targetDisplayID,
+            capturedOverlayMode: capturedOverlayMode,
+            missionControlSyntheticState: missionControlSyntheticState,
+            requiredPostingMode: nil
+        )
     }
 
     static func system(
@@ -177,36 +219,22 @@ nonisolated struct OverlayRoutingLease: Equatable, Sendable {
         at uptime: TimeInterval,
         missionControlSyntheticState: MissionControlSyntheticState
     ) -> GestureSessionContext {
-        let isValid = isValid(
+        guard isValid(
             at: uptime,
             requiredGeneration: requiredGeneration,
             currentTargetDisplayID: currentDisplayID
-        )
-        let selectedRoute = route(
-            at: uptime,
-            requiredGeneration: requiredGeneration,
-            currentTargetDisplayID: currentDisplayID,
-            missionControlSyntheticState: missionControlSyntheticState
-        )
-        let capturedMode = isValid ? overlayMode : .unknown
-        let postingMode: SpaceSwitchMode? =
-            if selectedRoute == .blink {
-                switch capturedMode {
-                case .none: .instant
-                case .missionControl: .missionControl
-                case .appExpose, .unknown: nil
-                }
-            } else {
-                nil
-            }
-
-        return GestureSessionContext(
+        ) else {
+            return .system(
+                generation: sessionGeneration,
+                targetDisplayID: currentDisplayID,
+                missionControlSyntheticState: missionControlSyntheticState
+            )
+        }
+        return .observed(
             generation: sessionGeneration,
-            route: postingMode == nil && selectedRoute == .blink ? .system : selectedRoute,
             targetDisplayID: currentDisplayID,
-            capturedOverlayMode: capturedMode,
-            missionControlSyntheticState: missionControlSyntheticState,
-            requiredPostingMode: postingMode
+            overlayMode: overlayMode,
+            missionControlSyntheticState: missionControlSyntheticState
         )
     }
 }
@@ -237,6 +265,19 @@ nonisolated struct OverlayRoutingLeaseState: Equatable, Sendable {
         lease = candidate
         acceptedRequestSequence = candidate.requestSequence
         return true
+    }
+
+    func requiresSynchronousRefresh(
+        currentDisplayID: DisplayID,
+        at uptime: TimeInterval
+    ) -> Bool {
+        guard let lease else { return true }
+        return lease.overlayMode != .none
+            || !lease.isValid(
+                at: uptime,
+                requiredGeneration: generation,
+                currentTargetDisplayID: currentDisplayID
+            )
     }
 
     func makeContext(

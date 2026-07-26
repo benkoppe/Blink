@@ -45,9 +45,18 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
                     return
                 }
                 sessionContext = proposedContext
+            } else if sessionContext?.route == .pending,
+                let proposedContext,
+                proposedContext.isAuthoritativeBlinkContext
+            {
+                sessionContext = proposedContext
             }
 
             guard let context = sessionContext else {
+                completion(nil)
+                return
+            }
+            guard context.route != .pending else {
                 completion(nil)
                 return
             }

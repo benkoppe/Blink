@@ -180,6 +180,56 @@ struct GestureAndPlatformTests {
         )
     }
 
+    @Test("Pending recognition promotes without requiring fingers to lift")
+    func pendingRecognitionPromotesWithinGesture() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let worker = SwipeRecognitionWorker()
+        let probe = RecognitionProbe()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: false,
+            sameDirectionRepeatSensitivity: 0.06
+        )
+        let pending = GestureSessionContext.pending(
+            generation: 1,
+            targetDisplayID: display,
+            capturedOverlayMode: .missionControl,
+            missionControlSyntheticState: .available
+        )
+        let blink = GestureSessionContext.observed(
+            generation: 2,
+            targetDisplayID: display,
+            overlayMode: .none,
+            missionControlSyntheticState: .available
+        )
+
+        worker.consume(
+            GestureSample(touches: touches(at: 0)),
+            configuration: configuration,
+            proposedContext: pending,
+            completion: probe.record
+        )
+        await waitUntil { probe.completionCount == 1 }
+
+        worker.consume(
+            GestureSample(touches: touches(at: 0)),
+            configuration: configuration,
+            proposedContext: blink,
+            completion: probe.record
+        )
+        worker.consume(
+            GestureSample(touches: touches(at: 0.08)),
+            configuration: configuration,
+            proposedContext: blink,
+            completion: probe.record
+        )
+        await waitUntil { probe.completionCount == 3 }
+
+        #expect(probe.recognitions.count == 1)
+        #expect(probe.recognitions.first?.context == blink)
+        #expect(probe.recognitions.first?.direction == .right)
+    }
+
     @Test("Queued recognition cannot dispatch after monitor stop")
     func queuedRecognitionAfterStopIsDiscarded() async {
         let queue = DispatchQueue(label: "SwipeGestureMonitor.stop-test")
@@ -454,6 +504,55 @@ struct GestureAndPlatformTests {
                 currentTargetDisplayID: display,
                 missionControlSyntheticState: .unavailableUntilOverlayExit
             ) == .system
+        )
+    }
+
+    @Test("Restrictive or stale routing state requires a synchronous gesture refresh")
+    func restrictiveRoutingStateRequiresSynchronousRefresh() {
+        let display = DisplayID(rawValue: "display-a")!
+        var state = OverlayRoutingLeaseState()
+        let generation = state.invalidate()
+
+        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        let acceptedDesktop = state.accept(
+            routingLease(generation: generation, displayID: display)
+        )
+        #expect(acceptedDesktop)
+        #expect(!state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+
+        _ = state.invalidate()
+        let acceptedAppExpose = state.accept(
+            routingLease(
+                mode: .appExpose,
+                generation: state.generation,
+                displayID: display
+            )
+        )
+        #expect(acceptedAppExpose)
+        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        #expect(
+            GestureSessionContext.observed(
+                generation: 1,
+                targetDisplayID: display,
+                overlayMode: .none,
+                missionControlSyntheticState: .available
+            ).requiredPostingMode == .instant
+        )
+        #expect(
+            GestureSessionContext.observed(
+                generation: 2,
+                targetDisplayID: display,
+                overlayMode: .missionControl,
+                missionControlSyntheticState: .available
+            ).requiredPostingMode == .missionControl
+        )
+        #expect(
+            GestureSessionContext.observed(
+                generation: 3,
+                targetDisplayID: display,
+                overlayMode: .appExpose,
+                missionControlSyntheticState: .available
+            ).route == .system
         )
     }
 
@@ -949,6 +1048,17 @@ struct GestureAndPlatformTests {
         #expect(disagreement.requiredPostingMode == nil)
     }
 
+    @Test("Diagnostics report overlay scan lifetime metrics")
+    func diagnosticsReportOverlayMetrics() {
+        let store = DiagnosticsStore()
+        store.recordOverlayScan(startedAt: 10, endedAt: 10.01)
+        store.recordOverlayScan(startedAt: 20, endedAt: 20.03)
+
+        let report = store.report(version: "test", build: "1")
+        #expect(report.contains("count=2 lifetime-average-hz=0.100"))
+        #expect(report.contains("duration-ms(avg/max)=20.000/30.000"))
+    }
+
     @Test("Space identifiers and topologies reject invalid values")
     func topologyRejectsInvalidValues() {
         #expect(DisplayID(rawValue: "") == nil)
@@ -963,32 +1073,28 @@ struct GestureAndPlatformTests {
             DisplayTopology(
                 displayID: displayID,
                 spaceIDs: [],
-                currentSpaceID: first,
-                currentSpaceKind: .desktop
+                currentSpaceID: first
             ) == nil
         )
         #expect(
             DisplayTopology(
                 displayID: displayID,
                 spaceIDs: [first, first],
-                currentSpaceID: first,
-                currentSpaceKind: .desktop
+                currentSpaceID: first
             ) == nil
         )
         #expect(
             DisplayTopology(
                 displayID: displayID,
                 spaceIDs: [first, second],
-                currentSpaceID: missing,
-                currentSpaceKind: .desktop
+                currentSpaceID: missing
             ) == nil
         )
         #expect(
             DisplayTopology(
                 displayID: displayID,
                 spaceIDs: [first, second],
-                currentSpaceID: first,
-                currentSpaceKind: .desktop
+                currentSpaceID: first
             ) != nil
         )
     }
@@ -1214,9 +1320,28 @@ struct GestureAndPlatformTests {
             ownerName: "Dock",
             ownerBundleID: "com.apple.dock",
             layer: layer,
-            bounds: bounds,
-            name: nil
+            bounds: bounds
         )
+    }
+}
+
+private nonisolated final class RecognitionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCompletionCount = 0
+    private var storedRecognitions: [SwipeRecognitionWorker.Recognition] = []
+
+    var completionCount: Int { lock.withLock { storedCompletionCount } }
+    var recognitions: [SwipeRecognitionWorker.Recognition] {
+        lock.withLock { storedRecognitions }
+    }
+
+    func record(_ recognition: SwipeRecognitionWorker.Recognition?) {
+        lock.withLock {
+            storedCompletionCount += 1
+            if let recognition {
+                storedRecognitions.append(recognition)
+            }
+        }
     }
 }
 

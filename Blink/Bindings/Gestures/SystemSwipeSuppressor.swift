@@ -23,7 +23,6 @@ final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
     private var suppressingNativeSwipe = false
     private var bypassingNativeSwipe = false
-    private var activeContext: GestureSessionContext?
 
     var contextForNewGesture: (() -> GestureSessionContext?)?
     var onGestureMayBegin: (() -> Void)?
@@ -120,10 +119,9 @@ final class SystemSwipeSuppressor {
         case kGesturePhaseBegan:
             let context = contextForNewGesture?()
             let route = context?.route ?? .system
-            activeContext = context
             onContextSelected?(context)
             bypassingNativeSwipe = route == .system
-            suppressingNativeSwipe = route == .blink
+            suppressingNativeSwipe = route != .system
             return route == .system ? event : nil
 
         case kGesturePhaseEnded, kGesturePhaseCancelled:
@@ -145,7 +143,6 @@ final class SystemSwipeSuppressor {
     private func endGesture() {
         suppressingNativeSwipe = false
         bypassingNativeSwipe = false
-        activeContext = nil
         onGestureEnded?()
     }
 
