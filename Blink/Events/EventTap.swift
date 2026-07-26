@@ -250,33 +250,27 @@ final class EventTap {
             )
         else {
             Logger.eventTap.error("Error creating mach port for event tap \"\(label)\"")
-            Task {
-                await DiagnosticsStore.shared.record(
-                    "event-tap",
-                    "\(label) creation failed"
-                )
-            }
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(label) creation failed"
+            )
             return false
         }
 
         guard let source = CFMachPortCreateRunLoopSource(nil, machPort, 0) else {
             CFMachPortInvalidate(machPort)
             Logger.eventTap.error("Error creating run loop source for event tap \"\(label)\"")
-            Task {
-                await DiagnosticsStore.shared.record(
-                    "event-tap",
-                    "\(label) run loop source creation failed"
-                )
-            }
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(label) run loop source creation failed"
+            )
             return false
         }
 
         self.machPort = machPort
         self.tapMachPort = machPort
         self.source = source
-        Task {
-            await DiagnosticsStore.shared.record("event-tap", "\(label) created")
-        }
+        DiagnosticsStore.shared.record("event-tap", "\(label) created")
         return true
     }
 
@@ -316,9 +310,7 @@ final class EventTap {
 
         guard !isHealthy else { return }
         Logger.eventTap.warning("Recreating unhealthy event tap \"\(label)\"")
-        Task {
-            await DiagnosticsStore.shared.record("event-tap", "\(label) recreated")
-        }
+        DiagnosticsStore.shared.record("event-tap", "\(label) recreated")
         removeComponents()
         enable()
     }
@@ -381,11 +373,11 @@ private nonisolated func handleEvent(
             )
             CGEvent.tapEnable(tap: port, enable: true)
         }
+        DiagnosticsStore.shared.record(
+            "event-tap",
+            "\(eventTap.label) disabled by system type=\(type.rawValue)"
+        )
         Task { @MainActor in
-            await DiagnosticsStore.shared.record(
-                "event-tap",
-                "\(eventTap.label) disabled by system type=\(type.rawValue)"
-            )
             eventTap.recoverIfNeeded()
         }
         // Still dispatch to the @MainActor callback so callers can reset state.

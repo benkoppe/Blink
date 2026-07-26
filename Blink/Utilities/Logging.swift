@@ -8,7 +8,7 @@
 import OSLog
 
 /// A type that encapsulates logging behavior
-struct Logger {
+nonisolated struct Logger {
     /// The unified logger at the base of this logger.
     private let base: os.Logger
 

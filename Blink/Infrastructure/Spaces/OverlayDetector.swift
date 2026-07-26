@@ -14,7 +14,6 @@ nonisolated struct WindowDescriptor: Equatable, Sendable {
     let ownerBundleID: String?
     let layer: Int
     let bounds: CGRect
-    let name: String?
 }
 
 nonisolated struct OverlayClassifier: Sendable {
@@ -185,6 +184,14 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
     }
 
     func detect(on displayID: DisplayID) -> OverlayMode {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        defer {
+            DiagnosticsStore.shared.recordOverlayScan(
+                startedAt: startedAt,
+                endedAt: ProcessInfo.processInfo.systemUptime
+            )
+        }
+
         guard
             let rawWindows = CGWindowListCopyWindowInfo(
                 [.optionOnScreenOnly],
@@ -219,8 +226,7 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
                 ownerName: ownerName,
                 ownerBundleID: ownerBundleID,
                 layer: layer,
-                bounds: bounds,
-                name: value[kCGWindowName as String] as? String
+                bounds: bounds
             )
         }
 
