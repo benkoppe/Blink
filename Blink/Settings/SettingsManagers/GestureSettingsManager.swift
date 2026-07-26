@@ -378,7 +378,7 @@ final class GestureSettingsManager {
         generalSettings.bindingsEnabled
             && touchRoutingCoordinator.selectedContext == context
             && context.isValidForDispatch(
-                currentDisplayID: context.targetDisplayID,
+                currentDisplayID: try? displayLocator.cursorDisplayID(),
                 currentMissionControlSyntheticState: missionControlCapability.state
             )
     }

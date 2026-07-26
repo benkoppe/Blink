@@ -2,11 +2,6 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-nonisolated protocol DisplayLocating: Sendable {
-    func cursorDisplayID() throws -> DisplayID
-    func bounds(for displayID: DisplayID) -> CGRect?
-}
-
 nonisolated struct DisplayLocator: DisplayLocating, Sendable {
     func cursorDisplayID() throws -> DisplayID {
         guard let event = CGEvent(source: nil) else {

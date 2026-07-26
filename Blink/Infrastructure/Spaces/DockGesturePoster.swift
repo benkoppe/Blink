@@ -28,14 +28,6 @@ nonisolated enum SyntheticGestureProtocol {
     static let mayBegin: Int64 = 128
 }
 
-nonisolated protocol SpaceGesturePosting: Sendable {
-    func postStep(
-        mode: SpaceSwitchMode,
-        direction: SpaceSwitchDirection,
-        velocity: Double
-    ) -> Bool
-}
-
 nonisolated enum MissionControlPayloadStrategy: Equatable, Sendable {
     // Legacy progress trace selected explicitly for macOS 14–25. These releases
     // still require manual qualification on the validation matrix.

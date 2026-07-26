@@ -153,9 +153,7 @@ final class ActionDispatcher {
         let message =
             "input accepted sequence=\(nextSequence) source=\(request.source.rawValue) "
             + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
-        Task { @MainActor [diagnoseLifecycle] in
-            diagnoseLifecycle(message)
-        }
+        diagnoseLifecycle(message)
         continuation.yield(
             QueuedRequest(
                 sequence: nextSequence,

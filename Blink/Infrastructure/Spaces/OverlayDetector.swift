@@ -2,13 +2,6 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-nonisolated enum OverlayMode: String, Equatable, Sendable {
-    case none
-    case appExpose
-    case missionControl
-    case unknown
-}
-
 nonisolated struct WindowDescriptor: Equatable, Sendable {
     let ownerName: String
     let ownerBundleID: String?
@@ -169,10 +162,6 @@ private extension CGRect {
     }
 
     nonisolated var isUsableDisplayBounds: Bool { isUsableWindowBounds }
-}
-
-nonisolated protocol OverlayDetecting: Sendable {
-    func detect(on displayID: DisplayID) -> OverlayMode
 }
 
 nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {

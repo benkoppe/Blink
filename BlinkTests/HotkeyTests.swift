@@ -184,6 +184,34 @@ struct HotkeyTests {
         }
     }
 
+    @Test("Only the recorder that owns capture can end it")
+    func recordingHasSingleOwner() async {
+        await withCleanHotkeyDefaults {
+            let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
+            let manager = HotkeySettingsManager(
+                registry: registry,
+                dispatcher: makeDispatcher(),
+                generalSettings: GeneralSettingsManager()
+            )
+            manager.performSetup()
+
+            var captured: [KeyCombination] = []
+            #expect(manager.beginRecording(action: .left) {
+                captured.append($0.keyCombination)
+            })
+            #expect(!manager.beginRecording(action: .right) { _ in })
+
+            manager.endRecording(action: .right)
+            let right = BoundAction.right.defaultKeyCombination!
+            #expect(registry.handleKeyEvent(event(right)))
+            for _ in 0..<20 { await Task.yield() }
+            #expect(captured == [right])
+
+            manager.endRecording(action: .left)
+            #expect(manager.hotkey(withAction: .left)?.registrationState == .active)
+        }
+    }
+
     @Test("Global binding enablement unregisters and restores hotkeys")
     func globalEnablementControlsRegistrations() {
         withCleanHotkeyDefaults {

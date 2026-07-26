@@ -24,7 +24,7 @@ final class HotkeySettingsManager {
     @Ignore private let generalSettings: GeneralSettingsManager
     @Ignore private var registeredBindings: [BoundAction: RegisteredBinding] = [:]
     @Ignore private var registrationFailures: [BoundAction: HotkeyRegistrationFailure] = [:]
-    @Ignore private var recordingActions: Set<BoundAction> = []
+    @Ignore private var recordingAction: BoundAction?
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
     @Ignore private var isShutdown = false
 
@@ -65,11 +65,11 @@ final class HotkeySettingsManager {
         action: BoundAction,
         handler: @escaping (HotkeyKeyEvent) -> Void
     ) -> Bool {
-        guard !isShutdown else { return false }
-        recordingActions.insert(action)
+        guard !isShutdown, recordingAction == nil else { return false }
+        recordingAction = action
         reconfigure()
         guard registry.beginRecording(handler: handler) else {
-            recordingActions.remove(action)
+            recordingAction = nil
             reconfigure()
             return false
         }
@@ -77,8 +77,9 @@ final class HotkeySettingsManager {
     }
 
     func endRecording(action: BoundAction) {
+        guard recordingAction == action else { return }
         registry.endRecording()
-        recordingActions.remove(action)
+        recordingAction = nil
         reconfigure()
     }
 
@@ -165,7 +166,7 @@ final class HotkeySettingsManager {
                 guard
                     generalSettings.bindingsEnabled,
                     let combination = hotkey.keyCombination,
-                    !recordingActions.contains(hotkey.action),
+                    recordingAction != hotkey.action,
                     duplicateConflicts[hotkey.action] == nil
                 else { return nil }
                 return (hotkey.action, combination)
@@ -227,7 +228,7 @@ final class HotkeySettingsManager {
             let state: HotkeyRegistrationState
             if !generalSettings.bindingsEnabled
                 || !hotkey.isConfigured
-                || recordingActions.contains(hotkey.action)
+                || recordingAction == hotkey.action
             {
                 state = .disabled
             } else if let conflictingActions = conflicts[hotkey.action] {
@@ -293,7 +294,7 @@ final class HotkeySettingsManager {
         guard !isShutdown else { return }
         isShutdown = true
         registry.endRecording()
-        recordingActions.removeAll()
+        recordingAction = nil
         registeredBindings.values.forEach { registry.unregister($0.id) }
         registeredBindings.removeAll()
         registry.shutdown()

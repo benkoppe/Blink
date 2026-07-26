@@ -261,6 +261,7 @@ final class HotkeyRegistry {
     func beginRecording(
         handler: @escaping (HotkeyKeyEvent) -> Void
     ) -> Bool {
+        guard recordingHandler == nil else { return false }
         recordingHandler = handler
         guard startMonitoring() else {
             recordingHandler = nil

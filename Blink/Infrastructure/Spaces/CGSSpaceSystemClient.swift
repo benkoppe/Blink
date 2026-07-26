@@ -9,10 +9,6 @@ private typealias CGSCopyDisplaySpacesFn =
 private typealias CGSCopyMenuBarDisplayFn =
     @convention(c) (Int32) -> Unmanaged<CFString>?
 
-nonisolated protocol SpaceSystemClient: Sendable {
-    func loadSnapshot() throws -> SystemSpaceSnapshot
-}
-
 nonisolated final class CGSSpaceSystemClient: SpaceSystemClient, @unchecked Sendable {
     private struct Symbols {
         let connection: CGSConnectionIDFn

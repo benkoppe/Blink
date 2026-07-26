@@ -7,10 +7,36 @@
 
 import CoreGraphics
 
+nonisolated struct NativeSwipeRoutingState: Equatable, Sendable {
+    private enum Route: Equatable, Sendable {
+        case undecided
+        case blink
+        case system
+    }
+
+    private var route: Route = .undecided
+
+    var shouldSuppress: Bool { route == .blink }
+
+    mutating func begin(ownedByBlink: Bool) {
+        route = ownedByBlink ? .blink : .system
+    }
+
+    /// Ends the segment and returns whether its terminal event is Blink-owned.
+    mutating func finish() -> Bool {
+        let shouldSuppress = shouldSuppress
+        route = .undecided
+        return shouldSuppress
+    }
+
+    mutating func reset() {
+        route = .undecided
+    }
+}
+
 final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
-    private var suppressingNativeSwipe = false
-    private var bypassingNativeSwipe = false
+    private var routingState = NativeSwipeRoutingState()
 
     var contextForNewGesture: (() -> GestureSessionContext?)?
     var onPotentialOverlayTransition: (() -> Void)?
@@ -78,11 +104,7 @@ final class SystemSwipeSuppressor {
             return event
         }
 
-        if bypassingNativeSwipe {
-            return event
-        }
-
-        return suppressingNativeSwipe ? nil : event
+        return routingState.shouldSuppress ? nil : event
     }
 
     private func handleDockControlEvent(_ event: CGEvent) -> CGEvent? {
@@ -112,26 +134,19 @@ final class SystemSwipeSuppressor {
             let context = contextForNewGesture?()
             let ownsGesture = context?.isAuthoritativeBlinkContext == true
             onContextSelected?(context)
-            bypassingNativeSwipe = !ownsGesture
-            suppressingNativeSwipe = ownsGesture
+            routingState.begin(ownedByBlink: ownsGesture)
             return ownsGesture ? nil : event
 
         case SyntheticGestureProtocol.ended, SyntheticGestureProtocol.cancelled:
-            let isBypassing = bypassingNativeSwipe
-            resetDockSegment()
-            return isBypassing ? event : nil
+            return routingState.finish() ? nil : event
 
         default:
-            if bypassingNativeSwipe {
-                return event
-            }
-            return suppressingNativeSwipe ? nil : event
+            return routingState.shouldSuppress ? nil : event
         }
     }
 
     private func resetDockSegment() {
-        suppressingNativeSwipe = false
-        bypassingNativeSwipe = false
+        routingState.reset()
     }
 
     private func isHorizontalDockSwipe(_ event: CGEvent) -> Bool {

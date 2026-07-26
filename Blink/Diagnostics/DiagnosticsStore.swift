@@ -57,8 +57,14 @@ nonisolated final class DiagnosticsStore: @unchecked Sendable {
         let duration = max(0, endedAt - startedAt)
         lock.withLock {
             overlayScanCount &+= 1
-            firstOverlayScanUptime = firstOverlayScanUptime ?? startedAt
-            lastOverlayScanUptime = endedAt
+            firstOverlayScanUptime = min(
+                firstOverlayScanUptime ?? startedAt,
+                startedAt
+            )
+            lastOverlayScanUptime = max(
+                lastOverlayScanUptime ?? endedAt,
+                endedAt
+            )
             totalOverlayScanDuration += duration
             maximumOverlayScanDuration = max(maximumOverlayScanDuration, duration)
         }
