@@ -26,17 +26,6 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
         completion: @escaping @Sendable (Recognition?) -> Void
     ) {
         queue.async { [self] in
-            if sample.activeFingerCount == 0 {
-                _ = recognizer.consume(
-                    sample,
-                    configuration: configuration,
-                    ignoreNewGesture: true
-                )
-                sessionContext = nil
-                completion(nil)
-                return
-            }
-
             if sessionContext == nil {
                 guard let proposedContext else {
                     // HID delivery can precede route selection. Do not feed that
@@ -45,22 +34,9 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
                     return
                 }
                 sessionContext = proposedContext
-            } else if let currentContext = sessionContext,
-                let proposedContext,
-                proposedContext != currentContext,
-                proposedContext.isAuthoritativeBlinkContext,
-                currentContext.route == .pending
-                    || currentContext.isAuthoritativeBlinkContext
-            {
-                recognizer.reset()
-                sessionContext = proposedContext
             }
 
             guard let context = sessionContext else {
-                completion(nil)
-                return
-            }
-            guard context.route != .pending else {
                 completion(nil)
                 return
             }
@@ -76,6 +52,14 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
                     fingerCount: $0.fingerCount
                 )
             })
+        }
+    }
+
+    func finishSession(completion: @escaping @Sendable () -> Void) {
+        queue.async { [self] in
+            recognizer.reset()
+            sessionContext = nil
+            completion()
         }
     }
 
@@ -95,12 +79,14 @@ final class SwipeGestureMonitor {
     var sameDirectionRepeatSensitivity = 0.06
     var contextForRecognition: (() -> GestureSessionContext?)?
     var isContextValidBeforeDispatch: ((GestureSessionContext) -> Bool)?
+    var onRecognitionSessionMayBegin: (() -> Void)?
     var onRecognitionSessionEnded: (() -> Void)?
 
     private var eventTap: EventTap?
     private let worker: SwipeRecognitionWorker
     private let requiresHealthyTapForDispatch: Bool
     private var monitorEpoch: UInt64 = 0
+    private var recognitionSessionIsActive = false
 
     init(
         worker: SwipeRecognitionWorker = SwipeRecognitionWorker(),
@@ -157,6 +143,7 @@ final class SwipeGestureMonitor {
 
     func stopMonitoring() {
         monitorEpoch &+= 1
+        recognitionSessionIsActive = false
         eventTap?.disable()
         eventTap = nil
         worker.reset()
@@ -169,12 +156,19 @@ final class SwipeGestureMonitor {
 
     func invalidateRecognition() {
         monitorEpoch &+= 1
+        recognitionSessionIsActive = false
         worker.reset()
     }
 
     func consume(_ sample: GestureSample) {
-        if sample.activeFingerCount == 0 {
-            onRecognitionSessionEnded?()
+        guard sample.activeFingerCount > 0 else {
+            recognitionSessionIsActive = false
+            finishRecognitionSession()
+            return
+        }
+        if !recognitionSessionIsActive {
+            recognitionSessionIsActive = true
+            onRecognitionSessionMayBegin?()
         }
         let configuration = SwipeRecognizer.Configuration(
             flipsDirection: flipSwipeDirection,
@@ -208,6 +202,18 @@ final class SwipeGestureMonitor {
                 Logger.swipeGestureMonitor.debug(
                     "recognized direction=\(result.direction) fingers=\(result.fingerCount) session=\(result.context.generation)"
                 )
+            }
+        }
+    }
+
+    /// Places normal teardown behind every recognition already accepted by the
+    /// serial worker. Main-queue delivery preserves that same order.
+    func finishRecognitionSession() {
+        let queuedEpoch = monitorEpoch
+        worker.finishSession { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.monitorEpoch == queuedEpoch else { return }
+                self.onRecognitionSessionEnded?()
             }
         }
     }

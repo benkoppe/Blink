@@ -83,7 +83,8 @@ final class ActionDispatcher {
                 targetDisplayID: context.targetDisplayID,
                 wraps: request.wraps,
                 velocity: request.velocity,
-                requiredMode: context.requiredPostingMode
+                requiredMode: context.requiredPostingMode,
+                resolvedLastSpaceID: request.resolvedLastSpaceID
             )
         }
         self.diagnoseLifecycle = diagnoseLifecycle
@@ -149,10 +150,12 @@ final class ActionDispatcher {
     private func enqueue(_ request: SpaceSwitchRequest) {
         nextSequence &+= 1
         let acceptedAt = ProcessInfo.processInfo.systemUptime
-        diagnoseLifecycle(
+        let message =
             "input accepted sequence=\(nextSequence) source=\(request.source.rawValue) "
-                + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
-        )
+            + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
+        Task { @MainActor [diagnoseLifecycle] in
+            diagnoseLifecycle(message)
+        }
         continuation.yield(
             QueuedRequest(
                 sequence: nextSequence,

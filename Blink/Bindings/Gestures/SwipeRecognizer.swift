@@ -27,6 +27,7 @@ nonisolated struct SwipeRecognizer: Sendable {
 
     private var isActive = false
     private var ignoresCurrentGesture = false
+    private var sessionFingerCount: Int?
     private var lastDirection: SwipeDirection?
     private var movementSinceLastFireX = 0.0
     private var accumulatedX = 0.0
@@ -39,8 +40,7 @@ nonisolated struct SwipeRecognizer: Sendable {
         ignoreNewGesture: Bool
     ) -> (direction: SwipeDirection, fingerCount: Int)? {
         let activeTouches = sample.touches.filter { !$0.isEnded }
-        let fingerCount = activeTouches.count
-        guard fingerCount > 0 else {
+        guard !activeTouches.isEmpty else {
             reset()
             return nil
         }
@@ -48,7 +48,9 @@ nonisolated struct SwipeRecognizer: Sendable {
         if !isActive {
             isActive = true
             ignoresCurrentGesture = ignoreNewGesture
+            sessionFingerCount = activeTouches.count
         }
+        guard let fingerCount = sessionFingerCount else { return nil }
 
         guard !ignoresCurrentGesture else { return nil }
 
@@ -114,6 +116,7 @@ nonisolated struct SwipeRecognizer: Sendable {
     mutating func reset() {
         isActive = false
         ignoresCurrentGesture = false
+        sessionFingerCount = nil
         lastDirection = nil
         movementSinceLastFireX = 0
         resetRecognitionWindow()

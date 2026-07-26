@@ -93,6 +93,7 @@ final class HotkeyRegistry {
     private var registrations: [UInt32: Registration] = [:]
     private var matcher = HotkeyEventMatcher()
     private var nextID: UInt32 = 1
+    private var recordingHandler: ((HotkeyKeyEvent) -> Void)?
     private var eventMonitor: (any HotkeyEventMonitoring)?
     private let monitorFactory: MonitorFactory
 
@@ -142,6 +143,34 @@ final class HotkeyRegistry {
         keyCombination: KeyCombination,
         handler: @escaping () -> Void
     ) -> Result<UInt32, RegistrationError> {
+        register(
+            keyCombination: keyCombination,
+            monitoringIsPrepared: false,
+            handler: handler
+        )
+    }
+
+    /// Creates or recovers the shared monitor once for a configuration pass.
+    func prepareForRegistration() -> Bool {
+        startMonitoring()
+    }
+
+    func registerPrepared(
+        keyCombination: KeyCombination,
+        handler: @escaping () -> Void
+    ) -> Result<UInt32, RegistrationError> {
+        register(
+            keyCombination: keyCombination,
+            monitoringIsPrepared: true,
+            handler: handler
+        )
+    }
+
+    private func register(
+        keyCombination: KeyCombination,
+        monitoringIsPrepared: Bool,
+        handler: @escaping () -> Void
+    ) -> Result<UInt32, RegistrationError> {
         let id = nextID
         switch matcher.register(keyCombination, registrationID: id) {
         case .failure(.duplicate(let existingID)):
@@ -150,7 +179,11 @@ final class HotkeyRegistry {
             break
         }
 
-        guard startMonitoring() else {
+        guard
+            monitoringIsPrepared
+                ? eventMonitor?.isHealthy == true
+                : startMonitoring()
+        else {
             matcher.unregister(id)
             return .failure(.monitoringFailed(.eventTapUnavailable))
         }
@@ -167,7 +200,7 @@ final class HotkeyRegistry {
         }
         matcher.unregister(id)
 
-        if registrations.isEmpty {
+        if registrations.isEmpty, recordingHandler == nil {
             eventMonitor?.disable()
             eventMonitor = nil
             monitoringState = .disabled
@@ -177,7 +210,7 @@ final class HotkeyRegistry {
     /// Revalidates the shared tap after wake, unlock, or a system disablement.
     @discardableResult
     func ensureMonitoring() -> Bool {
-        guard !registrations.isEmpty else {
+        guard !registrations.isEmpty || recordingHandler != nil else {
             monitoringState = .disabled
             return false
         }
@@ -218,7 +251,33 @@ final class HotkeyRegistry {
     }
 
     func stopMonitoring() {
-        guard registrations.isEmpty else { return }
+        guard registrations.isEmpty, recordingHandler == nil else { return }
+        eventMonitor?.disable()
+        eventMonitor = nil
+        monitoringState = .disabled
+    }
+
+    @discardableResult
+    func beginRecording(
+        handler: @escaping (HotkeyKeyEvent) -> Void
+    ) -> Bool {
+        recordingHandler = handler
+        guard startMonitoring() else {
+            recordingHandler = nil
+            return false
+        }
+        return true
+    }
+
+    func endRecording() {
+        recordingHandler = nil
+        stopMonitoring()
+    }
+
+    func shutdown() {
+        recordingHandler = nil
+        registrations.removeAll()
+        matcher = HotkeyEventMatcher()
         eventMonitor?.disable()
         eventMonitor = nil
         monitoringState = .disabled
@@ -227,6 +286,15 @@ final class HotkeyRegistry {
     /// Returns whether the event must be removed from the system event stream.
     /// Matching repeats are consumed but intentionally do not invoke the action.
     func handleKeyEvent(_ event: HotkeyKeyEvent) -> Bool {
+        if let recordingHandler {
+            if !event.isAutorepeat {
+                Task { @MainActor in
+                    recordingHandler(event)
+                }
+            }
+            return true
+        }
+
         switch matcher.decision(for: event) {
         case .passThrough:
             return false

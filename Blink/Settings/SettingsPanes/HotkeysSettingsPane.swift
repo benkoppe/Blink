@@ -83,9 +83,7 @@ struct HotkeysSettingsPane: View {
         if let hotkey = manager.hotkey(withAction: action) {
             HotkeyRecorder(
                 hotkey: hotkey,
-                onRecordingChanged: {
-                    manager.setRecording($0, action: action)
-                }
+                manager: manager
             ) {
                 HStack {
                     Text(action.displayName)

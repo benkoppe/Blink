@@ -116,8 +116,8 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("Partial touch endings report only active fingers")
-    func recognizerCountsActiveTouches() {
+    @Test("Partial touch endings preserve the session finger count")
+    func recognizerPreservesSessionCardinality() {
         var recognizer = SwipeRecognizer()
         let configuration = SwipeRecognizer.Configuration(
             flipsDirection: false,
@@ -141,7 +141,7 @@ struct GestureAndPlatformTests {
             ignoreNewGesture: false
         )
         #expect(result?.direction == .right)
-        #expect(result?.fingerCount == 2)
+        #expect(result?.fingerCount == 3)
     }
 
     @Test("Reversal and same-direction repeat are deterministic")
@@ -180,8 +180,8 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("Pending recognition promotes without requiring fingers to lift")
-    func pendingRecognitionPromotesWithinGesture() async {
+    @Test("Uncertain routing remains system-owned for the whole gesture")
+    func uncertainRecognitionFailsOpenForWholeGesture() async {
         let display = DisplayID(rawValue: "display-a")!
         let worker = SwipeRecognitionWorker()
         let probe = RecognitionProbe()
@@ -190,10 +190,9 @@ struct GestureAndPlatformTests {
             allowsSameDirectionRepeat: false,
             sameDirectionRepeatSensitivity: 0.06
         )
-        let pending = GestureSessionContext.pending(
+        let system = GestureSessionContext.system(
             generation: 1,
             targetDisplayID: display,
-            capturedOverlayMode: .missionControl,
             missionControlSyntheticState: .available
         )
         let blink = GestureSessionContext.observed(
@@ -206,7 +205,7 @@ struct GestureAndPlatformTests {
         worker.consume(
             GestureSample(touches: touches(at: 0)),
             configuration: configuration,
-            proposedContext: pending,
+            proposedContext: system,
             completion: probe.record
         )
         await waitUntil { probe.completionCount == 1 }
@@ -225,13 +224,11 @@ struct GestureAndPlatformTests {
         )
         await waitUntil { probe.completionCount == 3 }
 
-        #expect(probe.recognitions.count == 1)
-        #expect(probe.recognitions.first?.context == blink)
-        #expect(probe.recognitions.first?.direction == .right)
+        #expect(probe.recognitions.isEmpty)
     }
 
-    @Test("Recognition adopts a confirmed overlay-mode change within a gesture")
-    func recognitionAdoptsOverlayModeChange() async {
+    @Test("Recognition keeps its input-time route for the whole gesture")
+    func recognitionKeepsInputTimeContext() async {
         let display = DisplayID(rawValue: "display-a")!
         let worker = SwipeRecognitionWorker()
         let probe = RecognitionProbe()
@@ -275,8 +272,98 @@ struct GestureAndPlatformTests {
         await waitUntil { probe.completionCount == 3 }
 
         #expect(probe.recognitions.count == 1)
-        #expect(probe.recognitions.first?.context == desktop)
+        #expect(probe.recognitions.first?.context == missionControl)
         #expect(probe.recognitions.first?.direction == .right)
+    }
+
+    @Test("First HID sample starts preflight once per touch session")
+    func hidSampleStartsPreflightOnce() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        let context = blinkContext()
+        monitor.contextForRecognition = { context }
+        var starts = 0
+        var endings = 0
+        monitor.onRecognitionSessionMayBegin = { starts += 1 }
+        monitor.onRecognitionSessionEnded = { endings += 1 }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        monitor.consume(GestureSample(touches: touches(at: 0.01)))
+        #expect(starts == 1)
+        monitor.consume(GestureSample(touches: []))
+        await waitUntil { endings == 1 }
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        #expect(starts == 2)
+    }
+
+    @Test("Recognition queued before normal end dispatches before teardown")
+    func recognitionPrecedesNormalTeardown() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        let context = blinkContext()
+        monitor.contextForRecognition = { context }
+        var events: [String] = []
+        monitor.onSwipe = { _, _, _ in events.append("swipe") }
+        monitor.onRecognitionSessionEnded = { events.append("end") }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        monitor.consume(GestureSample(touches: touches(at: 0.08)))
+        monitor.consume(GestureSample(touches: touches(at: 0).map {
+            GestureTouchSample(identity: $0.identity, position: $0.position, isEnded: true)
+        }))
+        await waitUntil { events.count == 2 }
+
+        #expect(events == ["swipe", "end"])
+    }
+
+    @Test("An ending sample cannot create context for the next gesture")
+    func endingSampleDoesNotCreateContext() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        var contextSelections = 0
+        var endings = 0
+        monitor.contextForRecognition = {
+            contextSelections += 1
+            return self.blinkContext()
+        }
+        monitor.onRecognitionSessionEnded = { endings += 1 }
+
+        monitor.consume(GestureSample(touches: []))
+        await waitUntil { endings == 1 }
+
+        #expect(contextSelections == 0)
+    }
+
+    @Test("Partial lift keeps four-finger repeat cardinality")
+    func fourFingerRepeatKeepsCardinality() {
+        var recognizer = SwipeRecognizer()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: true,
+            sameDirectionRepeatSensitivity: 0.02
+        )
+        func fourTouches(_ x: CGFloat, endingFourth: Bool = false) -> [GestureTouchSample] {
+            (0..<4).map {
+                GestureTouchSample(
+                    identity: String($0),
+                    position: CGPoint(x: x, y: CGFloat($0) * 0.01),
+                    isEnded: endingFourth && $0 == 3
+                )
+            }
+        }
+
+        _ = recognizer.consume(
+            GestureSample(touches: fourTouches(0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        #expect(recognizer.consume(
+            GestureSample(touches: fourTouches(0.03)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )?.fingerCount == 4)
+        #expect(recognizer.consume(
+            GestureSample(touches: fourTouches(0.06, endingFourth: true)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )?.fingerCount == 4)
     }
 
     @Test("Queued recognition cannot dispatch after monitor stop")
@@ -465,16 +552,11 @@ struct GestureAndPlatformTests {
             ) == .blink
         )
         #expect(
-            !OverlayRoutingFreshnessPolicy.standard.shouldRenewOpportunistically(
-                lease,
-                at: 101
-            )
-        )
-        #expect(
-            OverlayRoutingFreshnessPolicy.standard.shouldRenewOpportunistically(
-                lease,
-                at: 125
-            )
+            lease.route(
+                at: 130,
+                requiredGeneration: 1,
+                currentTargetDisplayID: display
+            ) == .system
         )
     }
 
@@ -519,11 +601,37 @@ struct GestureAndPlatformTests {
         #expect(
             state.makeContext(
                 sessionGeneration: 1,
-                currentDisplayID: display,
                 at: 100,
                 missionControlSyntheticState: .available
-            ).route == .system
+            ) == nil
         )
+    }
+
+    @Test("A new gesture fails open after desktop or overlay state is invalidated")
+    func gestureBoundaryInvalidationDropsDestructiveOwnership() {
+        let display = DisplayID(rawValue: "display-a")!
+        for mode in [OverlayMode.none, .missionControl] {
+            var state = OverlayRoutingLeaseState()
+            let generation = state.invalidate()
+            let accepted = state.accept(routingLease(
+                mode: mode,
+                generation: generation,
+                displayID: display
+            ))
+            #expect(accepted)
+            #expect(state.makeContext(
+                sessionGeneration: 1,
+                at: 100,
+                missionControlSyntheticState: .available
+            )?.route == .blink)
+
+            _ = state.invalidate()
+            #expect(state.makeContext(
+                sessionGeneration: 2,
+                at: 100,
+                missionControlSyntheticState: .available
+            ) == nil)
+        }
     }
 
     @Test("App Exposé routes to macOS and Mission Control respects its circuit")
@@ -556,18 +664,26 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("Only missing or stale routing state requires a synchronous gesture refresh")
-    func staleRoutingStateRequiresSynchronousRefresh() {
+    @Test("Missing or stale routing state fails open without synchronous work")
+    func staleRoutingStateFailsOpen() {
         let display = DisplayID(rawValue: "display-a")!
         var state = OverlayRoutingLeaseState()
         let generation = state.invalidate()
 
-        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        #expect(state.makeContext(
+            sessionGeneration: 1,
+            at: 100,
+            missionControlSyntheticState: .available
+        ) == nil)
         let acceptedDesktop = state.accept(
             routingLease(generation: generation, displayID: display)
         )
         #expect(acceptedDesktop)
-        #expect(!state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        #expect(state.makeContext(
+            sessionGeneration: 2,
+            at: 100,
+            missionControlSyntheticState: .available
+        )?.route == .blink)
 
         _ = state.invalidate()
         let acceptedAppExpose = state.accept(
@@ -578,8 +694,16 @@ struct GestureAndPlatformTests {
             )
         )
         #expect(acceptedAppExpose)
-        #expect(!state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
-        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 131))
+        #expect(state.makeContext(
+            sessionGeneration: 3,
+            at: 100,
+            missionControlSyntheticState: .available
+        )?.route == .system)
+        #expect(state.makeContext(
+            sessionGeneration: 4,
+            at: 131,
+            missionControlSyntheticState: .available
+        )?.route == .system)
         #expect(
             GestureSessionContext.observed(
                 generation: 1,
@@ -606,40 +730,89 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("A mayBegin renewal does not invalidate an existing lease")
-    func mayBeginRenewalPreservesLease() async {
+    @Test("Gesture preflight starts immediately and publishes authoritative context")
+    func gesturePreflightPublishesContext() async {
         let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(
-            modes: [.none, .missionControl],
-            blockedSamples: [2]
+        let detector = ControlledOverlayDetector(modes: [.none])
+        let preflight = GestureOverlayPreflight(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            uptime: { 100 }
         )
         let sink = RoutingLeaseSink()
         let generation = sink.invalidate()
-        let sampler = OverlayModeSampler(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector
-        )
 
-        await sampler.start(generation: generation) { sink.accept($0) }
+        preflight.prepare(generation: generation) { sink.accept($0) }
         await waitUntil { sink.lease != nil }
-        let original = sink.lease
-
-        await sampler.opportunisticRefresh(generation: generation)
-        await waitUntil { detector.startedSamples >= 2 }
-        await sampler.opportunisticRefresh(generation: generation)
-        for _ in 0..<20 { await Task.yield() }
-        #expect(detector.startedSamples == 2)
-        #expect(sink.lease == original)
-        #expect(
-            sink.lease?.route(
-                at: sink.lease!.sampledAtUptime,
-                requiredGeneration: generation,
-                currentTargetDisplayID: display
-            ) == .blink
+        let context = preflight.makeContext(
+            sessionGeneration: 1,
+            requiredGeneration: generation,
+            at: 100,
+            missionControlSyntheticState: .available
         )
 
-        detector.release(sample: 2)
-        await sampler.stop(generation: generation + 1)
+        #expect(context?.route == .blink)
+        #expect(context?.requiredPostingMode == .instant)
+        await preflight.stop()
+    }
+
+    @Test("Gesture preflight can finish during a bounded ownership wait")
+    func gesturePreflightCompletesDuringBoundedWait() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let detector = ControlledOverlayDetector(
+            modes: [.none],
+            blockedSamples: [1]
+        )
+        let preflight = GestureOverlayPreflight(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            uptime: { 100 }
+        )
+        let generation: UInt64 = 1
+        preflight.prepare(generation: generation) { _ in }
+        await waitUntil { detector.startedSamples == 1 }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.002) {
+            detector.release(sample: 1)
+        }
+
+        let context = preflight.makeContext(
+            sessionGeneration: 1,
+            requiredGeneration: generation,
+            at: 100,
+            missionControlSyntheticState: .available,
+            waitingUpTo: 0.02
+        )
+
+        #expect(context?.route == .blink)
+        await preflight.stop()
+    }
+
+    @Test("Gesture preflight serializes invalidated scans")
+    func gesturePreflightSerializesInvalidatedScans() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let detector = ControlledOverlayDetector(
+            modes: [.missionControl, .none],
+            blockedSamples: [1]
+        )
+        let preflight = GestureOverlayPreflight(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            uptime: { 100 }
+        )
+        let sink = RoutingLeaseSink()
+        let firstGeneration = sink.invalidate()
+        preflight.prepare(generation: firstGeneration) { sink.accept($0) }
+        await waitUntil { detector.startedSamples == 1 }
+
+        let secondGeneration = sink.invalidate()
+        preflight.prepare(generation: secondGeneration) { sink.accept($0) }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(detector.startedSamples == 1)
+        detector.release(sample: 1)
+        await waitUntil { sink.lease?.generation == secondGeneration }
+
+        #expect(sink.leases.map(\.overlayMode) == [.none])
+        await preflight.stop()
     }
 
     @Test("Transition invalidation fails new sessions open without changing the active session")
@@ -653,19 +826,17 @@ struct GestureAndPlatformTests {
         #expect(accepted)
         let activeContext = state.makeContext(
             sessionGeneration: 1,
-            currentDisplayID: display,
             at: 100,
             missionControlSyntheticState: .available
-        )
+        )!
         _ = state.invalidate()
 
         #expect(
             state.makeContext(
                 sessionGeneration: 2,
-                currentDisplayID: display,
                 at: 100,
                 missionControlSyntheticState: .available
-            ).route == .system
+            ) == nil
         )
         #expect(
             activeContext.isValidForDispatch(
@@ -693,40 +864,15 @@ struct GestureAndPlatformTests {
         await waitUntil { detector.startedSamples >= 1 }
 
         let secondGeneration = sink.invalidate()
-        await sampler.invalidate(generation: secondGeneration)
-        await sampler.refresh(generation: secondGeneration)
-        await waitUntil { sink.lease?.generation == secondGeneration }
+        await sampler.start(generation: secondGeneration) { sink.accept($0) }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(detector.startedSamples == 1)
         detector.release(sample: 1)
-        try? await Task.sleep(for: .milliseconds(20))
+        await waitUntil { sink.lease?.generation == secondGeneration }
 
         #expect(sink.leases.map(\.generation) == [secondGeneration])
         #expect(sink.lease?.overlayMode == OverlayMode.none)
         await sampler.stop(generation: secondGeneration + 1)
-    }
-
-    @Test("An older refresh cannot overwrite a newer sample")
-    func olderRefreshCannotReplaceNewerSample() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(
-            modes: [.missionControl, .none],
-            blockedSamples: [1]
-        )
-        let sink = RoutingLeaseSink()
-        let generation = sink.invalidate()
-        let sampler = OverlayModeSampler(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector
-        )
-
-        await sampler.start(generation: generation) { sink.accept($0) }
-        await waitUntil { detector.startedSamples >= 1 }
-        await sampler.refresh(generation: generation)
-        await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
-        detector.release(sample: 1)
-        try? await Task.sleep(for: .milliseconds(20))
-
-        #expect(sink.leases.map(\.overlayMode) == [.none])
-        await sampler.stop(generation: generation + 1)
     }
 
     @Test("Reordered callback delivery cannot restore an older lease")
@@ -754,47 +900,6 @@ struct GestureAndPlatformTests {
         #expect(state.lease == newer)
     }
 
-    @Test("Failed renewal preserves a valid lease; failed invalid-state refresh does not")
-    func failedRefreshSemantics() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(modes: [.none, .unknown, .unknown])
-        let sink = RoutingLeaseSink()
-        let sampler = OverlayModeSampler(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector
-        )
-
-        let validGeneration = sink.invalidate()
-        await sampler.start(generation: validGeneration) { sink.accept($0) }
-        await waitUntil { sink.lease != nil }
-        let validLease = sink.lease
-
-        await sampler.refresh(generation: validGeneration)
-        await waitUntil { detector.startedSamples >= 2 }
-        #expect(sink.lease == validLease)
-        #expect(
-            validLease?.route(
-                at: validLease!.expirationUptime - 0.001,
-                requiredGeneration: validGeneration,
-                currentTargetDisplayID: display
-            ) == .blink
-        )
-        #expect(
-            validLease?.route(
-                at: validLease!.expirationUptime,
-                requiredGeneration: validGeneration,
-                currentTargetDisplayID: display
-            ) == .system
-        )
-
-        let invalidGeneration = sink.invalidate()
-        await sampler.invalidate(generation: invalidGeneration)
-        await sampler.refresh(generation: invalidGeneration)
-        await waitUntil { detector.startedSamples >= 3 }
-        #expect(sink.lease == nil)
-        await sampler.stop(generation: invalidGeneration + 1)
-    }
-
     @Test("A transient restrictive observation gets bounded settling recovery")
     func transientRestrictiveObservationRecovers() async {
         let display = DisplayID(rawValue: "display-a")!
@@ -808,8 +913,6 @@ struct GestureAndPlatformTests {
             detector: detector,
             freshnessPolicy: .init(
                 leaseDuration: 30,
-                safetyRenewalLeadTime: 5,
-                activeOverlayRevalidationInterval: 30,
                 uncertaintyRetryDelays: [0.5]
             ),
             uptime: { clock.now },
@@ -821,9 +924,7 @@ struct GestureAndPlatformTests {
             settlesTransition: true
         ) { sink.accept($0) }
         await waitUntil { detector.startedSamples == 1 }
-        await waitUntil {
-            Set(await sleeper.waitingDurations) == Set([0.5, 30])
-        }
+        await waitUntil { await sleeper.waitingDurations == [0.5] }
         #expect(sink.lease?.overlayMode == .appExpose)
         #expect(
             sink.lease?.route(
@@ -836,7 +937,7 @@ struct GestureAndPlatformTests {
         await sleeper.resumeFirst(for: 0.5)
         await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
         #expect(detector.startedSamples == 2)
-        #expect(await sleeper.waitingDurations == [25])
+        #expect(await sleeper.waitingDurations.isEmpty)
         await sampler.stop(generation: generation + 1)
         await waitUntil { await sleeper.waitingDurations.isEmpty }
     }
@@ -862,8 +963,6 @@ struct GestureAndPlatformTests {
                 detector: detector,
                 freshnessPolicy: .init(
                     leaseDuration: 30,
-                    safetyRenewalLeadTime: 5,
-                    activeOverlayRevalidationInterval: 30,
                     uncertaintyRetryDelays: [0.5]
                 ),
                 uptime: { clock.now },
@@ -875,70 +974,17 @@ struct GestureAndPlatformTests {
                 settlesTransition: true
             ) { sink.accept($0) }
             await waitUntil { sink.leases.count == 1 }
-            let initialSafetyDelay = scenario.initial == .none ? 25.0 : 30.0
-            await waitUntil {
-                Set(await sleeper.waitingDurations) == Set([0.5, initialSafetyDelay])
-            }
+            await waitUntil { await sleeper.waitingDurations == [0.5] }
             #expect(sink.lease?.overlayMode == scenario.initial)
 
             await sleeper.resumeFirst(for: 0.5)
             await waitUntil { sink.leases.count == 2 }
             #expect(sink.lease?.overlayMode == scenario.settled)
-            let settledSafetyDelay = scenario.settled == .none ? 25.0 : 30.0
-            #expect(await sleeper.waitingDurations == [settledSafetyDelay])
+            #expect(await sleeper.waitingDurations.isEmpty)
 
             await sampler.stop(generation: generation + 1)
             await waitUntil { await sleeper.waitingDurations.isEmpty }
         }
-    }
-
-    @Test("Active-overlay revalidation detects an unnotified Mission Control exit")
-    func activeOverlayRevalidationDetectsExit() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let clock = RoutingTestClock(now: 100)
-        let sleeper = RoutingTestSleeper()
-        let detector = ControlledOverlayDetector(
-            modes: [.missionControl, .unknown, .none]
-        )
-        let sink = RoutingLeaseSink()
-        let generation = sink.invalidate()
-        let sampler = OverlayModeSampler(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector,
-            freshnessPolicy: .init(
-                leaseDuration: 30,
-                safetyRenewalLeadTime: 5,
-                activeOverlayRevalidationInterval: 0.5,
-                uncertaintyRetryDelays: []
-            ),
-            uptime: { clock.now },
-            sleep: { try await sleeper.sleep($0) }
-        )
-
-        await sampler.start(generation: generation) { sink.accept($0) }
-        await waitUntil { sink.lease?.overlayMode == .missionControl }
-        await waitUntil { await sleeper.waitingDurations == [0.5] }
-        #expect(
-            OverlayRoutingFreshnessPolicy.standard.shouldRenewOpportunistically(
-                sink.lease!,
-                at: 100
-            )
-        )
-
-        clock.now = 129
-        await sleeper.resumeFirst()
-        await waitUntil { detector.startedSamples == 2 }
-        await waitUntil { await sleeper.waitingDurations == [0.5] }
-        #expect(sink.lease?.overlayMode == .missionControl)
-
-        clock.now = 129.5
-        await sleeper.resumeFirst()
-        await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
-        #expect(detector.startedSamples == 3)
-        #expect(await sleeper.waitingDurations == [25])
-
-        await sampler.stop(generation: generation + 1)
-        await waitUntil { await sleeper.waitingDurations.isEmpty }
     }
 
     @Test("Stop cancels pending uncertainty recovery")
@@ -953,7 +999,6 @@ struct GestureAndPlatformTests {
             detector: detector,
             freshnessPolicy: .init(
                 leaseDuration: 30,
-                safetyRenewalLeadTime: 5,
                 uncertaintyRetryDelays: [0.5]
             ),
             sleep: { try await sleeper.sleep($0) }
@@ -969,39 +1014,7 @@ struct GestureAndPlatformTests {
         #expect(sink.lease == nil)
     }
 
-    @Test("Safety renewal is scheduled from expiration and refreshes before it")
-    func safetyRenewalPrecedesExpiration() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let clock = RoutingTestClock(now: 100)
-        let sleeper = RoutingTestSleeper()
-        let detector = ControlledOverlayDetector(modes: [.none, .none])
-        let sink = RoutingLeaseSink()
-        let generation = sink.invalidate()
-        let sampler = OverlayModeSampler(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector,
-            freshnessPolicy: .init(
-                leaseDuration: 10,
-                safetyRenewalLeadTime: 2
-            ),
-            uptime: { clock.now },
-            sleep: { try await sleeper.sleep($0) }
-        )
-
-        await sampler.start(generation: generation) { sink.accept($0) }
-        await waitUntil { sink.lease != nil }
-        await waitUntil { await sleeper.waitingDurations == [8] }
-        #expect(sink.lease?.expirationUptime == 110)
-
-        clock.now = 108
-        await sleeper.resumeFirst()
-        await waitUntil { sink.leases.count == 2 }
-        #expect(sink.leases.last?.sampledAtUptime == 108)
-        #expect(sink.leases.last?.expirationUptime == 118)
-        await sampler.stop(generation: generation + 1)
-    }
-
-    @Test("Stop cancels renewal and restart rejects the previous lifecycle")
+    @Test("Stop and restart reject the previous scan lifecycle")
     func stopAndRestartAreGenerationSafe() async {
         let display = DisplayID(rawValue: "display-a")!
         let clock = RoutingTestClock(now: 100)
@@ -1022,7 +1035,13 @@ struct GestureAndPlatformTests {
         await sampler.start(generation: oldGeneration) { sink.accept($0) }
         await waitUntil { detector.startedSamples >= 1 }
         let stoppedGeneration = sink.invalidate()
-        await sampler.stop(generation: stoppedGeneration)
+        let stopTask = Task {
+            await sampler.stop(generation: stoppedGeneration)
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(detector.startedSamples == 1)
+        detector.release(sample: 1)
+        await stopTask.value
         await sampler.start(generation: stoppedGeneration) { sink.accept($0) }
         for _ in 0..<20 { await Task.yield() }
         #expect(detector.startedSamples == 1)
@@ -1031,16 +1050,14 @@ struct GestureAndPlatformTests {
         let restartedGeneration = sink.invalidate()
         await sampler.start(generation: restartedGeneration) { sink.accept($0) }
         await waitUntil { sink.lease?.generation == restartedGeneration }
-        await waitUntil { await sleeper.waitingDurations.count == 1 }
-        detector.release(sample: 1)
-        try? await Task.sleep(for: .milliseconds(20))
+        #expect(await sleeper.waitingDurations.isEmpty)
 
         #expect(sink.leases.map(\.generation) == [restartedGeneration])
         await sampler.stop(generation: restartedGeneration + 1)
         await waitUntil { await sleeper.waitingDurations.isEmpty }
     }
 
-    @Test("Repeated start has one renewal task and idle does not enumerate repeatedly")
+    @Test("Repeated start performs one scan and idle does not poll")
     func samplerStartAndIdleAreLowFrequency() async {
         let display = DisplayID(rawValue: "display-a")!
         let clock = RoutingTestClock(now: 100)
@@ -1058,12 +1075,12 @@ struct GestureAndPlatformTests {
         await sampler.start(generation: generation) { sink.accept($0) }
         await sampler.start(generation: generation) { sink.accept($0) }
         await waitUntil { sink.lease != nil }
-        await waitUntil { await sleeper.waitingDurations.count == 1 }
+        #expect(await sleeper.waitingDurations.isEmpty)
         clock.now = 120
         for _ in 0..<50 { await Task.yield() }
 
         #expect(detector.startedSamples == 1)
-        #expect(await sleeper.waitingDurations == [25])
+        #expect(await sleeper.waitingDurations.isEmpty)
         await sampler.stop(generation: generation + 1)
         await waitUntil { await sleeper.waitingDurations.isEmpty }
     }
@@ -1096,6 +1113,33 @@ struct GestureAndPlatformTests {
         #expect(disagreement.route == .system)
         #expect(disagreement.capturedOverlayMode == .unknown)
         #expect(disagreement.requiredPostingMode == nil)
+    }
+
+    @Test("Event-tap recovery tokens cannot outlive intentional disable")
+    func eventTapRecoveryHonorsLifecycleGeneration() {
+        let lifecycle = EventTapRecoveryLifecycle()
+        let token = lifecycle.beginEnable()
+        var recoveries = 0
+        lifecycle.disable()
+        lifecycle.performIfCurrent(token) { recoveries += 1 }
+        #expect(recoveries == 0)
+        #expect(!lifecycle.isCurrent(token))
+    }
+
+    @Test("Diagnostics report process lifetime rather than system uptime")
+    func diagnosticsReportProcessUptime() {
+        let store = DiagnosticsStore()
+        let report = store.report(version: "test", build: "1")
+        let systemUptime = Int(ProcessInfo.processInfo.systemUptime)
+        let uptimeLine = report.split(separator: "\n").first {
+            $0.hasPrefix("Process uptime: ")
+        }
+        let processUptime = uptimeLine.flatMap {
+            Int($0.dropFirst("Process uptime: ".count).dropLast(" seconds".count))
+        }
+        #expect(processUptime != nil)
+        #expect(processUptime! >= 0)
+        #expect(processUptime! < systemUptime)
     }
 
     @Test("Diagnostics report overlay scan lifetime metrics")
@@ -1168,38 +1212,34 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("Mission Control capability publishes state transitions")
-    func missionControlCapabilityPublishesTransitions() async {
-        let capability = MissionControlSyntheticCapability()
-        let transitions = Task { @MainActor in
-            var values: [MissionControlSyntheticState] = []
-            for await state in capability.changes {
-                values.append(state)
-                if values.count == 2 { break }
-            }
-            return values
-        }
-
-        capability.markUnavailable()
-        capability.observeOverlay(.none)
-        #expect(
-            await transitions.value == [
-                .unavailableUntilOverlayExit,
-                .available,
-            ]
-        )
-    }
-
-    @Test("Mission Control capability resets only after a confirmed overlay exit")
+    @Test("Mission Control failure recovery is display- and time-scoped")
     func missionControlCapabilityResetPolicy() {
         let capability = MissionControlSyntheticCapability()
-        #expect(capability.markUnavailable())
+        let displayA = DisplayID(rawValue: "display-a")!
+        let displayB = DisplayID(rawValue: "display-b")!
+        #expect(capability.markUnavailable(on: displayA, at: 100))
         #expect(capability.state == .unavailableUntilOverlayExit)
-        #expect(!capability.observeOverlay(.unknown))
-        #expect(!capability.observeOverlay(.appExpose))
-        #expect(!capability.observeOverlay(.missionControl))
+        #expect(!capability.observeOverlay(
+            .none,
+            on: displayB,
+            sampledAtUptime: 101
+        ))
+        #expect(!capability.observeOverlay(
+            .none,
+            on: displayA,
+            sampledAtUptime: 99
+        ))
+        #expect(!capability.observeOverlay(
+            .missionControl,
+            on: displayA,
+            sampledAtUptime: 102
+        ))
         #expect(capability.state == .unavailableUntilOverlayExit)
-        #expect(capability.observeOverlay(.none))
+        #expect(capability.observeOverlay(
+            .none,
+            on: displayA,
+            sampledAtUptime: 103
+        ))
         #expect(capability.state == .available)
     }
 
@@ -1313,7 +1353,7 @@ struct GestureAndPlatformTests {
     }
 
     private func waitUntil(
-        _ condition: @escaping @Sendable () async -> Bool
+        _ condition: @escaping @MainActor () async -> Bool
     ) async {
         for _ in 0..<1_000 {
             if await condition() { return }

@@ -114,7 +114,11 @@ final class SpaceSwitcher {
             source: source,
             targetDisplayID: targetDisplayID,
             wraps: wraps,
-            velocity: velocity
+            velocity: velocity,
+            resolvedLastSpaceID: resolvedLastSpaceID(
+                for: action,
+                displayID: targetDisplayID
+            )
         )
     }
 
@@ -129,8 +133,20 @@ final class SpaceSwitcher {
             targetDisplayID: context.targetDisplayID,
             wraps: wraps,
             velocity: velocity,
-            requiredMode: context.requiredPostingMode
+            requiredMode: context.requiredPostingMode,
+            resolvedLastSpaceID: resolvedLastSpaceID(
+                for: action,
+                displayID: context.targetDisplayID
+            )
         )
+    }
+
+    private func resolvedLastSpaceID(
+        for action: SpaceSwitchAction,
+        displayID: DisplayID
+    ) -> SpaceID? {
+        guard action == .lastSpace else { return nil }
+        return presentation.lastSpaceByDisplay[displayID]
     }
 
     func submit(_ request: SpaceSwitchRequest) async -> SpaceSwitchOutcome {

@@ -152,8 +152,8 @@ struct HotkeyTests {
     }
 
     @Test("Recording suspends and restores only the edited binding")
-    func recordingSuspendsAndRestoresBinding() {
-        withCleanHotkeyDefaults {
+    func recordingSuspendsAndRestoresBinding() async {
+        await withCleanHotkeyDefaults {
             let monitor = FakeHotkeyMonitor(isHealthy: true)
             let registry = HotkeyRegistry { _ in monitor }
             let generalSettings = GeneralSettingsManager()
@@ -168,12 +168,17 @@ struct HotkeyTests {
             #expect(registry.handleKeyEvent(event(left)))
             #expect(registry.handleKeyEvent(event(right)))
 
-            manager.setRecording(true, action: .left)
-            #expect(!registry.handleKeyEvent(event(left)))
+            var recorded: [KeyCombination] = []
+            #expect(manager.beginRecording(action: .left) {
+                recorded.append($0.keyCombination)
+            })
+            #expect(registry.handleKeyEvent(event(left)))
             #expect(registry.handleKeyEvent(event(right)))
+            for _ in 0..<20 { await Task.yield() }
+            #expect(recorded == [left, right])
             #expect(manager.hotkey(withAction: .left)?.registrationState == .disabled)
 
-            manager.setRecording(false, action: .left)
+            manager.endRecording(action: .left)
             #expect(registry.handleKeyEvent(event(left)))
             #expect(manager.hotkey(withAction: .left)?.registrationState == .active)
         }
@@ -194,13 +199,15 @@ struct HotkeyTests {
             #expect(registry.handleKeyEvent(event(left)))
 
             generalSettings.bindingsEnabled = false
-            manager.setRecording(false, action: .left)
+            #expect(manager.beginRecording(action: .left) { _ in })
+            manager.endRecording(action: .left)
             #expect(!registry.handleKeyEvent(event(left)))
             #expect(manager.monitoringState == .disabled)
             #expect(manager.hotkey(withAction: .left)?.registrationState == .disabled)
 
             generalSettings.bindingsEnabled = true
-            manager.setRecording(false, action: .left)
+            #expect(manager.beginRecording(action: .left) { _ in })
+            manager.endRecording(action: .left)
             #expect(registry.handleKeyEvent(event(left)))
             #expect(manager.monitoringState == .active)
         }
@@ -239,7 +246,8 @@ struct HotkeyTests {
             manager.performSetup()
             let combination = BoundAction.left.defaultKeyCombination!
             manager.hotkey(withAction: .right)?.keyCombination = combination
-            manager.setRecording(false, action: .right)
+            #expect(manager.beginRecording(action: .right) { _ in })
+            manager.endRecording(action: .right)
 
             #expect(!registry.handleKeyEvent(event(combination)))
             guard
@@ -252,6 +260,80 @@ struct HotkeyTests {
         }
     }
 
+    @Test("A failed shared monitor is created once per reconfiguration pass")
+    func failedMonitorCreationIsBatched() {
+        withCleanHotkeyDefaults {
+            var creationCount = 0
+            let registry = HotkeyRegistry { _ in
+                creationCount += 1
+                return FakeHotkeyMonitor(isHealthy: false)
+            }
+            let manager = HotkeySettingsManager(
+                registry: registry,
+                dispatcher: makeDispatcher(),
+                generalSettings: GeneralSettingsManager()
+            )
+            manager.performSetup()
+
+            #expect(creationCount == 1)
+        }
+    }
+
+    @Test("Recorder captures an existing Blink shortcut before its action and swaps owners")
+    func recorderCapturesAndSwapsExistingShortcut() async {
+        await withCleanHotkeyDefaults {
+            let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
+            let manager = HotkeySettingsManager(
+                registry: registry,
+                dispatcher: makeDispatcher(),
+                generalSettings: GeneralSettingsManager()
+            )
+            manager.performSetup()
+            let left = BoundAction.left.defaultKeyCombination!
+            let right = BoundAction.right.defaultKeyCombination!
+
+            #expect(manager.beginRecording(action: .left) { event in
+                manager.assignRecordedCombination(event.keyCombination, to: .left)
+                manager.endRecording(action: .left)
+            })
+            #expect(registry.handleKeyEvent(event(right)))
+            for _ in 0..<20 { await Task.yield() }
+
+            #expect(manager.hotkey(withAction: .left)?.keyCombination == right)
+            #expect(manager.hotkey(withAction: .right)?.keyCombination == left)
+            #expect(registry.handleKeyEvent(event(right)))
+            #expect(registry.handleKeyEvent(event(left)))
+        }
+    }
+
+    @Test("Recorder suppresses but rejects reserved system shortcuts")
+    func recorderRejectsReservedShortcut() {
+        let original = BoundAction.left.defaultKeyCombination!
+        let reserved = KeyCombination(key: .space, modifiers: .command)
+        let hotkey = Hotkey(keyCombination: original, action: .left)
+        var handler: ((HotkeyKeyEvent) -> Void)?
+        var assignments: [KeyCombination] = []
+        let recorder = HotkeyRecorderModel(
+            hotkey: hotkey,
+            beginRecording: {
+                handler = $0
+                return true
+            },
+            endRecording: {},
+            assignCombination: { assignments.append($0) },
+            loadReservedCombinations: { Set([reserved]) }
+        )
+
+        recorder.startRecording()
+        handler?(event(reserved))
+
+        #expect(recorder.isRecording)
+        #expect(recorder.isPresentingReservedByMacOSError)
+        #expect(assignments.isEmpty)
+        #expect(hotkey.keyCombination == original)
+        recorder.stopRecording()
+    }
+
     @Test("Recorder teardown restores a suspended binding")
     func recorderTeardownRestoresState() {
         let hotkey = Hotkey(
@@ -261,7 +343,13 @@ struct HotkeyTests {
         var transitions: [Bool] = []
         var recorder: HotkeyRecorderModel? = HotkeyRecorderModel(
             hotkey: hotkey,
-            onRecordingChanged: { transitions.append($0) }
+            beginRecording: { _ in
+                transitions.append(true)
+                return true
+            },
+            endRecording: { transitions.append(false) },
+            assignCombination: { hotkey.keyCombination = $0 },
+            loadReservedCombinations: { [] }
         )
         recorder?.startRecording()
         #expect(transitions == [true])
@@ -283,6 +371,20 @@ struct HotkeyTests {
             captureRequest: { _, _ in nil },
             submitRequest: { _ in .unavailable }
         )
+    }
+
+    private func withCleanHotkeyDefaults(_ body: () async -> Void) async {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: "hotkeys")
+        defaults.removeObject(forKey: "hotkeys")
+        defer {
+            if let saved {
+                defaults.set(saved, forKey: "hotkeys")
+            } else {
+                defaults.removeObject(forKey: "hotkeys")
+            }
+        }
+        await body()
     }
 
     private func withCleanHotkeyDefaults(_ body: () -> Void) {

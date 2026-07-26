@@ -36,6 +36,13 @@ final class SettingsManager {
         gestureSettingsManager.performSetup()
     }
 
+    func shutdown() async {
+        // Interception owns the input boundary and must be gone before queued
+        // dispatch or Space execution is torn down.
+        hotkeySettingsManager.shutdown()
+        await gestureSettingsManager.shutdown()
+    }
+
     private func observeSwitchConfiguration() {
         withObservationTracking {
             spaceSwitcher.applyConfiguration(

@@ -9,6 +9,42 @@ import Cocoa
 import Darwin
 import os.log
 
+nonisolated final class EventTapRecoveryLifecycle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var enabled = false
+
+    func beginEnable() -> UInt64 {
+        lock.withLock {
+            generation &+= 1
+            enabled = true
+            return generation
+        }
+    }
+
+    func disable() {
+        lock.withLock {
+            generation &+= 1
+            enabled = false
+        }
+    }
+
+    func recoveryToken() -> UInt64? {
+        lock.withLock { enabled ? generation : nil }
+    }
+
+    func performIfCurrent(_ token: UInt64, _ body: () -> Void) {
+        lock.withLock {
+            guard enabled, generation == token else { return }
+            body()
+        }
+    }
+
+    func isCurrent(_ token: UInt64) -> Bool {
+        lock.withLock { enabled && generation == token }
+    }
+}
+
 /// A type that receives system events from various locations within the
 /// event stream.
 @MainActor
@@ -103,6 +139,7 @@ final class EventTap {
     /// waiting for the main actor. Recovery mutates this property on the tap's
     /// run loop after the current callback returns.
     fileprivate nonisolated(unsafe) var tapMachPort: CFMachPort?
+    fileprivate nonisolated let recoveryLifecycle = EventTapRecoveryLifecycle()
 
     #if DEBUG
     fileprivate nonisolated let debugCallbackDelayMicroseconds: useconds_t
@@ -164,6 +201,7 @@ final class EventTap {
     }
 
     deinit {
+        recoveryLifecycle.disable()
         guard let machPort else { return }
         CFRunLoopRemoveSource(runLoop, source, mode)
         CGEvent.tapEnable(tap: machPort, enable: false)
@@ -290,6 +328,11 @@ final class EventTap {
 
     /// Enables the event tap.
     func enable() {
+        _ = recoveryLifecycle.beginEnable()
+        enableComponents()
+    }
+
+    private func enableComponents() {
         if !isValid {
             removeComponents()
             guard installComponents() else { return }
@@ -302,25 +345,35 @@ final class EventTap {
     }
 
     func recoverIfNeeded() {
-        guard !isHealthy else { return }
+        guard let generation = recoveryLifecycle.recoveryToken() else { return }
+        recoverIfNeeded(generation: generation)
+    }
+
+    fileprivate func recoverIfNeeded(generation: UInt64) {
+        guard recoveryLifecycle.isCurrent(generation), !isHealthy else { return }
 
         if isValid {
-            enable()
+            enableComponents()
         }
 
-        guard !isHealthy else { return }
+        guard recoveryLifecycle.isCurrent(generation), !isHealthy else { return }
         Logger.eventTap.warning("Recreating unhealthy event tap \"\(label)\"")
-        DiagnosticsStore.shared.record("event-tap", "\(label) recreated")
         removeComponents()
-        enable()
+        enableComponents()
+        guard recoveryLifecycle.isCurrent(generation), isHealthy else { return }
+        DiagnosticsStore.shared.record("event-tap", "\(label) recreated")
     }
 
     /// Enables the event tap with the given timeout.
     func enable(timeout: Duration, onTimeout: @escaping () -> Void) {
-        enable()
+        let generation = recoveryLifecycle.beginEnable()
+        enableComponents()
         Task { [weak self] in
             try? await Task.sleep(for: timeout)
-            if self?.isEnabled == true {
+            if let self,
+                self.recoveryLifecycle.isCurrent(generation),
+                self.isEnabled
+            {
                 onTimeout()
             }
         }
@@ -328,6 +381,7 @@ final class EventTap {
 
     /// Disables the event tap.
     func disable() {
+        recoveryLifecycle.disable()
         withUnwrappedComponents { runLoop, source, machPort in
             CFRunLoopRemoveSource(runLoop, source, mode)
             CGEvent.tapEnable(tap: machPort, enable: false)
@@ -362,8 +416,11 @@ private nonisolated func handleEvent(
     // the actor hop is asynchronous, and by the time the main actor runs the
     // closure the kernel's re-enable window has already closed, leaving the tap
     // permanently dead until the next explicit enable() call (which never comes).
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let port = eventTap.tapMachPort {
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput,
+        let recoveryGeneration = eventTap.recoveryLifecycle.recoveryToken()
+    {
+        eventTap.recoveryLifecycle.performIfCurrent(recoveryGeneration) {
+            guard let port = eventTap.tapMachPort else { return }
             os_log(
                 .error,
                 log: OSLog(subsystem: "Blink", category: "EventTap"),
@@ -373,12 +430,12 @@ private nonisolated func handleEvent(
             )
             CGEvent.tapEnable(tap: port, enable: true)
         }
-        DiagnosticsStore.shared.record(
-            "event-tap",
-            "\(eventTap.label) disabled by system type=\(type.rawValue)"
-        )
         Task { @MainActor in
-            eventTap.recoverIfNeeded()
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(eventTap.label) disabled by system type=\(type.rawValue)"
+            )
+            eventTap.recoverIfNeeded(generation: recoveryGeneration)
         }
         // Still dispatch to the @MainActor callback so callers can reset state.
     }

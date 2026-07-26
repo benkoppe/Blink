@@ -35,7 +35,7 @@ struct KeyCombination: Hashable {
     }
 }
 
-private func getSystemReservedKeyCombinations() -> [KeyCombination] {
+private func getSystemReservedKeyCombinations() -> Set<KeyCombination> {
     let supportedModifierMask = controlKey | optionKey | shiftKey | cmdKey
 
     var symbolicHotkeys: Unmanaged<CFArray>?
@@ -50,7 +50,7 @@ private func getSystemReservedKeyCombinations() -> [KeyCombination] {
         return []
     }
 
-    return reservedHotkeys.compactMap { hotkey in
+    return Set(reservedHotkeys.compactMap { hotkey in
         guard
             hotkey[kHISymbolicHotKeyEnabled] as? Bool == true,
             let keyCode = hotkey[kHISymbolicHotKeyCode] as? Int,
@@ -63,14 +63,18 @@ private func getSystemReservedKeyCombinations() -> [KeyCombination] {
             key: KeyCode(rawValue: keyCode),
             modifiers: Modifiers(carbonFlags: modifiers)
         )
-    }
+    })
 }
 
 extension KeyCombination {
     /// Returns a Boolean value that indicates whether this key
     /// combination is reserved for system use.
     var isReservedBySystem: Bool {
-        getSystemReservedKeyCombinations().contains(self)
+        Self.systemReservedCombinations().contains(self)
+    }
+
+    static func systemReservedCombinations() -> Set<KeyCombination> {
+        getSystemReservedKeyCombinations()
     }
 }
 

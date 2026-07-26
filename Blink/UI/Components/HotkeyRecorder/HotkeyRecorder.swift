@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+@MainActor
 struct HotkeyRecorder<Label: View>: View {
     @State private var model: HotkeyRecorderModel
 
@@ -14,13 +15,23 @@ struct HotkeyRecorder<Label: View>: View {
 
     init(
         hotkey: Hotkey,
-        onRecordingChanged: @escaping (Bool) -> Void,
+        manager: HotkeySettingsManager,
         @ViewBuilder label: () -> Label
     ) {
         self.label = label()
+        let action = hotkey.action
         self.model = HotkeyRecorderModel(
             hotkey: hotkey,
-            onRecordingChanged: onRecordingChanged
+            beginRecording: { handler in
+                manager.beginRecording(action: action, handler: handler)
+            },
+            endRecording: {
+                manager.endRecording(action: action)
+            },
+            assignCombination: { combination in
+                manager.assignRecordedCombination(combination, to: action)
+            },
+            loadReservedCombinations: KeyCombination.systemReservedCombinations
         )
     }
 
@@ -39,6 +50,16 @@ struct HotkeyRecorder<Label: View>: View {
                 .alignmentGuide(.firstTextBaseline) { dimension in
                     dimension[VerticalAlignment.center]
                 }
+        }
+        .alert(
+            "Hotkey is reserved by macOS",
+            isPresented: $model.isPresentingReservedByMacOSError
+        ) {
+            Button("OK") {
+                model.isPresentingReservedByMacOSError = false
+            }
+        } message: {
+            Text("Choose a shortcut that is not reserved by macOS.")
         }
         .onDisappear {
             model.stopRecording()

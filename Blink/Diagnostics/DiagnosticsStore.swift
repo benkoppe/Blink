@@ -23,6 +23,13 @@ nonisolated final class DiagnosticsStore: @unchecked Sendable {
     }
 
     private static let capacity = 200
+    private let processStartedAtUptime: TimeInterval = {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let launchDate = NSRunningApplication.current.launchDate else {
+            return now
+        }
+        return now - max(0, Date().timeIntervalSince(launchDate))
+    }()
     private let lock = NSLock()
     private var events: [DiagnosticEvent] = []
     private var totalEventCount: UInt64 = 0
@@ -76,7 +83,7 @@ nonisolated final class DiagnosticsStore: @unchecked Sendable {
             "Blink diagnostics",
             "Version: \(version) (\(build))",
             "macOS: \(process.operatingSystemVersionString)",
-            "Process uptime: \(Int(process.systemUptime)) seconds",
+            "Process uptime: \(Int(max(0, process.systemUptime - processStartedAtUptime))) seconds",
             "Generated: \(formatter.string(from: Date()))",
             "",
             "Diagnostics volume:",

@@ -3,7 +3,6 @@ import Foundation
 nonisolated enum GestureRoute: String, Equatable, Sendable {
     case blink
     case system
-    case pending
 }
 
 nonisolated struct GestureSessionContext: Equatable, Sendable {
@@ -64,22 +63,6 @@ nonisolated struct GestureSessionContext: Equatable, Sendable {
         )
     }
 
-    static func pending(
-        generation: UInt64,
-        targetDisplayID: DisplayID,
-        capturedOverlayMode: OverlayMode,
-        missionControlSyntheticState: MissionControlSyntheticState
-    ) -> GestureSessionContext {
-        GestureSessionContext(
-            generation: generation,
-            route: .pending,
-            targetDisplayID: targetDisplayID,
-            capturedOverlayMode: capturedOverlayMode,
-            missionControlSyntheticState: missionControlSyntheticState,
-            requiredPostingMode: nil
-        )
-    }
-
     static func system(
         generation: UInt64,
         targetDisplayID: DisplayID,
@@ -97,74 +80,28 @@ nonisolated struct GestureSessionContext: Equatable, Sendable {
 }
 
 nonisolated struct OverlayRoutingFreshnessPolicy: Equatable, Sendable {
-    // Dock, Space, wake, session, and display events are the primary source of
-    // invalidation. This 30-second lease only bounds uncertainty if one of those
-    // events is missed. Renewal five seconds before expiry leaves time for a
-    // mayBegin retry without returning to continuous window enumeration.
     static let standard = OverlayRoutingFreshnessPolicy(
         leaseDuration: 30,
-        safetyRenewalLeadTime: 5,
-        activeOverlayRevalidationInterval: 0.5,
         uncertaintyRetryDelays: [0.2, 0.6]
     )
 
     let leaseDuration: TimeInterval
-    let safetyRenewalLeadTime: TimeInterval
-    // Mission Control and App Exposé do not reliably emit an observable event
-    // when dismissed through every system path. Revalidate only while an
-    // overlay lease is active; normal desktop idle remains event-driven.
-    let activeOverlayRevalidationInterval: TimeInterval
     // A transition sample can legitimately land inside Dock animation. These
-    // two event-bound retries settle that uncertainty without creating an idle
-    // polling loop.
+    // event-bound retries settle that uncertainty without idle polling.
     let uncertaintyRetryDelays: [TimeInterval]
 
     init(
         leaseDuration: TimeInterval,
-        safetyRenewalLeadTime: TimeInterval,
-        activeOverlayRevalidationInterval: TimeInterval = 0.5,
         uncertaintyRetryDelays: [TimeInterval] = [0.2, 0.6]
     ) {
         precondition(leaseDuration > 0)
-        precondition(safetyRenewalLeadTime > 0)
-        precondition(safetyRenewalLeadTime < leaseDuration)
-        precondition(activeOverlayRevalidationInterval > 0)
         precondition(uncertaintyRetryDelays.allSatisfy { $0 > 0 })
         self.leaseDuration = leaseDuration
-        self.safetyRenewalLeadTime = safetyRenewalLeadTime
-        self.activeOverlayRevalidationInterval = activeOverlayRevalidationInterval
         self.uncertaintyRetryDelays = uncertaintyRetryDelays
     }
 
     func expirationUptime(forSampleAt sampleUptime: TimeInterval) -> TimeInterval {
         sampleUptime + leaseDuration
-    }
-
-    func safetyRenewalDelay(
-        for lease: OverlayRoutingLease,
-        at uptime: TimeInterval
-    ) -> TimeInterval {
-        if lease.overlayMode != .none {
-            return max(
-                0,
-                min(
-                    activeOverlayRevalidationInterval,
-                    lease.expirationUptime - uptime
-                )
-            )
-        }
-        return max(
-            0,
-            lease.expirationUptime - safetyRenewalLeadTime - uptime
-        )
-    }
-
-    func shouldRenewOpportunistically(
-        _ lease: OverlayRoutingLease,
-        at uptime: TimeInterval
-    ) -> Bool {
-        lease.overlayMode != .none
-            || safetyRenewalDelay(for: lease, at: uptime) == 0
     }
 }
 
@@ -267,38 +204,204 @@ nonisolated struct OverlayRoutingLeaseState: Equatable, Sendable {
         return true
     }
 
-    func requiresSynchronousRefresh(
-        currentDisplayID: DisplayID,
-        at uptime: TimeInterval
-    ) -> Bool {
-        guard let lease else { return true }
-        return !lease.isValid(
-            at: uptime,
+    func makeContext(
+        sessionGeneration: UInt64,
+        at uptime: TimeInterval,
+        missionControlSyntheticState: MissionControlSyntheticState
+    ) -> GestureSessionContext? {
+        guard let lease else { return nil }
+        return lease.makeContext(
+            sessionGeneration: sessionGeneration,
             requiredGeneration: generation,
-            currentTargetDisplayID: currentDisplayID
+            currentDisplayID: lease.targetDisplayID,
+            at: uptime,
+            missionControlSyntheticState: missionControlSyntheticState
         )
+    }
+}
+
+nonisolated final class GestureOverlayPreflight: @unchecked Sendable {
+    private struct State {
+        var generation: UInt64 = 0
+        var requestSequence: UInt64 = 0
+        var lease: OverlayRoutingLease?
+        var requestIsInFlight = false
+        var isStopped = false
+    }
+
+    private let displayLocator: any DisplayLocating
+    private let detector: any OverlayDetecting
+    private let freshnessPolicy: OverlayRoutingFreshnessPolicy
+    private let uptime: @Sendable () -> TimeInterval
+    private let queue = DispatchQueue(
+        label: "com.thekoppe.Blink.gesture-overlay-preflight"
+    )
+    private let condition = NSCondition()
+    private var state = State()
+
+    init(
+        displayLocator: any DisplayLocating,
+        detector: any OverlayDetecting,
+        freshnessPolicy: OverlayRoutingFreshnessPolicy = .standard,
+        uptime: @escaping @Sendable () -> TimeInterval = {
+            ProcessInfo.processInfo.systemUptime
+        }
+    ) {
+        self.displayLocator = displayLocator
+        self.detector = detector
+        self.freshnessPolicy = freshnessPolicy
+        self.uptime = uptime
+    }
+
+    /// Enqueues the WindowServer scan directly from `mayBegin`. The callback
+    /// remains bounded; no actor or main-queue hop delays starting the scan.
+    func prepare(
+        generation: UInt64,
+        onUpdate: @escaping @Sendable (OverlayRoutingLease) -> Void
+    ) {
+        let requestSequence = condition.withLock {
+            guard !state.isStopped, generation >= state.generation else {
+                return nil as UInt64?
+            }
+            state.generation = generation
+            state.lease = nil
+            state.requestIsInFlight = true
+            state.requestSequence &+= 1
+            return state.requestSequence
+        }
+        guard let requestSequence else { return }
+
+        let displayLocator = displayLocator
+        let detector = detector
+        let freshnessPolicy = freshnessPolicy
+        let uptime = uptime
+        queue.async { [weak self] in
+            guard let displayID = try? displayLocator.cursorDisplayID() else {
+                self?.finishWithoutLease(
+                    generation: generation,
+                    requestSequence: requestSequence
+                )
+                return
+            }
+            let sampledAtUptime = uptime()
+            let mode = detector.detect(on: displayID)
+            guard mode != .unknown else {
+                self?.finishWithoutLease(
+                    generation: generation,
+                    requestSequence: requestSequence
+                )
+                return
+            }
+            let lease = OverlayRoutingLease(
+                generation: generation,
+                targetDisplayID: displayID,
+                overlayMode: mode,
+                sampledAtUptime: sampledAtUptime,
+                expirationUptime: freshnessPolicy.expirationUptime(
+                    forSampleAt: sampledAtUptime
+                ),
+                requestSequence: requestSequence
+            )
+            guard let self else { return }
+            let accepted = self.condition.withLock {
+                guard
+                    !self.state.isStopped,
+                    self.state.generation == generation,
+                    self.state.requestSequence == requestSequence
+                else {
+                    return false
+                }
+                self.state.requestIsInFlight = false
+                self.state.lease = lease
+                self.condition.broadcast()
+                return true
+            }
+            if accepted { onUpdate(lease) }
+        }
+    }
+
+    private func finishWithoutLease(
+        generation: UInt64,
+        requestSequence: UInt64
+    ) {
+        condition.withLock {
+            guard
+                state.generation == generation,
+                state.requestSequence == requestSequence
+            else {
+                return
+            }
+            state.requestIsInFlight = false
+            condition.broadcast()
+        }
+    }
+
+    func needsPreparation(generation: UInt64) -> Bool {
+        condition.withLock {
+            !state.isStopped
+                && state.generation == generation
+                && !state.requestIsInFlight
+                && state.lease == nil
+        }
+    }
+
+    func invalidate(generation: UInt64) {
+        condition.withLock {
+            guard generation >= state.generation else { return }
+            state.generation = generation
+            state.requestSequence &+= 1
+            state.requestIsInFlight = false
+            state.lease = nil
+            condition.broadcast()
+        }
     }
 
     func makeContext(
         sessionGeneration: UInt64,
-        currentDisplayID: DisplayID,
+        requiredGeneration: UInt64,
         at uptime: TimeInterval,
-        missionControlSyntheticState: MissionControlSyntheticState
-    ) -> GestureSessionContext {
-        guard let lease else {
-            return .system(
-                generation: sessionGeneration,
-                targetDisplayID: currentDisplayID,
-                missionControlSyntheticState: missionControlSyntheticState
-            )
+        missionControlSyntheticState: MissionControlSyntheticState,
+        waitingUpTo waitDuration: TimeInterval = 0
+    ) -> GestureSessionContext? {
+        condition.lock()
+        if waitDuration > 0 {
+            let deadline = Date(timeIntervalSinceNow: waitDuration)
+            while
+                !state.isStopped,
+                state.generation == requiredGeneration,
+                state.requestIsInFlight,
+                state.lease == nil,
+                condition.wait(until: deadline)
+            {}
         }
+        let lease: OverlayRoutingLease? =
+            if !state.isStopped, state.generation == requiredGeneration {
+                state.lease
+            } else {
+                nil
+            }
+        condition.unlock()
+        guard let lease else { return nil }
         return lease.makeContext(
             sessionGeneration: sessionGeneration,
-            requiredGeneration: generation,
-            currentDisplayID: currentDisplayID,
+            requiredGeneration: requiredGeneration,
+            currentDisplayID: lease.targetDisplayID,
             at: uptime,
             missionControlSyntheticState: missionControlSyntheticState
         )
+    }
+
+    func stop() async {
+        condition.withLock {
+            state.isStopped = true
+            state.requestSequence &+= 1
+            state.requestIsInFlight = false
+            state.lease = nil
+            condition.broadcast()
+        }
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume() }
+        }
     }
 }
 
@@ -308,9 +411,6 @@ actor OverlayModeSampler {
 
     private enum RefreshPurpose: Sendable {
         case confirmation(attempt: Int, settlesTransition: Bool)
-        case opportunistic
-        case forced
-        case safetyRenewal(previousLease: OverlayRoutingLease)
     }
 
     private let displayLocator: any DisplayLocating
@@ -318,13 +418,17 @@ actor OverlayModeSampler {
     private let freshnessPolicy: OverlayRoutingFreshnessPolicy
     private let uptime: UptimeProvider
     private let sleep: Sleeper
+    /// WindowServer enumeration is synchronous and cannot be cancelled once it
+    /// starts. A dedicated serial queue makes cancellation meaningful for
+    /// delivery while guaranteeing that invalidation never overlaps scans.
+    private let scanQueue = DispatchQueue(
+        label: "com.thekoppe.Blink.overlay-sampling"
+    )
 
     private var samplingTask: Task<Void, Never>?
-    private var safetyRenewalTask: Task<Void, Never>?
     private var uncertaintyRetryTask: Task<Void, Never>?
     private var requestSequence: UInt64 = 0
     private var lifecycleSequence: UInt64 = 0
-    private var renewalSequence: UInt64 = 0
     private var uncertaintyRetrySequence: UInt64 = 0
     private var acceptedGeneration: UInt64 = 0
     private var isRunning = false
@@ -383,7 +487,7 @@ actor OverlayModeSampler {
         )
     }
 
-    func stop(generation: UInt64? = nil) {
+    func stop(generation: UInt64? = nil) async {
         let stoppedGeneration = generation ?? acceptedGeneration &+ 1
         guard stoppedGeneration >= acceptedGeneration else { return }
 
@@ -391,38 +495,11 @@ actor OverlayModeSampler {
         lifecycleSequence &+= 1
         isRunning = false
         onUpdate = nil
+        let pendingScan = samplingTask
         cancelAllWork()
-    }
-
-    func invalidate(generation: UInt64) {
-        guard generation >= acceptedGeneration else { return }
-        acceptedGeneration = generation
-        requestSequence &+= 1
-        samplingTask?.cancel()
-        samplingTask = nil
-        cancelSafetyRenewal()
-        cancelUncertaintyRetry()
-    }
-
-    func refresh(generation: UInt64) {
-        guard canRefresh(generation: generation) else { return }
-        beginRefresh(generation: generation, purpose: .forced)
-    }
-
-    func opportunisticRefresh(generation: UInt64) {
-        guard
-            canRefresh(generation: generation),
-            samplingTask == nil
-        else {
-            return
-        }
-        beginRefresh(generation: generation, purpose: .opportunistic)
-    }
-
-    private func canRefresh(generation: UInt64) -> Bool {
-        isRunning
-            && onUpdate != nil
-            && generation == acceptedGeneration
+        // Enumeration itself is synchronous, so cancellation suppresses stale
+        // delivery and shutdown waits for the serial scan to actually finish.
+        await pendingScan?.value
     }
 
     private func beginRefresh(
@@ -437,15 +514,26 @@ actor OverlayModeSampler {
         let displayLocator = displayLocator
         let detector = detector
         let uptime = uptime
+        let scanQueue = scanQueue
         samplingTask = Task { [weak self] in
-            let observation = await Task.detached {
-                guard let displayID = try? displayLocator.cursorDisplayID() else {
-                    return nil as (DisplayID, OverlayMode, TimeInterval)?
+            let observation: (DisplayID, OverlayMode, TimeInterval)? =
+                await withCheckedContinuation { continuation in
+                    scanQueue.async {
+                        guard let displayID = try? displayLocator.cursorDisplayID() else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        let sampledAtUptime = uptime()
+                        let mode = detector.detect(on: displayID)
+                        guard mode != .unknown else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        continuation.resume(
+                            returning: (displayID, mode, sampledAtUptime)
+                        )
+                    }
                 }
-                let mode = detector.detect(on: displayID)
-                guard mode != .unknown else { return nil }
-                return (displayID, mode, uptime())
-            }.value
             guard !Task.isCancelled else { return }
             await self?.complete(
                 observation,
@@ -484,15 +572,6 @@ actor OverlayModeSampler {
                     generation: generation,
                     lifecycle: lifecycle
                 )
-            case .safetyRenewal(let previousLease)
-                where previousLease.overlayMode != .none
-                    && uptime() < previousLease.expirationUptime:
-                scheduleSafetyRenewal(
-                    for: previousLease,
-                    lifecycle: lifecycle
-                )
-            case .opportunistic, .forced, .safetyRenewal:
-                break
             }
             return
         }
@@ -509,7 +588,6 @@ actor OverlayModeSampler {
             requestSequence: sequence
         )
         onUpdate?(lease)
-        scheduleSafetyRenewal(for: lease, lifecycle: lifecycle)
         if case .confirmation(let attempt, true) = purpose {
             scheduleUncertaintyRetry(
                 afterFailedAttempt: attempt,
@@ -518,53 +596,6 @@ actor OverlayModeSampler {
                 lifecycle: lifecycle
             )
         }
-    }
-
-    private func scheduleSafetyRenewal(
-        for lease: OverlayRoutingLease,
-        lifecycle: UInt64
-    ) {
-        cancelSafetyRenewal()
-        renewalSequence &+= 1
-        let renewal = renewalSequence
-        let delay = freshnessPolicy.safetyRenewalDelay(
-            for: lease,
-            at: uptime()
-        )
-        let sleep = sleep
-        safetyRenewalTask = Task { [weak self] in
-            do {
-                try await sleep(delay)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            await self?.performSafetyRenewal(
-                for: lease,
-                lifecycle: lifecycle,
-                renewal: renewal
-            )
-        }
-    }
-
-    private func performSafetyRenewal(
-        for lease: OverlayRoutingLease,
-        lifecycle: UInt64,
-        renewal: UInt64
-    ) {
-        guard
-            isRunning,
-            lease.generation == acceptedGeneration,
-            lifecycle == lifecycleSequence,
-            renewal == renewalSequence
-        else {
-            return
-        }
-        safetyRenewalTask = nil
-        beginRefresh(
-            generation: lease.generation,
-            purpose: .safetyRenewal(previousLease: lease)
-        )
     }
 
     private func scheduleUncertaintyRetry(
@@ -636,14 +667,7 @@ actor OverlayModeSampler {
         requestSequence &+= 1
         samplingTask?.cancel()
         samplingTask = nil
-        cancelSafetyRenewal()
         cancelUncertaintyRetry()
-    }
-
-    private func cancelSafetyRenewal() {
-        renewalSequence &+= 1
-        safetyRenewalTask?.cancel()
-        safetyRenewalTask = nil
     }
 
     private func cancelUncertaintyRetry() {

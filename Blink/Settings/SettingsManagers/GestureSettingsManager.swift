@@ -11,12 +11,7 @@ import ObservableDefaults
 
 @MainActor @ObservableDefaults(autoInit: false)
 final class GestureSettingsManager {
-    private struct OverlayTransition {
-        let previousMode: OverlayMode?
-        let expiresAtUptime: TimeInterval
-    }
-
-    private static let overlayTransitionSettlementDuration: TimeInterval = 1
+    private static let gesturePreflightWaitDuration: TimeInterval = 0.012
 
     @ObservableOnly private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
         SwipeGesture(id: $0, action: nil)
@@ -28,20 +23,19 @@ final class GestureSettingsManager {
     @Ignore private let dispatcher: ActionDispatcher
     @Ignore private let generalSettings: GeneralSettingsManager
     @Ignore private let missionControlCapability: MissionControlSyntheticCapability
-    @Ignore private let displayLocator: DisplayLocator
-    @Ignore private let overlayDetector: CoreGraphicsOverlayDetector
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
     @Ignore private let overlayModeSampler: OverlayModeSampler
+    @Ignore private let gestureOverlayPreflight: GestureOverlayPreflight
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
     @Ignore private var displayObservers: [NSObjectProtocol] = []
-    @Ignore private var capabilityConsumer: Task<Void, Never>?
     @Ignore private var routingState = OverlayRoutingLeaseState()
     @Ignore private var gestureGeneration: UInt64 = 0
     @Ignore private var overlaySamplingEnabled = false
     @Ignore private var systemSwipeSuppressionEnabled = false
     @Ignore private var selectedGestureContext: GestureSessionContext?
-    @Ignore private var overlayTransition: OverlayTransition?
+    @Ignore private var gesturePreparationIsActive = false
+    @Ignore private var isShutdown = false
 
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
     var disableSystemSwipeGestures: Bool = true
@@ -65,21 +59,18 @@ final class GestureSettingsManager {
         self.missionControlCapability = missionControlCapability
         let displayLocator = DisplayLocator()
         let overlayDetector = CoreGraphicsOverlayDetector(displayLocator: displayLocator)
-        self.displayLocator = displayLocator
-        self.overlayDetector = overlayDetector
         self.overlayModeSampler = OverlayModeSampler(
+            displayLocator: displayLocator,
+            detector: overlayDetector
+        )
+        self.gestureOverlayPreflight = GestureOverlayPreflight(
             displayLocator: displayLocator,
             detector: overlayDetector
         )
 
         monitor.contextForRecognition = { [weak self] in
             guard let self else { return nil }
-            if let selectedGestureContext {
-                if selectedGestureContext.route == .pending {
-                    return promotePendingGestureContext(selectedGestureContext)
-                }
-                return selectedGestureContext
-            }
+            if let selectedGestureContext { return selectedGestureContext }
             guard !systemSwipeSuppressionEnabled else { return nil }
             let context = selectGestureContext()
             selectedGestureContext = context
@@ -88,31 +79,37 @@ final class GestureSettingsManager {
         monitor.isContextValidBeforeDispatch = { [weak self] context in
             self?.gestureContextIsValid(context) ?? false
         }
+        monitor.onRecognitionSessionMayBegin = { [weak self] in
+            guard self?.systemSwipeSuppressionEnabled == true else { return }
+            self?.prepareRoutingForGesture()
+        }
         monitor.onRecognitionSessionEnded = { [weak self] in
-            guard self?.systemSwipeSuppressionEnabled == false else { return }
+            self?.gesturePreparationIsActive = false
             self?.selectedGestureContext = nil
         }
         systemSwipeSuppressor.contextForNewGesture = { [weak self] in
-            self?.selectGestureContext()
+            self?.selectSuppressionContext()
         }
         systemSwipeSuppressor.onGestureMayBegin = { [weak self] in
-            self?.requestOverlayRefresh()
+            self?.prepareRoutingForGesture()
         }
         systemSwipeSuppressor.onPotentialOverlayTransition = { [weak self] in
             self?.invalidateOverlayStateAndRefresh()
         }
         systemSwipeSuppressor.onContextSelected = { [weak self] context in
-            guard let self else { return }
-            selectedGestureContext = context
-            let route = context?.route ?? .system
-            let mode = context?.capturedOverlayMode ?? .unknown
-            DiagnosticsStore.shared.record(
-                "gesture-route",
-                "selected route=\(route.rawValue) overlay=\(mode.rawValue)"
-            )
+            self?.selectedGestureContext = context
+            let route = context?.route.rawValue ?? "system"
+            let overlay = context?.capturedOverlayMode.rawValue ?? "unavailable"
+            DispatchQueue.main.async {
+                DiagnosticsStore.shared.record(
+                    "gesture-route",
+                    "selected route=\(route) overlay=\(overlay)"
+                )
+            }
         }
         systemSwipeSuppressor.onGestureEnded = { [weak self] in
-            self?.selectedGestureContext = nil
+            self?.gesturePreparationIsActive = false
+            self?.monitor.finishRecognitionSession()
         }
 
         monitor.onSwipe = { [weak self] context, direction, fingerCount in
@@ -122,24 +119,11 @@ final class GestureSettingsManager {
                 fingerCount: fingerCount
             )
         }
-        capabilityConsumer = Task { @MainActor [weak self, missionControlCapability] in
-            for await state in missionControlCapability.changes {
-                guard !Task.isCancelled else { break }
-                if state == .unavailableUntilOverlayExit,
-                    let context = self?.selectedGestureContext,
-                    context.requiredPostingMode == .missionControl
-                {
-                    DiagnosticsStore.shared.record(
-                        "gesture-route",
-                        "Mission Control capability changed during session=\(context.generation); dispatch will be rejected"
-                    )
-                }
-            }
-        }
         observerStarter()
     }
 
     func performSetup() {
+        guard !isShutdown else { return }
         loadInitialState()
         observeLifecycle()
         observeGestures()
@@ -151,7 +135,6 @@ final class GestureSettingsManager {
             lifecycleObservers.forEach(workspaceCenter.removeObserver)
             let defaultCenter = NotificationCenter.default
             displayObservers.forEach(defaultCenter.removeObserver)
-            capabilityConsumer?.cancel()
             let overlayModeSampler = overlayModeSampler
             Task {
                 await overlayModeSampler.stop(generation: .max)
@@ -179,19 +162,22 @@ final class GestureSettingsManager {
     // MARK - Observation
 
     private func observeGestures() {
+        guard !isShutdown else { return }
         withObservationTracking {
             reconfigure()
             for gesture in gestures { _ = gesture.action }
         } onChange: { [weak self] in
             guard let self else { return }
             Task { @MainActor [weak self] in
-                self?.persistGestures()
-                self?.observeGestures()
+                guard let self, !isShutdown else { return }
+                persistGestures()
+                observeGestures()
             }
         }
     }
 
     private func reconfigure() {
+        guard !isShutdown else { return }
         let bindingsEnabled = generalSettings.bindingsEnabled
         monitor.allowSameDirectionRepeat = allowSameDirectionRepeat
         monitor.sameDirectionRepeatSensitivity = sameDirectionRepeatSensitivity
@@ -212,8 +198,9 @@ final class GestureSettingsManager {
         guard overlaySamplingEnabled != enabled else { return }
         overlaySamplingEnabled = enabled
         let generation = routingState.invalidate()
+        gestureOverlayPreflight.invalidate(generation: generation)
+        gesturePreparationIsActive = false
         selectedGestureContext = nil
-        overlayTransition = nil
         let sampler = overlayModeSampler
 
         if enabled {
@@ -228,41 +215,53 @@ final class GestureSettingsManager {
         }
     }
 
-    private func requestOverlayRefresh() {
-        guard overlaySamplingEnabled else { return }
-        let generation = routingState.generation
-        if let lease = routingState.lease,
-            lease.generation == generation,
-            (try? displayLocator.cursorDisplayID()) == lease.targetDisplayID,
-            !OverlayRoutingFreshnessPolicy.standard.shouldRenewOpportunistically(
-                lease,
-                at: ProcessInfo.processInfo.systemUptime
-            )
-        {
+    /// A `mayBegin` sample is the ownership boundary. Invalidate first so a
+    /// stale desktop or overlay lease can never suppress the coming gesture;
+    /// if the asynchronous scan has not completed by `began`, macOS owns it.
+    private func prepareRoutingForGesture() {
+        if gesturePreparationIsActive {
+            let generation = routingState.generation
+            guard gestureOverlayPreflight.needsPreparation(
+                generation: generation
+            ) else {
+                return
+            }
+            startGesturePreflight(generation: generation)
             return
         }
 
-        let sampler = overlayModeSampler
-        Task {
-            await sampler.opportunisticRefresh(generation: generation)
+        gesturePreparationIsActive = true
+        let generation = routingState.invalidate()
+        selectedGestureContext = nil
+        guard overlaySamplingEnabled else {
+            gestureOverlayPreflight.invalidate(generation: generation)
+            return
+        }
+        startGesturePreflight(generation: generation)
+    }
+
+    private func startGesturePreflight(generation: UInt64) {
+        let capability = missionControlCapability
+        gestureOverlayPreflight.prepare(generation: generation) { lease in
+            capability.observeOverlay(
+                lease.overlayMode,
+                on: lease.targetDisplayID,
+                sampledAtUptime: lease.sampledAtUptime
+            )
+            DiagnosticsStore.shared.record(
+                "overlay",
+                "gesture-preflight mode=\(lease.overlayMode.rawValue)"
+            )
         }
     }
 
     private func invalidateOverlayStateAndRefresh() {
-        let uptime = ProcessInfo.processInfo.systemUptime
-        let previousMode = overlayTransition?.previousMode
-            ?? routingState.lease?.overlayMode
-        overlayTransition = OverlayTransition(
-            previousMode: previousMode,
-            expiresAtUptime: uptime + Self.overlayTransitionSettlementDuration
-        )
         let generation = routingState.invalidate()
+        gestureOverlayPreflight.invalidate(generation: generation)
+        gesturePreparationIsActive = false
+        selectedGestureContext = nil
         guard overlaySamplingEnabled else { return }
-
-        startOverlaySampler(
-            generation: generation,
-            settlesTransition: true
-        )
+        startOverlaySampler(generation: generation, settlesTransition: true)
     }
 
     private func startOverlaySampler(
@@ -283,16 +282,14 @@ final class GestureSettingsManager {
     }
 
     private func updateRoutingLease(_ lease: OverlayRoutingLease) {
+        guard !isShutdown else { return }
         let previousMode = routingState.lease?.overlayMode ?? .unknown
         guard routingState.accept(lease) else { return }
-        let transitionIsPending = overlayTransitionIsPending(
-            observedMode: lease.overlayMode,
-            at: lease.sampledAtUptime
+        missionControlCapability.observeOverlay(
+            lease.overlayMode,
+            on: lease.targetDisplayID,
+            sampledAtUptime: lease.sampledAtUptime
         )
-        missionControlCapability.observeOverlay(lease.overlayMode)
-        if !transitionIsPending {
-            updateSelectedGestureContext(from: lease)
-        }
         guard previousMode != lease.overlayMode else { return }
 
         DiagnosticsStore.shared.record(
@@ -318,9 +315,10 @@ final class GestureSettingsManager {
                     queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        self?.invalidateOverlayStateAndRefresh()
-                        self?.monitor.ensureMonitoring()
-                        self?.systemSwipeSuppressor.ensureMonitoring()
+                        guard let self, !self.isShutdown else { return }
+                        self.invalidateOverlayStateAndRefresh()
+                        self.monitor.ensureMonitoring()
+                        self.systemSwipeSuppressor.ensureMonitoring()
                     }
                 }
             )
@@ -334,7 +332,8 @@ final class GestureSettingsManager {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.invalidateOverlayStateAndRefresh()
+                    guard let self, !self.isShutdown else { return }
+                    self.invalidateOverlayStateAndRefresh()
                 }
             }
         )
@@ -356,111 +355,31 @@ final class GestureSettingsManager {
 
     // MARK - Swipe handling
 
-    private func selectGestureContext() -> GestureSessionContext? {
-        guard let displayID = try? displayLocator.cursorDisplayID() else {
-            return nil
-        }
+    private func selectSuppressionContext() -> GestureSessionContext? {
         gestureGeneration &+= 1
-        let uptime = ProcessInfo.processInfo.systemUptime
-        if routingState.requiresSynchronousRefresh(
-            currentDisplayID: displayID,
-            at: uptime
-        ) {
-            let overlayMode = overlayDetector.detect(on: displayID)
-            if overlayTransitionIsPending(
-                observedMode: overlayMode,
-                at: uptime
-            ) {
-                return .pending(
-                    generation: gestureGeneration,
-                    targetDisplayID: displayID,
-                    capturedOverlayMode: overlayMode,
-                    missionControlSyntheticState: missionControlCapability.state
-                )
-            }
-            if overlayMode != .unknown {
-                missionControlCapability.observeOverlay(overlayMode)
-                return .observed(
-                    generation: gestureGeneration,
-                    targetDisplayID: displayID,
-                    overlayMode: overlayMode,
-                    missionControlSyntheticState: missionControlCapability.state
-                )
-            }
-        }
+        return gestureOverlayPreflight.makeContext(
+            sessionGeneration: gestureGeneration,
+            requiredGeneration: routingState.generation,
+            at: ProcessInfo.processInfo.systemUptime,
+            missionControlSyntheticState: missionControlCapability.state,
+            waitingUpTo: Self.gesturePreflightWaitDuration
+        )
+    }
+
+    private func selectGestureContext() -> GestureSessionContext? {
+        gestureGeneration &+= 1
         return routingState.makeContext(
             sessionGeneration: gestureGeneration,
-            currentDisplayID: displayID,
-            at: uptime,
+            at: ProcessInfo.processInfo.systemUptime,
             missionControlSyntheticState: missionControlCapability.state
         )
-    }
-
-    private func updateSelectedGestureContext(from lease: OverlayRoutingLease) {
-        guard
-            let selectedGestureContext,
-            selectedGestureContext.route != .system,
-            selectedGestureContext.targetDisplayID == lease.targetDisplayID
-        else {
-            return
-        }
-        let updatedContext = GestureSessionContext.observed(
-            generation: selectedGestureContext.generation,
-            targetDisplayID: lease.targetDisplayID,
-            overlayMode: lease.overlayMode,
-            missionControlSyntheticState: missionControlCapability.state
-        )
-        guard updatedContext.isAuthoritativeBlinkContext else { return }
-        self.selectedGestureContext = updatedContext
-    }
-
-    private func promotePendingGestureContext(
-        _ pendingContext: GestureSessionContext
-    ) -> GestureSessionContext {
-        let uptime = ProcessInfo.processInfo.systemUptime
-        let observedMode = routingState.lease?.overlayMode
-        guard
-            (try? displayLocator.cursorDisplayID()) == pendingContext.targetDisplayID,
-            !overlayTransitionIsPending(observedMode: observedMode, at: uptime)
-        else {
-            return pendingContext
-        }
-        let context = routingState.makeContext(
-            sessionGeneration: pendingContext.generation,
-            currentDisplayID: pendingContext.targetDisplayID,
-            at: uptime,
-            missionControlSyntheticState: missionControlCapability.state
-        )
-        guard context.isAuthoritativeBlinkContext else { return pendingContext }
-        selectedGestureContext = context
-        return context
-    }
-
-    private func overlayTransitionIsPending(
-        observedMode: OverlayMode?,
-        at uptime: TimeInterval
-    ) -> Bool {
-        guard let transition = overlayTransition else { return false }
-        guard uptime < transition.expiresAtUptime else {
-            overlayTransition = nil
-            return false
-        }
-        if let observedMode,
-            observedMode != .unknown,
-            let previousMode = transition.previousMode,
-            observedMode != previousMode
-        {
-            overlayTransition = nil
-            return false
-        }
-        return true
     }
 
     private func gestureContextIsValid(_ context: GestureSessionContext) -> Bool {
         generalSettings.bindingsEnabled
             && selectedGestureContext == context
             && context.isValidForDispatch(
-                currentDisplayID: try? displayLocator.cursorDisplayID(),
+                currentDisplayID: context.targetDisplayID,
                 currentMissionControlSyntheticState: missionControlCapability.state
             )
     }
@@ -477,6 +396,28 @@ final class GestureSettingsManager {
     }
 
     // MARK: - Public API
+
+    func shutdown() async {
+        guard !isShutdown else { return }
+        isShutdown = true
+        monitor.stopMonitoring()
+        systemSwipeSuppressor.stopMonitoring()
+        overlaySamplingEnabled = false
+        gesturePreparationIsActive = false
+        selectedGestureContext = nil
+        let generation = routingState.invalidate()
+        gestureOverlayPreflight.invalidate(generation: generation)
+        async let stopSampler: Void = overlayModeSampler.stop(generation: generation)
+        async let stopPreflight: Void = gestureOverlayPreflight.stop()
+        _ = await (stopSampler, stopPreflight)
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        lifecycleObservers.forEach(workspaceCenter.removeObserver)
+        lifecycleObservers.removeAll()
+        let defaultCenter = NotificationCenter.default
+        displayObservers.forEach(defaultCenter.removeObserver)
+        displayObservers.removeAll()
+    }
 
     func gesture(withID id: SwipeGestureID) -> SwipeGesture? {
         gestures.first { $0.id == id }

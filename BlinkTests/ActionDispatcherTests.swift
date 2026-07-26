@@ -212,6 +212,18 @@ struct ActionDispatcherTests {
         await dispatcher.shutdown()
     }
 
+    @Test("Application shutdown removes input before dispatcher and engine")
+    func applicationShutdownIsDependencyOrdered() async {
+        var events: [String] = []
+        await ApplicationShutdownSequence(
+            stopInput: { events.append("input") },
+            stopDispatcher: { events.append("dispatcher") },
+            stopSpaceEngine: { events.append("engine") }
+        ).run()
+
+        #expect(events == ["input", "dispatcher", "engine"])
+    }
+
     @Test("Shutdown cancels the sole consumer")
     func shutdownCancelsConsumer() async {
         let started = AsyncStream<Void>.makeStream()

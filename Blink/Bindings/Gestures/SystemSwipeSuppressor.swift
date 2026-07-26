@@ -7,18 +7,6 @@
 
 import CoreGraphics
 
-private let kDockControlEventType = CGEventType(rawValue: 30)!
-private let kGestureHIDTypeField = CGEventField(rawValue: 110)!
-private let kGestureSwipeMotionField = CGEventField(rawValue: 123)!
-private let kGesturePhaseField = CGEventField(rawValue: 132)!
-
-private let kDockSwipeHIDType: Int64 = 23
-private let kHorizontalGestureMotion: Int64 = 1
-
-private let kGesturePhaseBegan: Int64 = 1
-private let kGesturePhaseEnded: Int64 = 4
-private let kGesturePhaseCancelled: Int64 = 8
-
 final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
     private var suppressingNativeSwipe = false
@@ -43,21 +31,23 @@ final class SystemSwipeSuppressor {
             options: .defaultTap,
             location: .sessionEventTap,
             place: .headInsertEventTap,
-            types: [.gesture, kDockControlEventType],
-            callback: { [weak self] proxy, type, cgEvent in
+            types: [
+                .gesture,
+                CGEventType(rawValue: UInt32(SyntheticGestureProtocol.dockControlEventType))!,
+            ],
+            callback: { [weak self] _, type, cgEvent in
                 guard let self else { return cgEvent }
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     self.endGesture()
-                    proxy.enable()
                     return cgEvent
 
                 case .gesture:
                     return self.handleGestureEvent(cgEvent)
 
                 default:
-                    if type == kDockControlEventType {
+                    if type.rawValue == UInt32(SyntheticGestureProtocol.dockControlEventType) {
                         return self.handleDockControlEvent(cgEvent)
                     }
                     return cgEvent
@@ -101,11 +91,11 @@ final class SystemSwipeSuppressor {
             return event
         }
 
-        let phase = event.getIntegerValueField(kGesturePhaseField)
+        let phase = event.getIntegerValueField(SyntheticGestureProtocol.phase)
         guard isHorizontalDockSwipe(event) else {
-            if phase == kGesturePhaseBegan
-                || phase == kGesturePhaseEnded
-                || phase == kGesturePhaseCancelled
+            if phase == SyntheticGestureProtocol.began
+                || phase == SyntheticGestureProtocol.ended
+                || phase == SyntheticGestureProtocol.cancelled
             {
                 onPotentialOverlayTransition?()
             }
@@ -116,15 +106,18 @@ final class SystemSwipeSuppressor {
         case SyntheticGestureProtocol.mayBegin:
             onGestureMayBegin?()
             return event
-        case kGesturePhaseBegan:
+        case SyntheticGestureProtocol.began:
+            // Some macOS paths omit `mayBegin`. Preparation is idempotent and
+            // starts an off-callback scan before the bounded context wait.
+            onGestureMayBegin?()
             let context = contextForNewGesture?()
-            let route = context?.route ?? .system
+            let ownsGesture = context?.isAuthoritativeBlinkContext == true
             onContextSelected?(context)
-            bypassingNativeSwipe = route == .system
-            suppressingNativeSwipe = route != .system
-            return route == .system ? event : nil
+            bypassingNativeSwipe = !ownsGesture
+            suppressingNativeSwipe = ownsGesture
+            return ownsGesture ? nil : event
 
-        case kGesturePhaseEnded, kGesturePhaseCancelled:
+        case SyntheticGestureProtocol.ended, SyntheticGestureProtocol.cancelled:
             let isBypassing = bypassingNativeSwipe
             endGesture()
             if isBypassing {
@@ -147,11 +140,13 @@ final class SystemSwipeSuppressor {
     }
 
     private func isHorizontalDockSwipe(_ event: CGEvent) -> Bool {
-        return event.getIntegerValueField(kGestureSwipeMotionField) == kHorizontalGestureMotion
+        event.getIntegerValueField(SyntheticGestureProtocol.swipeMotion)
+            == SyntheticGestureProtocol.horizontalMotion
     }
 
     private func isDockSwipe(_ event: CGEvent) -> Bool {
-        event.getIntegerValueField(kGestureHIDTypeField) == kDockSwipeHIDType
+        event.getIntegerValueField(SyntheticGestureProtocol.hidType)
+            == SyntheticGestureProtocol.dockSwipeHIDType
     }
 
     private func isSyntheticOrAppPosted(_ event: CGEvent) -> Bool {

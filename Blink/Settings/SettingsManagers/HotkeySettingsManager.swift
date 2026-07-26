@@ -26,6 +26,7 @@ final class HotkeySettingsManager {
     @Ignore private var registrationFailures: [BoundAction: HotkeyRegistrationFailure] = [:]
     @Ignore private var recordingActions: Set<BoundAction> = []
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
+    @Ignore private var isShutdown = false
 
     init(
         registry: HotkeyRegistry,
@@ -53,18 +54,48 @@ final class HotkeySettingsManager {
     }
 
     func performSetup() {
+        guard !isShutdown else { return }
         loadInitialState()
         observeLifecycle()
         observeConfiguration()
     }
 
-    func setRecording(_ isRecording: Bool, action: BoundAction) {
-        if isRecording {
-            recordingActions.insert(action)
-        } else {
-            recordingActions.remove(action)
-        }
+    @discardableResult
+    func beginRecording(
+        action: BoundAction,
+        handler: @escaping (HotkeyKeyEvent) -> Void
+    ) -> Bool {
+        guard !isShutdown else { return false }
+        recordingActions.insert(action)
         reconfigure()
+        guard registry.beginRecording(handler: handler) else {
+            recordingActions.remove(action)
+            reconfigure()
+            return false
+        }
+        return true
+    }
+
+    func endRecording(action: BoundAction) {
+        registry.endRecording()
+        recordingActions.remove(action)
+        reconfigure()
+    }
+
+    /// Assigning a shortcut already owned by Blink swaps the two actions. The
+    /// recorder therefore never leaves a newly-created duplicate disabled.
+    func assignRecordedCombination(
+        _ combination: KeyCombination,
+        to action: BoundAction
+    ) {
+        guard let target = hotkey(withAction: action) else { return }
+        let previous = target.keyCombination
+        if let owner = hotkeys.first(where: {
+            $0.action != action && $0.keyCombination == combination
+        }) {
+            owner.keyCombination = previous
+        }
+        target.keyCombination = combination
     }
 
     private func loadInitialState() {
@@ -96,7 +127,7 @@ final class HotkeySettingsManager {
             lifecycleObservers.append(
                 center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        guard let self else { return }
+                        guard let self, !self.isShutdown else { return }
                         self.registry.ensureMonitoring()
                         self.reconfigure()
                     }
@@ -106,14 +137,16 @@ final class HotkeySettingsManager {
     }
 
     private func observeConfiguration() {
+        guard !isShutdown else { return }
         withObservationTracking {
             _ = generalSettings.bindingsEnabled
             hotkeys.forEach { _ = $0.keyCombination }
             reconfigure()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.persistHotkeys()
-                self?.observeConfiguration()
+                guard let self, !isShutdown else { return }
+                persistHotkeys()
+                observeConfiguration()
             }
         }
     }
@@ -121,6 +154,7 @@ final class HotkeySettingsManager {
     /// Reconciles individual registrations so recording or editing one action
     /// does not interrupt unrelated hotkeys.
     private func reconfigure() {
+        guard !isShutdown else { return }
         let duplicateConflicts = duplicateConflictsByAction()
         registrationFailures = duplicateConflicts.mapValues {
             .duplicateBinding(conflictingActions: $0)
@@ -150,13 +184,20 @@ final class HotkeySettingsManager {
             registry.stopMonitoring()
         }
 
-        for action in BoundAction.allCases {
-            guard
-                registeredBindings[action] == nil,
-                let combination = desiredCombinations[action]
-            else { continue }
+        let actionsNeedingRegistration = BoundAction.allCases.filter {
+            registeredBindings[$0] == nil && desiredCombinations[$0] != nil
+        }
+        let monitorIsReady = actionsNeedingRegistration.isEmpty
+            || registry.prepareForRegistration()
 
-            switch registry.register(keyCombination: combination, handler: { [weak dispatcher] in
+        for action in actionsNeedingRegistration {
+            guard let combination = desiredCombinations[action] else { continue }
+            guard monitorIsReady else {
+                registrationFailures[action] = .monitoringUnavailable(.eventTapUnavailable)
+                continue
+            }
+
+            switch registry.registerPrepared(keyCombination: combination, handler: { [weak dispatcher] in
                 dispatcher?.dispatch(action.spaceSwitchAction, source: .hotkey)
             }) {
             case .success(let id):
@@ -246,6 +287,22 @@ final class HotkeySettingsManager {
         } else {
             UserDefaults.standard.set(values, forKey: Self.defaultsKey)
         }
+    }
+
+    func shutdown() {
+        guard !isShutdown else { return }
+        isShutdown = true
+        registry.endRecording()
+        recordingActions.removeAll()
+        registeredBindings.values.forEach { registry.unregister($0.id) }
+        registeredBindings.removeAll()
+        registry.shutdown()
+
+        let center = NSWorkspace.shared.notificationCenter
+        lifecycleObservers.forEach(center.removeObserver)
+        lifecycleObservers.removeAll()
+        monitoringState = .disabled
+        refreshRegistrationStates()
     }
 
     func hotkey(withAction action: BoundAction) -> Hotkey? {

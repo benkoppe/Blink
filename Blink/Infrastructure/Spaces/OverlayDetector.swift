@@ -171,6 +171,8 @@ private extension CGRect {
     nonisolated var isUsableDisplayBounds: Bool { isUsableWindowBounds }
 }
 
+private nonisolated let overlayDetectionLock = NSLock()
+
 nonisolated protocol OverlayDetecting: Sendable {
     func detect(on displayID: DisplayID) -> OverlayMode
 }
@@ -184,6 +186,9 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
     }
 
     func detect(on displayID: DisplayID) -> OverlayMode {
+        overlayDetectionLock.lock()
+        defer { overlayDetectionLock.unlock() }
+
         let startedAt = ProcessInfo.processInfo.systemUptime
         defer {
             DiagnosticsStore.shared.recordOverlayScan(
@@ -201,6 +206,18 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
             return .unknown
         }
 
+        let dockPIDs = Set(rawWindows.compactMap { value -> pid_t? in
+            guard value[kCGWindowOwnerName as String] as? String == "Dock" else {
+                return nil
+            }
+            return value[kCGWindowOwnerPID as String] as? pid_t
+        })
+        let dockBundleIDsByPID = Dictionary(
+            uniqueKeysWithValues: dockPIDs.map { pid in
+                (pid, NSRunningApplication(processIdentifier: pid)?.bundleIdentifier)
+            }
+        )
+
         let windows = rawWindows.compactMap { value -> WindowDescriptor? in
             guard
                 let ownerName = value[kCGWindowOwnerName as String] as? String,
@@ -215,9 +232,7 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
                 if ownerName == "Dock",
                     let ownerPID = value[kCGWindowOwnerPID as String] as? pid_t
                 {
-                    NSRunningApplication(
-                        processIdentifier: ownerPID
-                    )?.bundleIdentifier
+                    dockBundleIDsByPID[ownerPID] ?? nil
                 } else {
                     nil
                 }

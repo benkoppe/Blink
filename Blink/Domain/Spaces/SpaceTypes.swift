@@ -83,48 +83,62 @@ nonisolated enum MissionControlSyntheticState: Equatable, Sendable {
 }
 
 nonisolated final class MissionControlSyntheticCapability: @unchecked Sendable {
-    let changes: AsyncStream<MissionControlSyntheticState>
+    private struct Failure: Equatable {
+        let displayID: DisplayID
+        let uptime: TimeInterval
+    }
 
     private let lock = NSLock()
-    private let continuation: AsyncStream<MissionControlSyntheticState>.Continuation
-    private var storedState: MissionControlSyntheticState
+    private var failure: Failure?
 
     init(initialState: MissionControlSyntheticState = .available) {
-        storedState = initialState
-        (changes, continuation) = AsyncStream.makeStream(
-            of: MissionControlSyntheticState.self
-        )
+        if initialState == .unavailableUntilOverlayExit {
+            // Tests and recovery state created without a display cannot be
+            // reopened by an unrelated observation.
+            failure = Failure(
+                displayID: DisplayID(rawValue: "unknown-display")!,
+                uptime: ProcessInfo.processInfo.systemUptime
+            )
+        }
     }
 
     var state: MissionControlSyntheticState {
-        lock.withLock { storedState }
+        lock.withLock {
+            failure == nil ? .available : .unavailableUntilOverlayExit
+        }
     }
 
     @discardableResult
-    func markUnavailable() -> Bool {
-        transition(to: .unavailableUntilOverlayExit)
-    }
-
-    @discardableResult
-    func observeOverlay(_ mode: OverlayMode) -> Bool {
-        guard mode == .none else { return false }
-        return transition(to: .available)
-    }
-
-    private func transition(to newState: MissionControlSyntheticState) -> Bool {
-        let changed = lock.withLock {
-            guard storedState != newState else { return false }
-            storedState = newState
+    func markUnavailable(
+        on displayID: DisplayID,
+        at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
+        lock.withLock {
+            let candidate = Failure(displayID: displayID, uptime: uptime)
+            guard failure != candidate else { return false }
+            failure = candidate
             return true
         }
-        if changed {
-            continuation.yield(newState)
-        }
-        return changed
     }
 
-    deinit {
-        continuation.finish()
+    @discardableResult
+    func observeOverlay(
+        _ mode: OverlayMode,
+        on displayID: DisplayID,
+        sampledAtUptime: TimeInterval
+    ) -> Bool {
+        guard mode == .none else { return false }
+        return lock.withLock {
+            guard
+                let failure,
+                failure.displayID == displayID,
+                sampledAtUptime > failure.uptime
+            else {
+                return false
+            }
+            self.failure = nil
+            return true
+        }
     }
 }
 
@@ -168,6 +182,8 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
     let wraps: Bool
     let velocity: Double
     let requiredMode: SpaceSwitchMode?
+    /// The semantic target captured when a `lastSpace` input is accepted.
+    let resolvedLastSpaceID: SpaceID?
 
     init(
         action: SpaceSwitchAction,
@@ -175,7 +191,8 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
         targetDisplayID: DisplayID,
         wraps: Bool,
         velocity: Double,
-        requiredMode: SpaceSwitchMode? = nil
+        requiredMode: SpaceSwitchMode? = nil,
+        resolvedLastSpaceID: SpaceID? = nil
     ) {
         self.action = action
         self.source = source
@@ -183,6 +200,7 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
         self.wraps = wraps
         self.velocity = velocity
         self.requiredMode = requiredMode
+        self.resolvedLastSpaceID = resolvedLastSpaceID
     }
 }
 
