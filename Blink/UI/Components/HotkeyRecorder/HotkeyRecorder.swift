@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+@MainActor
 struct HotkeyRecorder<Label: View>: View {
     @State private var model: HotkeyRecorderModel
 
@@ -14,11 +15,24 @@ struct HotkeyRecorder<Label: View>: View {
 
     init(
         hotkey: Hotkey,
-        appState: AppState?,
+        manager: HotkeySettingsManager,
         @ViewBuilder label: () -> Label
     ) {
         self.label = label()
-        self.model = HotkeyRecorderModel(hotkey: hotkey, appState: appState)
+        let action = hotkey.action
+        self.model = HotkeyRecorderModel(
+            hotkey: hotkey,
+            beginRecording: { handler in
+                manager.beginRecording(action: action, handler: handler)
+            },
+            endRecording: {
+                manager.endRecording(action: action)
+            },
+            assignCombination: { combination in
+                manager.assignRecordedCombination(combination, to: action)
+            },
+            loadReservedCombinations: KeyCombination.systemReservedCombinations
+        )
     }
 
     var body: some View {
@@ -44,6 +58,11 @@ struct HotkeyRecorder<Label: View>: View {
             Button("OK") {
                 model.isPresentingReservedByMacOSError = false
             }
+        } message: {
+            Text("Choose a shortcut that is not reserved by macOS.")
+        }
+        .onDisappear {
+            model.stopRecording()
         }
     }
 
@@ -67,7 +86,7 @@ struct HotkeyRecorder<Label: View>: View {
         Button {
             if model.isRecording {
                 model.stopRecording()
-            } else if model.hotkey.isEnabled {
+            } else if model.hotkey.isConfigured {
                 model.hotkey.keyCombination = nil
             } else {
                 model.stopRecording()
@@ -88,7 +107,7 @@ struct HotkeyRecorder<Label: View>: View {
     private var leadingSegmentLabel: some View {
         if model.isRecording {
             Text("Type Hotkey")
-        } else if model.hotkey.isEnabled {
+        } else if model.hotkey.isConfigured {
             if let keyCombination = model.hotkey.keyCombination {
                 HStack(spacing: 0) {
                     Text(keyCombination.modifiers.symbolicValue)
@@ -107,7 +126,7 @@ struct HotkeyRecorder<Label: View>: View {
         let symbolicString =
             if model.isRecording {
                 "escape"
-            } else if model.hotkey.isEnabled {
+            } else if model.hotkey.isConfigured {
                 "xmark.circle.fill"
             } else {
                 "record.circle"

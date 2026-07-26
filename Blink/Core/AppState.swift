@@ -9,16 +9,38 @@ import Combine
 import Observation
 import SwiftUI
 
+@MainActor
+struct ApplicationShutdownSequence {
+    let stopInput: () async -> Void
+    let stopDispatcher: () async -> Void
+    let stopSpaceEngine: () async -> Void
+
+    func run() async {
+        await stopInput()
+        await stopDispatcher()
+        await stopSpaceEngine()
+    }
+}
+
 @Observable @MainActor
 final class AppState {
     @ObservationIgnored
-    private(set) lazy var spaceSwitcher = SpaceSwitcher(appState: self)
+    private(set) lazy var spaceSwitcher = SpaceSwitcher()
+
+    @ObservationIgnored
+    private(set) lazy var actionDispatcher = ActionDispatcher(
+        spaceSwitcher: spaceSwitcher
+    )
 
     @ObservationIgnored
     private(set) lazy var permissionsManager = PermissionsManager(appState: self)
 
     @ObservationIgnored
-    private(set) lazy var settingsManager = SettingsManager(appState: self)
+    private(set) lazy var settingsManager = SettingsManager(
+        registry: hotkeyRegistry,
+        dispatcher: actionDispatcher,
+        spaceSwitcher: spaceSwitcher
+    )
 
     @ObservationIgnored
     private(set) lazy var updatesManager = UpdatesManager(appState: self)
@@ -38,6 +60,9 @@ final class AppState {
     /// The app's hotkey registry.
     let hotkeyRegistry = HotkeyRegistry()
 
+    /// Creates support reports without coupling views to diagnostics storage.
+    let diagnosticsController = DiagnosticsController()
+
     let isPreview: Bool = {
         #if DEBUG
             let environment = ProcessInfo.processInfo.environment
@@ -48,12 +73,34 @@ final class AppState {
         #endif
     }()
 
+    @ObservationIgnored private var didPerformSetup = false
+
     /// Sets up the app state.
     func performSetup() {
+        guard !didPerformSetup else { return }
+        didPerformSetup = true
         permissionsManager.stopAllChecks()
         settingsManager.performSetup()
         updatesManager.performSetup()
         userNotificationManager.performSetup()
+    }
+
+    func shutdown() async {
+        // Do not initialize lazy input or switching subsystems merely to stop an
+        // app that never completed setup.
+        guard didPerformSetup else { return }
+        didPerformSetup = false
+        await ApplicationShutdownSequence(
+            stopInput: { [settingsManager] in
+                await settingsManager.shutdown()
+            },
+            stopDispatcher: { [actionDispatcher] in
+                await actionDispatcher.shutdown()
+            },
+            stopSpaceEngine: { [spaceSwitcher] in
+                await spaceSwitcher.shutdown()
+            }
+        ).run()
     }
 
     /// Assigns the app delegate to the app state.

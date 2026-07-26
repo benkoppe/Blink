@@ -121,6 +121,9 @@ struct AboutSettingsPane: View {
             Button("Quit \(Constants.appName)") {
                 quit()
             }
+            Button("Copy Diagnostics") {
+                appState.diagnosticsController.copyReport()
+            }
             Spacer()
         }
         .padding(8)

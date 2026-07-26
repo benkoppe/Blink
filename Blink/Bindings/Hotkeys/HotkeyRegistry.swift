@@ -1,182 +1,353 @@
-//
-//  HotkeyRegistry.swift
-//  Blink
-//
-//  Created by Ben on 3/25/26.
-//
+import CoreGraphics
+import Foundation
 
-import Carbon.HIToolbox
-import Cocoa
+struct HotkeyKeyEvent: Equatable {
+    let keyCombination: KeyCombination
+    let isAutorepeat: Bool
+}
 
-/// An object that manages the registration, storage, and unregistration of hotkeys.
+struct HotkeyEventMatcher {
+    enum RegistrationError: Error, Equatable {
+        case duplicate(existingRegistrationID: UInt32)
+    }
+
+    enum Decision: Equatable {
+        case passThrough
+        case invoke(registrationID: UInt32)
+        case suppress
+    }
+
+    private var registrationsByCombination: [KeyCombination: UInt32] = [:]
+    private var combinationsByRegistration: [UInt32: KeyCombination] = [:]
+
+    mutating func register(
+        _ combination: KeyCombination,
+        registrationID: UInt32
+    ) -> Result<Void, RegistrationError> {
+        if let existingID = registrationsByCombination[combination] {
+            return .failure(.duplicate(existingRegistrationID: existingID))
+        }
+        registrationsByCombination[combination] = registrationID
+        combinationsByRegistration[registrationID] = combination
+        return .success(())
+    }
+
+    mutating func unregister(_ registrationID: UInt32) {
+        guard let combination = combinationsByRegistration.removeValue(
+            forKey: registrationID
+        ) else { return }
+        registrationsByCombination.removeValue(forKey: combination)
+    }
+
+    func decision(for event: HotkeyKeyEvent) -> Decision {
+        guard let registrationID = registrationsByCombination[event.keyCombination] else {
+            return .passThrough
+        }
+        return event.isAutorepeat ? .suppress : .invoke(registrationID: registrationID)
+    }
+}
+
+nonisolated enum HotkeyMonitoringFailure: Equatable, Sendable {
+    case eventTapUnavailable
+
+    var description: String {
+        switch self {
+        case .eventTapUnavailable:
+            "Blink could not start keyboard monitoring. Check Accessibility permission."
+        }
+    }
+}
+
+nonisolated enum HotkeyMonitoringState: Equatable, Sendable {
+    case disabled
+    case active
+    case failed(HotkeyMonitoringFailure)
+}
+
+@MainActor
+protocol HotkeyEventMonitoring: AnyObject {
+    var isHealthy: Bool { get }
+    func enable()
+    func disable()
+    func recoverIfNeeded()
+}
+
+extension EventTap: HotkeyEventMonitoring {}
+
 @MainActor
 final class HotkeyRegistry {
-    /// The event kinds that a hotkey can be registered for.
-    enum EventKind {
-        case keyUp
-        case keyDown
-
-        fileprivate init?(event: EventRef) {
-            switch Int(GetEventKind(event)) {
-            case kEventHotKeyPressed:
-                self = .keyDown
-            case kEventHotKeyReleased:
-                self = .keyUp
-            default:
-                return nil
-            }
-        }
+    enum RegistrationError: Error, Equatable {
+        case notConfigured
+        case duplicate(existingRegistrationID: UInt32)
+        case monitoringFailed(HotkeyMonitoringFailure)
     }
 
-    /// An object that stores the information needed to cancel a registration.
-    private final class Registration {
-        let eventKind: EventKind
-        let key: KeyCode
-        let modifiers: Modifiers
+    typealias MonitorFactory = @MainActor (
+        _ callback: @MainActor @escaping (CGEventType, CGEvent) -> CGEvent?
+    ) -> any HotkeyEventMonitoring
+
+    private struct Registration {
         let handler: () -> Void
+    }
 
-        init(
-            eventKind: EventKind,
-            key: KeyCode,
-            modifiers: Modifiers,
-            handler: @escaping () -> Void
-        ) {
-            self.eventKind = eventKind
-            self.key = key
-            self.modifiers = modifiers
-            self.handler = handler
+    private var registrations: [UInt32: Registration] = [:]
+    private var matcher = HotkeyEventMatcher()
+    private var nextID: UInt32 = 1
+    private var recordingHandler: ((HotkeyKeyEvent) -> Void)?
+    private var pendingRecordingDelivery: Task<Void, Never>?
+    private var recordingEpoch: UInt64 = 0
+    private var eventMonitor: (any HotkeyEventMonitoring)?
+    private let monitorFactory: MonitorFactory
+
+    private(set) var monitoringState: HotkeyMonitoringState = .disabled {
+        didSet {
+            guard monitoringState != oldValue else { return }
+            onMonitoringStateChanged?(monitoringState)
         }
     }
 
-    private var registrations = [UInt32: Registration]()
+    var onMonitoringStateChanged: ((HotkeyMonitoringState) -> Void)?
 
-    private var keyEventTap: EventTap?
-
-    /// Installs the global event tap, if it isn't already.
-    private func installIfNeeded() -> OSStatus {
-        guard keyEventTap == nil else {
-            return noErr
+    init() {
+        self.monitorFactory = { callback in
+            EventTap(
+                label: "HotkeyRegistry",
+                options: .defaultTap,
+                location: .hidEventTap,
+                place: .headInsertEventTap,
+                types: [.keyDown],
+                callback: { _, type, event in callback(type, event) }
+            )
         }
-
-        let tap = EventTap(
-            label: "HotkeyRegistry",
-            options: .defaultTap,
-            location: .hidEventTap,
-            place: .headInsertEventTap,
-            types: [.keyDown],
-            callback: { [weak self] proxy, type, event in
-                guard let self else { return event }
-
-                switch type {
-                case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    proxy.enable()
-                    return event
-
-                case .keyDown:
-                    return self.handleKeyDownEvent(event)
-
-                default:
-                    return event
-                }
-            }
-        )
-        tap.enable()
-        keyEventTap = tap
-
-        return tap.isEnabled ? noErr : OSStatus(eventNotHandledErr)
     }
 
-    /// Registers the given hotkey for the given event kind and returns the
-    /// identifier of the registration on success.
-    ///
-    /// The returned identifier can be used to unregister the hotkey using
-    /// the ``unregister(_:)`` function.
-    ///
-    /// - Parameters:
-    ///   - hotkey: The hotkey to register the handler with.
-    ///   - eventKind: The event kind to register the handler with.
-    ///   - handler: The handler to perform when `hotkey` is triggered with
-    ///     the event kind specified by `eventKind`.
-    ///
-    /// - Returns: The registration's identifier on success, `nil` on failure.
+    init(monitorFactory: @escaping MonitorFactory) {
+        self.monitorFactory = monitorFactory
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            eventMonitor?.disable()
+        }
+    }
+
     func register(
         hotkey: Hotkey,
-        eventKind: EventKind,
         handler: @escaping () -> Void
-    ) -> UInt32? {
-        enum Context {
-            static var currentID: UInt32 = 0
+    ) -> Result<UInt32, RegistrationError> {
+        guard let combination = hotkey.keyCombination else {
+            return .failure(.notConfigured)
         }
-
-        defer {
-            Context.currentID += 1
-        }
-
-        guard let keyCombination = hotkey.keyCombination else {
-            Logger.hotkeyRegistry.error("Hotkey does not have a valid key combination")
-            return nil
-        }
-
-        let status = installIfNeeded()
-
-        guard status == noErr else {
-            Logger.hotkeyRegistry.error(
-                "Hotkey event tap installation failed with status \(status)")
-            return nil
-        }
-
-        let id = Context.currentID
-
-        guard registrations[id] == nil else {
-            Logger.hotkeyRegistry.error("Hotkey already registered for id \(id)")
-            return nil
-        }
-
-        let registration = Registration(
-            eventKind: eventKind,
-            key: keyCombination.key,
-            modifiers: keyCombination.modifiers,
-            handler: handler
-        )
-        registrations[id] = registration
-
-        return id
+        return register(keyCombination: combination, handler: handler)
     }
 
-    /// Unregisters the key combination with the given identifier.
-    ///
-    /// - Parameter id: An identifier returned from a call to the
-    ///   ``register(hotkey:eventKind:handler:)`` function.
+    func register(
+        keyCombination: KeyCombination,
+        handler: @escaping () -> Void
+    ) -> Result<UInt32, RegistrationError> {
+        register(
+            keyCombination: keyCombination,
+            monitoringIsPrepared: false,
+            handler: handler
+        )
+    }
+
+    /// Creates or recovers the shared monitor once for a configuration pass.
+    func prepareForRegistration() -> Bool {
+        startMonitoring()
+    }
+
+    func registerPrepared(
+        keyCombination: KeyCombination,
+        handler: @escaping () -> Void
+    ) -> Result<UInt32, RegistrationError> {
+        register(
+            keyCombination: keyCombination,
+            monitoringIsPrepared: true,
+            handler: handler
+        )
+    }
+
+    private func register(
+        keyCombination: KeyCombination,
+        monitoringIsPrepared: Bool,
+        handler: @escaping () -> Void
+    ) -> Result<UInt32, RegistrationError> {
+        let id = nextID
+        switch matcher.register(keyCombination, registrationID: id) {
+        case .failure(.duplicate(let existingID)):
+            return .failure(.duplicate(existingRegistrationID: existingID))
+        case .success:
+            break
+        }
+
+        guard
+            monitoringIsPrepared
+                ? eventMonitor?.isHealthy == true
+                : startMonitoring()
+        else {
+            matcher.unregister(id)
+            return .failure(.monitoringFailed(.eventTapUnavailable))
+        }
+
+        nextID &+= 1
+        registrations[id] = Registration(handler: handler)
+        return .success(id)
+    }
+
     func unregister(_ id: UInt32) {
         guard registrations.removeValue(forKey: id) != nil else {
             Logger.hotkeyRegistry.error("No registered key combination for id \(id)")
             return
         }
+        matcher.unregister(id)
+
+        if registrations.isEmpty, recordingHandler == nil {
+            eventMonitor?.disable()
+            eventMonitor = nil
+            monitoringState = .disabled
+        }
     }
 
-    private func handleKeyDownEvent(_ event: CGEvent) -> CGEvent? {
-        let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        let key = KeyCode(rawValue: Int(event.getIntegerValueField(.keyboardEventKeycode)))
-        let modifiers = Modifiers(cgEventFlags: event.flags)
+    /// Revalidates the shared tap after wake, unlock, or a system disablement.
+    @discardableResult
+    func ensureMonitoring() -> Bool {
+        guard !registrations.isEmpty || recordingHandler != nil else {
+            monitoringState = .disabled
+            return false
+        }
+        return startMonitoring()
+    }
 
-        guard
-            let registration = registrations.values.first(where: {
-                $0.eventKind == .keyDown && $0.key == key && $0.modifiers == modifiers
-            })
-        else {
-            return event
+    private func startMonitoring() -> Bool {
+        if eventMonitor == nil {
+            let monitor = monitorFactory { [weak self] type, event in
+                guard let self else { return event }
+                switch type {
+                case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                    self.handleTapDisabled()
+                    return event
+                case .keyDown:
+                    return self.handleKeyDown(event) ? nil : event
+                default:
+                    return event
+                }
+            }
+            eventMonitor = monitor
+            // A newly-created CGEvent tap can report itself enabled before its
+            // run-loop source has been installed. Always call enable() once so
+            // events are actually delivered.
+            monitor.enable()
+        } else {
+            eventMonitor?.recoverIfNeeded()
         }
 
-        guard !isAutorepeat else {
-            return nil
+        guard eventMonitor?.isHealthy == true else {
+            monitoringState = .failed(.eventTapUnavailable)
+            Logger.hotkeyRegistry.error("Hotkey HID event tap is unavailable")
+            return false
         }
 
-        registration.handler()
-        return nil
+        monitoringState = .active
+        return true
+    }
+
+    func stopMonitoring() {
+        guard registrations.isEmpty, recordingHandler == nil else { return }
+        eventMonitor?.disable()
+        eventMonitor = nil
+        monitoringState = .disabled
+    }
+
+    @discardableResult
+    func beginRecording(
+        handler: @escaping (HotkeyKeyEvent) -> Void
+    ) -> Bool {
+        guard recordingHandler == nil else { return false }
+        recordingEpoch &+= 1
+        recordingHandler = handler
+        guard startMonitoring() else {
+            recordingHandler = nil
+            return false
+        }
+        return true
+    }
+
+    func endRecording() {
+        recordingEpoch &+= 1
+        recordingHandler = nil
+        stopMonitoring()
+    }
+
+    func shutdown() {
+        recordingEpoch &+= 1
+        recordingHandler = nil
+        pendingRecordingDelivery?.cancel()
+        pendingRecordingDelivery = nil
+        registrations.removeAll()
+        matcher = HotkeyEventMatcher()
+        eventMonitor?.disable()
+        eventMonitor = nil
+        monitoringState = .disabled
+    }
+
+    /// Returns whether the event must be removed from the system event stream.
+    /// Matching repeats are consumed but intentionally do not invoke the action.
+    func handleKeyEvent(_ event: HotkeyKeyEvent) -> Bool {
+        if recordingHandler != nil {
+            if !event.isAutorepeat {
+                let previousDelivery = pendingRecordingDelivery
+                let epoch = recordingEpoch
+                pendingRecordingDelivery = Task { @MainActor [weak self] in
+                    await previousDelivery?.value
+                    guard
+                        !Task.isCancelled,
+                        let self,
+                        recordingEpoch == epoch,
+                        let currentHandler = self.recordingHandler
+                    else {
+                        return
+                    }
+                    currentHandler(event)
+                }
+            }
+            return true
+        }
+
+        switch matcher.decision(for: event) {
+        case .passThrough:
+            return false
+        case .suppress:
+            return true
+        case .invoke(let registrationID):
+            registrations[registrationID]?.handler()
+            return true
+        }
+    }
+
+    func waitForPendingRecordingDelivery() async {
+        await pendingRecordingDelivery?.value
+    }
+
+    func handleTapDisabled() {
+        eventMonitor?.recoverIfNeeded()
+        if eventMonitor?.isHealthy == true {
+            monitoringState = .active
+        } else {
+            monitoringState = .failed(.eventTapUnavailable)
+        }
+    }
+
+    private func handleKeyDown(_ event: CGEvent) -> Bool {
+        handleKeyEvent(
+            HotkeyKeyEvent(
+                keyCombination: KeyCombination(cgEvent: event),
+                isAutorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            )
+        )
     }
 }
 
-// MARK: - Logger
 extension Logger {
     fileprivate static let hotkeyRegistry = Logger(category: "HotkeyRegistry")
 }

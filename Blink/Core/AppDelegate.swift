@@ -11,6 +11,9 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
 
+    private var shutdownTask: Task<Void, Never>?
+    private var didFinishShutdown = false
+
     // MARK: NSApplicationDelegate Methods
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -40,6 +43,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.appState.openPermissionsWindow()
             }
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !didFinishShutdown else { return .terminateNow }
+        guard shutdownTask == nil else { return .terminateLater }
+
+        shutdownTask = Task { @MainActor [weak self, weak sender] in
+            guard let self else { return }
+            await appState.shutdown()
+            didFinishShutdown = true
+            sender?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -1,0 +1,234 @@
+import CoreGraphics
+import Darwin
+import Foundation
+
+private typealias CGSConnectionIDFn = @convention(c) () -> Int32
+private typealias CGSGetActiveSpaceFn = @convention(c) (Int32) -> UInt64
+private typealias CGSCopyDisplaySpacesFn =
+    @convention(c) (Int32, CFString?) -> Unmanaged<CFArray>?
+private typealias CGSCopyMenuBarDisplayFn =
+    @convention(c) (Int32) -> Unmanaged<CFString>?
+
+nonisolated final class CGSSpaceSystemClient: SpaceSystemClient, @unchecked Sendable {
+    private struct Symbols {
+        let connection: CGSConnectionIDFn
+        let activeSpace: CGSGetActiveSpaceFn
+        let displaySpaces: CGSCopyDisplaySpacesFn
+        let menuBarDisplay: CGSCopyMenuBarDisplayFn?
+    }
+
+    private let symbols: Result<Symbols, SpaceSystemError>
+
+    init() {
+        symbols = Self.loadSymbols()
+    }
+
+    func loadSnapshot() throws -> SystemSpaceSnapshot {
+        let symbols = try symbols.get()
+        let connection = symbols.connection()
+        guard connection != 0 else {
+            throw SpaceSystemError.invalidConnection
+        }
+
+        let globalActiveSpaceID = symbols.activeSpace(connection)
+        guard
+            globalActiveSpaceID != 0,
+            let rawDisplays = symbols.displaySpaces(connection, nil)?.takeRetainedValue()
+        else {
+            throw SpaceSystemError.unavailableSpaceList
+        }
+
+        let menuBarDisplayID = symbols.menuBarDisplay?(connection)
+            .map { $0.takeRetainedValue() as String }
+            .flatMap(DisplayID.init(rawValue:))
+        do {
+            return try Self.parseSnapshot(
+                rawDisplays,
+                globalActiveSpaceID: globalActiveSpaceID,
+                menuBarDisplayID: menuBarDisplayID
+            )
+        } catch let error as CGSSpaceParsingError {
+            throw SpaceSystemError.malformedSpaceList(error)
+        }
+    }
+
+    private static func loadSymbols() -> Result<Symbols, SpaceSystemError> {
+        guard
+            let handle = dlopen(
+                "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+                RTLD_LAZY | RTLD_LOCAL
+            )
+        else {
+            return .failure(.requiredSymbolUnavailable("CoreGraphics"))
+        }
+
+        func load<T>(_ name: String, as type: T.Type) -> T? {
+            dlsym(handle, name).map { unsafeBitCast($0, to: type) }
+        }
+
+        guard let connection = load("CGSMainConnectionID", as: CGSConnectionIDFn.self) else {
+            return .failure(.requiredSymbolUnavailable("CGSMainConnectionID"))
+        }
+        guard
+            let activeSpace = load("CGSGetActiveSpace", as: CGSGetActiveSpaceFn.self)
+        else {
+            return .failure(.requiredSymbolUnavailable("CGSGetActiveSpace"))
+        }
+        guard
+            let displaySpaces = load(
+                "CGSCopyManagedDisplaySpaces",
+                as: CGSCopyDisplaySpacesFn.self
+            )
+        else {
+            return .failure(.requiredSymbolUnavailable("CGSCopyManagedDisplaySpaces"))
+        }
+
+        return .success(
+            Symbols(
+                connection: connection,
+                activeSpace: activeSpace,
+                displaySpaces: displaySpaces,
+                menuBarDisplay: load(
+                    "CGSCopyActiveMenuBarDisplayIdentifier",
+                    as: CGSCopyMenuBarDisplayFn.self
+                )
+            )
+        )
+    }
+
+    static func parseSnapshot(
+        _ rawDisplays: NSArray,
+        globalActiveSpaceID: UInt64,
+        menuBarDisplayID: DisplayID? = nil
+    ) throws -> SystemSpaceSnapshot {
+        guard rawDisplays.count != 0 else { throw CGSSpaceParsingError.emptyDisplayList }
+
+        var topologies: [ManagedDisplayID: DisplayTopology] = [:]
+        for (displayIndex, value) in rawDisplays.enumerated() {
+            guard let display = value as? NSDictionary else {
+                throw CGSSpaceParsingError.invalidDisplayEntry(index: displayIndex)
+            }
+            let topology = try parseTopology(
+                display,
+                displayIndex: displayIndex,
+                globalActiveSpaceID: globalActiveSpaceID
+            )
+            guard topologies[topology.managedDisplayID] == nil else {
+                throw CGSSpaceParsingError.duplicateDisplayIdentifier(
+                    topology.managedDisplayID
+                )
+            }
+            topologies[topology.managedDisplayID] = topology
+        }
+
+        if topologies[.main] != nil, topologies.count != 1 {
+            throw CGSSpaceParsingError.ambiguousSharedTopology
+        }
+
+        return SystemSpaceSnapshot(
+            topologiesByManagedDisplay: topologies,
+            menuBarDisplayID: menuBarDisplayID
+        )
+    }
+
+    private static func parseTopology(
+        _ display: NSDictionary,
+        displayIndex: Int,
+        globalActiveSpaceID: UInt64
+    ) throws -> DisplayTopology {
+        guard
+            let rawDisplayID = display["Display Identifier"] as? String,
+            (rawDisplayID == ManagedDisplayID.main.rawValue
+                || UUID(uuidString: rawDisplayID) != nil),
+            let managedDisplayID = ManagedDisplayID(rawValue: rawDisplayID)
+        else {
+            throw CGSSpaceParsingError.invalidDisplayIdentifier(index: displayIndex)
+        }
+        guard let rawSpaces = display["Spaces"] as? NSArray, rawSpaces.count != 0 else {
+            throw CGSSpaceParsingError.invalidSpaces(index: displayIndex)
+        }
+
+        var spaceIDs: [SpaceID] = []
+        for (spaceIndex, value) in rawSpaces.enumerated() {
+            guard let space = value as? NSDictionary else {
+                throw CGSSpaceParsingError.invalidSpaceEntry(
+                    displayIndex: displayIndex,
+                    spaceIndex: spaceIndex
+                )
+            }
+            guard
+                let number = space["id64"] as? NSNumber,
+                let rawSpaceID = exactPositiveInteger(number),
+                let spaceID = SpaceID(rawValue: rawSpaceID)
+            else {
+                throw CGSSpaceParsingError.invalidSpaceID(
+                    displayIndex: displayIndex,
+                    spaceIndex: spaceIndex
+                )
+            }
+            guard !spaceIDs.contains(spaceID) else {
+                throw CGSSpaceParsingError.duplicateSpaceID(displayIndex: displayIndex, spaceID)
+            }
+            spaceIDs.append(spaceID)
+        }
+
+        let currentSpaceID: SpaceID
+        if display.object(forKey: "Current Space") != nil {
+            guard let currentSpace = display["Current Space"] as? NSDictionary else {
+                throw CGSSpaceParsingError.invalidCurrentSpace(displayIndex: displayIndex)
+            }
+            guard
+                let number = currentSpace["id64"] as? NSNumber,
+                let rawCurrentSpaceID = exactPositiveInteger(number),
+                let parsedCurrentSpaceID = SpaceID(rawValue: rawCurrentSpaceID)
+            else {
+                throw CGSSpaceParsingError.invalidCurrentSpaceID(displayIndex: displayIndex)
+            }
+            currentSpaceID = parsedCurrentSpaceID
+        } else {
+            guard let fallback = SpaceID(rawValue: globalActiveSpaceID) else {
+                throw CGSSpaceParsingError.invalidGlobalActiveSpaceID
+            }
+            currentSpaceID = fallback
+        }
+
+        guard spaceIDs.contains(currentSpaceID) else {
+            throw CGSSpaceParsingError.currentSpaceOutsideTopology(
+                displayIndex: displayIndex,
+                currentSpaceID
+            )
+        }
+
+        return DisplayTopology(
+            managedDisplayID: managedDisplayID,
+            spaceIDs: spaceIDs,
+            currentSpaceID: currentSpaceID
+        )!
+    }
+
+    private static func exactPositiveInteger(_ number: NSNumber) -> UInt64? {
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+
+        switch String(cString: number.objCType) {
+        case "c", "s", "i", "l", "q":
+            let value = number.int64Value
+            return value > 0 ? UInt64(value) : nil
+        case "C", "S", "I", "L", "Q":
+            let value = number.uint64Value
+            return value > 0 ? value : nil
+        case "f", "d":
+            let value = number.doubleValue
+            guard
+                value.isFinite,
+                value > 0,
+                value.rounded(.towardZero) == value,
+                value < 18_446_744_073_709_551_616.0
+            else {
+                return nil
+            }
+            return UInt64(value)
+        default:
+            return nil
+        }
+    }
+}

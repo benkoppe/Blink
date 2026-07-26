@@ -1,127 +1,51 @@
-//
-//  Hotkey.swift
-//  Blink
-//
-//  Created by Ben on 3/25/26.
-//
-
 import Observation
 
-/// A combination of a key and modifiers that can be used to
-/// trigger actions on system-wide key-up or key-down events
-@Observable
-final class Hotkey {
-    @ObservationIgnored
-    private weak var appState: AppState?
+enum HotkeyRegistrationFailure: Equatable {
+    case duplicateBinding(conflictingActions: [BoundAction])
+    case monitoringUnavailable(HotkeyMonitoringFailure)
+    case registryConflict
 
-    @ObservationIgnored
-    private var listener: Listener?
-
-    let action: BoundAction
-
-    var keyCombination: KeyCombination? {
-        didSet {
-            guard oldValue != keyCombination else { return }
-            enable()
+    var description: String {
+        switch self {
+        case .duplicateBinding(let actions):
+            let names = actions.map(\.displayName).joined(separator: ", ")
+            return "This shortcut is also configured for \(names). Duplicate shortcuts are disabled."
+        case .monitoringUnavailable(let reason):
+            return reason.description
+        case .registryConflict:
+            return "This shortcut conflicts with another registered Blink shortcut."
         }
     }
+}
 
-    var isEnabled: Bool {
-        listener != nil
+enum HotkeyRegistrationState: Equatable {
+    case disabled
+    case active
+    case failed(HotkeyRegistrationFailure)
+}
+
+@Observable
+final class Hotkey: Codable, Equatable, Hashable {
+    let action: BoundAction
+    var keyCombination: KeyCombination?
+
+    /// Whether the user has assigned a combination. This says nothing about
+    /// whether the shared event tap is currently operational.
+    var isConfigured: Bool {
+        keyCombination != nil
     }
+
+    private(set) var registrationState: HotkeyRegistrationState = .disabled
 
     init(keyCombination: KeyCombination?, action: BoundAction) {
         self.keyCombination = keyCombination
         self.action = action
     }
 
-    func assignAppState(_ appState: AppState) {
-        self.appState = appState
-        enable()
+    func setRegistrationState(_ state: HotkeyRegistrationState) {
+        registrationState = state
     }
 
-    // MARK: - Listener lifecycle
-
-    func enable() {
-        disable()
-
-        guard
-            keyCombination != nil,
-            let appState
-        else { return }
-
-        listener = Listener(
-            hotkey: self,
-            eventKind: .keyDown,
-            appState: appState
-        )
-    }
-
-    func disable() {
-        listener?.invalidate()
-        listener = nil
-    }
-}
-
-extension Hotkey {
-    /// An object that manages the lifetime of a hotkey observation.
-    private final class Listener {
-        private weak var appState: AppState?
-        private var id: UInt32?
-
-        var isValid: Bool {
-            id != nil
-        }
-
-        init?(hotkey: Hotkey, eventKind: HotkeyRegistry.EventKind, appState: AppState?) {
-            guard
-                let appState,
-                hotkey.keyCombination != nil
-            else {
-                return nil
-            }
-            let id = appState.hotkeyRegistry.register(
-                hotkey: hotkey,
-                eventKind: eventKind
-            ) { [weak appState] in
-                guard let appState else {
-                    return
-                }
-                Task {
-                    hotkey.action.execute(appState: appState)
-                }
-            }
-            guard let id else {
-                return nil
-            }
-            self.appState = appState
-            self.id = id
-        }
-
-        deinit {
-            invalidate()
-        }
-
-        func invalidate() {
-            guard isValid else {
-                return
-            }
-            guard let appState else {
-                Logger.hotkey.error("Error invalidating hotkey: Missing AppState")
-                return
-            }
-            defer {
-                id = nil
-            }
-            if let id {
-                appState.hotkeyRegistry.unregister(id)
-            }
-        }
-    }
-}
-
-// MARK: Hotkey: Codable
-extension Hotkey: Codable {
     private enum CodingKeys: CodingKey {
         case keyCombination
         case action
@@ -140,24 +64,13 @@ extension Hotkey: Codable {
         try container.encode(keyCombination, forKey: .keyCombination)
         try container.encode(action, forKey: .action)
     }
-}
 
-// MARK: Hotkey: Equatable
-extension Hotkey: Equatable {
     static func == (lhs: Hotkey, rhs: Hotkey) -> Bool {
         lhs.keyCombination == rhs.keyCombination && lhs.action == rhs.action
     }
-}
 
-// MARK: Hotkey: Hashable
-extension Hotkey: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(keyCombination)
         hasher.combine(action)
     }
-}
-
-// MARK: - Logger
-extension Logger {
-    fileprivate static let hotkey = Logger(category: "Hotkey")
 }

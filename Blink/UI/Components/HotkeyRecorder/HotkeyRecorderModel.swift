@@ -10,62 +10,66 @@ import SwiftUI
 
 @MainActor @Observable
 final class HotkeyRecorderModel {
-    private weak var appState: AppState?
+    typealias BeginRecording = @MainActor (
+        @escaping (HotkeyKeyEvent) -> Void
+    ) -> Bool
+    typealias LoadReservedCombinations = @MainActor () -> Set<KeyCombination>
 
     private(set) var isRecording = false
     var isPresentingReservedByMacOSError = false
 
     let hotkey: Hotkey
 
-    @ObservationIgnored
-    private lazy var monitor = EventTap(
-        label: "HotkeyRecorder",
-        options: .defaultTap,
-        location: .hidEventTap,
-        place: .headInsertEventTap,
-        types: [.keyDown],
-        callback: { [weak self] proxy, type, event in
-            guard let self else { return event }
+    @ObservationIgnored private let beginRecording: BeginRecording
+    @ObservationIgnored private let endRecording: () -> Void
+    @ObservationIgnored private let assignCombination: (KeyCombination) -> Void
+    @ObservationIgnored private let loadReservedCombinations: LoadReservedCombinations
+    @ObservationIgnored private var reservedCombinations: Set<KeyCombination> = []
 
-            switch type {
-            case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                proxy.enable()
-                return event
-
-            case .keyDown:
-                guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
-                    return nil
-                }
-                handleKeyDown(event: event)
-                return nil
-
-            default:
-                return event
-            }
-        }
-    )
-
-    init(hotkey: Hotkey, appState: AppState?) {
+    init(
+        hotkey: Hotkey,
+        beginRecording: @escaping BeginRecording,
+        endRecording: @escaping () -> Void,
+        assignCombination: @escaping (KeyCombination) -> Void,
+        loadReservedCombinations: @escaping LoadReservedCombinations
+    ) {
         self.hotkey = hotkey
-        self.appState = appState
+        self.beginRecording = beginRecording
+        self.endRecording = endRecording
+        self.assignCombination = assignCombination
+        self.loadReservedCombinations = loadReservedCombinations
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            guard isRecording else { return }
+            endRecording()
+        }
     }
 
     func startRecording() {
         guard !isRecording else { return }
-        hotkey.disable()
-        monitor.enable()
+        // Carbon preference lookup happens on the button action, never in the
+        // suppressing HID callback.
+        reservedCombinations = loadReservedCombinations()
+        guard beginRecording({ [weak self] event in
+            self?.handleKeyEvent(event)
+        }) else {
+            NSSound.beep()
+            return
+        }
         isRecording = true
     }
 
     func stopRecording() {
         guard isRecording else { return }
-        monitor.disable()
-        hotkey.enable()
         isRecording = false
+        endRecording()
     }
 
-    private func handleKeyDown(event: CGEvent) {
-        let keyCombination = KeyCombination(cgEvent: event)
+    func handleKeyEvent(_ event: HotkeyKeyEvent) {
+        guard isRecording else { return }
+        let keyCombination = event.keyCombination
 
         guard !keyCombination.modifiers.isEmpty else {
             if keyCombination.key == .escape {
@@ -81,12 +85,12 @@ final class HotkeyRecorderModel {
             return
         }
 
-        guard !keyCombination.isReservedBySystem else {
+        guard !reservedCombinations.contains(keyCombination) else {
             isPresentingReservedByMacOSError = true
             return
         }
 
-        hotkey.keyCombination = keyCombination
+        assignCombination(keyCombination)
         stopRecording()
     }
 }

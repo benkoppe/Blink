@@ -24,7 +24,7 @@ enum Constants {
     static let copyrightString = Bundle.main.copyrightString!
 
     /// The bundle identifier of the app.
-    static let bundleIdentifier = Bundle.main.bundleIdentifier!
+    nonisolated static let bundleIdentifier = Bundle.main.bundleIdentifier!
 
     /// The identifier for the settings window.
     static let settingsWindowID = "SettingsWindow"

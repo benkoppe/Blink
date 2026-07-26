@@ -6,7 +6,54 @@
 //
 
 import Cocoa
+import Darwin
 import os.log
+
+nonisolated final class EventTapRecoveryLifecycle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var enabled = false
+
+    func beginEnable() -> UInt64 {
+        lock.withLock {
+            generation &+= 1
+            enabled = true
+            return generation
+        }
+    }
+
+    func disable() {
+        lock.withLock {
+            generation &+= 1
+            enabled = false
+        }
+    }
+
+    func recoveryToken() -> UInt64? {
+        lock.withLock { enabled ? generation : nil }
+    }
+
+    func performIfCurrent(_ token: UInt64, _ body: () -> Void) {
+        lock.withLock {
+            guard enabled, generation == token else { return }
+            body()
+        }
+    }
+
+    func isCurrent(_ token: UInt64) -> Bool {
+        lock.withLock { enabled && generation == token }
+    }
+
+    var intendsToBeEnabled: Bool {
+        lock.withLock { enabled }
+    }
+}
+
+nonisolated enum EventTapOperationalState: Equatable, Sendable {
+    case disabled
+    case armed
+    case degraded
+}
 
 /// A type that receives system events from various locations within the
 /// event stream.
@@ -87,6 +134,10 @@ final class EventTap {
 
     private let runLoop = CFRunLoopGetCurrent()
     private let mode: CFRunLoopMode = .commonModes
+    private let options: CGEventTapOptions
+    private let location: Location
+    private let place: CGEventTapPlacement
+    private let eventMask: CGEventMask
     private nonisolated let callback:
         (EventTap, CGEventTapProxy, CGEventType, CGEvent) -> Unmanaged<CGEvent>?
 
@@ -95,10 +146,14 @@ final class EventTap {
 
     /// A copy of the mach port stored without actor isolation so that the C
     /// event tap callback can re-enable the tap synchronously on timeout without
-    /// waiting for the main actor. Written once during `init` (before any
-    /// callback can fire) and never mutated afterward, so no synchronisation is
-    /// required.
+    /// waiting for the main actor. Recovery mutates this property on the tap's
+    /// run loop after the current callback returns.
     fileprivate nonisolated(unsafe) var tapMachPort: CFMachPort?
+    fileprivate nonisolated let recoveryLifecycle = EventTapRecoveryLifecycle()
+
+    #if DEBUG
+    fileprivate nonisolated let debugCallbackDelayMicroseconds: useconds_t
+    #endif
 
     /// The label associated with the event tap.
     let label: String
@@ -107,6 +162,20 @@ final class EventTap {
     var isEnabled: Bool {
         guard let machPort else { return false }
         return CGEvent.tapIsEnabled(tap: machPort)
+    }
+
+    var isValid: Bool {
+        guard let machPort, let source else { return false }
+        return CFMachPortIsValid(machPort) && CFRunLoopSourceIsValid(source)
+    }
+
+    var isHealthy: Bool {
+        isValid && isEnabled
+    }
+
+    var operationalState: EventTapOperationalState {
+        guard recoveryLifecycle.intendsToBeEnabled else { return .disabled }
+        return isHealthy ? .armed : .degraded
     }
 
     /// Creates a new event tap.
@@ -128,32 +197,26 @@ final class EventTap {
             @MainActor @escaping (_ proxy: Proxy, _ type: CGEventType, _ event: CGEvent) -> CGEvent?
     ) {
         self.label = label
+        #if DEBUG
+        let milliseconds = Int(
+            ProcessInfo.processInfo.environment["BLINK_EVENT_TAP_DELAY_MS"] ?? "0"
+        ) ?? 0
+        self.debugCallbackDelayMicroseconds = useconds_t(
+            min(max(milliseconds, 0), 10_000) * 1_000
+        )
+        #endif
+        self.options = options
+        self.location = location
+        self.place = place
+        self.eventMask = types.reduce(into: 0) { $0 |= 1 << $1.rawValue }
         self.callback = { @MainActor tap, pointer, type, event in
             callback(Proxy(tap: tap, pointer: pointer), type, event).map(Unmanaged.passUnretained)
         }
-        guard
-            let machPort = Self.createTapMachPort(
-                location: location,
-                place: place,
-                options: options,
-                eventsOfInterest: types.reduce(into: 0) { $0 |= 1 << $1.rawValue },
-                callback: handleEvent,
-                userInfo: Unmanaged.passUnretained(self).toOpaque()
-            )
-        else {
-            Logger.eventTap.error("Error creating mach port for event tap \"\(self.label)\"")
-            return
-        }
-        guard let source = CFMachPortCreateRunLoopSource(nil, machPort, 0) else {
-            Logger.eventTap.error("Error creating run loop source for event tap \"\(self.label)\"")
-            return
-        }
-        self.machPort = machPort
-        self.tapMachPort = machPort
-        self.source = source
+        installComponents()
     }
 
     deinit {
+        recoveryLifecycle.disable()
         guard let machPort else { return }
         CFRunLoopRemoveSource(runLoop, source, mode)
         CGEvent.tapEnable(tap: machPort, enable: false)
@@ -227,20 +290,105 @@ final class EventTap {
         body(runLoop, source, machPort)
     }
 
+    @discardableResult
+    private func installComponents() -> Bool {
+        guard
+            let machPort = Self.createTapMachPort(
+                location: location,
+                place: place,
+                options: options,
+                eventsOfInterest: eventMask,
+                callback: handleEvent,
+                userInfo: Unmanaged.passUnretained(self).toOpaque()
+            )
+        else {
+            Logger.eventTap.error("Error creating mach port for event tap \"\(label)\"")
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(label) creation failed"
+            )
+            return false
+        }
+
+        guard let source = CFMachPortCreateRunLoopSource(nil, machPort, 0) else {
+            CFMachPortInvalidate(machPort)
+            Logger.eventTap.error("Error creating run loop source for event tap \"\(label)\"")
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(label) run loop source creation failed"
+            )
+            return false
+        }
+
+        self.machPort = machPort
+        self.tapMachPort = machPort
+        self.source = source
+        DiagnosticsStore.shared.record("event-tap", "\(label) created")
+        return true
+    }
+
+    private func removeComponents() {
+        if let source {
+            CFRunLoopRemoveSource(runLoop, source, mode)
+        }
+        if let machPort {
+            CGEvent.tapEnable(tap: machPort, enable: false)
+            CFMachPortInvalidate(machPort)
+        }
+
+        source = nil
+        machPort = nil
+        tapMachPort = nil
+    }
+
     /// Enables the event tap.
     func enable() {
+        _ = recoveryLifecycle.beginEnable()
+        enableComponents()
+    }
+
+    private func enableComponents() {
+        if !isValid {
+            removeComponents()
+            guard installComponents() else { return }
+        }
+
         withUnwrappedComponents { runLoop, source, machPort in
             CFRunLoopAddSource(runLoop, source, mode)
             CGEvent.tapEnable(tap: machPort, enable: true)
         }
     }
 
+    func recoverIfNeeded() {
+        guard let generation = recoveryLifecycle.recoveryToken() else { return }
+        recoverIfNeeded(generation: generation)
+    }
+
+    fileprivate func recoverIfNeeded(generation: UInt64) {
+        guard recoveryLifecycle.isCurrent(generation), !isHealthy else { return }
+
+        if isValid {
+            enableComponents()
+        }
+
+        guard recoveryLifecycle.isCurrent(generation), !isHealthy else { return }
+        Logger.eventTap.warning("Recreating unhealthy event tap \"\(label)\"")
+        removeComponents()
+        enableComponents()
+        guard recoveryLifecycle.isCurrent(generation), isHealthy else { return }
+        DiagnosticsStore.shared.record("event-tap", "\(label) recreated")
+    }
+
     /// Enables the event tap with the given timeout.
     func enable(timeout: Duration, onTimeout: @escaping () -> Void) {
-        enable()
+        let generation = recoveryLifecycle.beginEnable()
+        enableComponents()
         Task { [weak self] in
-            try await Task.sleep(for: timeout)
-            if self?.isEnabled == true {
+            try? await Task.sleep(for: timeout)
+            if let self,
+                self.recoveryLifecycle.isCurrent(generation),
+                self.isEnabled
+            {
                 onTimeout()
             }
         }
@@ -248,6 +396,7 @@ final class EventTap {
 
     /// Disables the event tap.
     func disable() {
+        recoveryLifecycle.disable()
         withUnwrappedComponents { runLoop, source, machPort in
             CFRunLoopRemoveSource(runLoop, source, mode)
             CGEvent.tapEnable(tap: machPort, enable: false)
@@ -267,14 +416,26 @@ private nonisolated func handleEvent(
     }
     let eventTap = Unmanaged<EventTap>.fromOpaque(refcon).takeUnretainedValue()
 
+    #if DEBUG
+    if eventTap.debugCallbackDelayMicroseconds > 0,
+        type != .tapDisabledByTimeout,
+        type != .tapDisabledByUserInput
+    {
+        usleep(eventTap.debugCallbackDelayMicroseconds)
+    }
+    #endif
+
     // When macOS disables the tap due to a timeout or user-input event, we must
     // re-enable it *synchronously* here in the C callback before returning.
     // Relying solely on the @MainActor callback to call proxy.enable() is unsafe:
     // the actor hop is asynchronous, and by the time the main actor runs the
     // closure the kernel's re-enable window has already closed, leaving the tap
     // permanently dead until the next explicit enable() call (which never comes).
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let port = eventTap.tapMachPort {
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput,
+        let recoveryGeneration = eventTap.recoveryLifecycle.recoveryToken()
+    {
+        eventTap.recoveryLifecycle.performIfCurrent(recoveryGeneration) {
+            guard let port = eventTap.tapMachPort else { return }
             os_log(
                 .error,
                 log: OSLog(subsystem: "Blink", category: "EventTap"),
@@ -283,6 +444,13 @@ private nonisolated func handleEvent(
                 type.rawValue
             )
             CGEvent.tapEnable(tap: port, enable: true)
+        }
+        Task { @MainActor in
+            DiagnosticsStore.shared.record(
+                "event-tap",
+                "\(eventTap.label) disabled by system type=\(type.rawValue)"
+            )
+            eventTap.recoverIfNeeded(generation: recoveryGeneration)
         }
         // Still dispatch to the @MainActor callback so callers can reset state.
     }
