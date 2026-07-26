@@ -7,3 +7,6 @@ buildServer.json
 
 # nix
 .direnv
+
+# ai
+.claude
