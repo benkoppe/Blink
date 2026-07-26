@@ -70,6 +70,10 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
             sessionContext = nil
         }
     }
+
+    func drain(completion: @escaping @Sendable () -> Void) {
+        queue.async(execute: completion)
+    }
 }
 
 @MainActor
@@ -82,6 +86,8 @@ final class SwipeGestureMonitor {
     var isContextValidBeforeDispatch: ((GestureSessionContext) -> Bool)?
     var onRecognitionSessionBegan: ((UInt64) -> Void)?
     var onRecognitionSessionEnded: ((UInt64) -> Void)?
+    var onPhysicalContactEnded: ((UInt64) -> Void)?
+    var onOperationalStateChanged: ((EventTapOperationalState) -> Void)?
 
     private var eventTap: EventTap?
     private let worker: SwipeRecognitionWorker
@@ -90,17 +96,29 @@ final class SwipeGestureMonitor {
         target: .main
     )
     private let requiresHealthyTapForDispatch: Bool
+    private let contactInactivityDuration: Duration
     private var monitorEpoch: UInt64 = 0
-    private var recognitionSessionSequence: UInt64 = 0
-    private var recognitionSessionIsActive = false
-    private var activeTouchIdentities: Set<String> = []
+    private var contactLifetime = PhysicalContactLifetimeState()
+    private var contactInactivityTask: Task<Void, Never>?
+    private var deliverableRecognitionTokens: Set<RecognitionToken> = []
+
+    var operationalState: EventTapOperationalState {
+        eventTap?.operationalState ?? .disabled
+    }
+
+    private struct RecognitionToken: Hashable, Sendable {
+        let epoch: UInt64
+        let contactID: UInt64
+    }
 
     init(
         worker: SwipeRecognitionWorker = SwipeRecognitionWorker(),
-        requiresHealthyTapForDispatch: Bool = true
+        requiresHealthyTapForDispatch: Bool = true,
+        contactInactivityDuration: Duration = .seconds(2)
     ) {
         self.worker = worker
         self.requiresHealthyTapForDispatch = requiresHealthyTapForDispatch
+        self.contactInactivityDuration = contactInactivityDuration
     }
 
     func startMonitoring() {
@@ -124,7 +142,13 @@ final class SwipeGestureMonitor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                    self.onOperationalStateChanged?(.degraded)
                     self.invalidateRecognition()
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.eventTap?.recoverIfNeeded()
+                        self.onOperationalStateChanged?(self.operationalState)
+                    }
                     return event
                 case .gesture:
                     guard
@@ -146,14 +170,18 @@ final class SwipeGestureMonitor {
 
         tap.enable()
         eventTap = tap
+        onOperationalStateChanged?(operationalState)
     }
 
     func stopMonitoring() {
         monitorEpoch &+= 1
-        recognitionSessionIsActive = false
-        activeTouchIdentities.removeAll(keepingCapacity: true)
+        contactInactivityTask?.cancel()
+        contactInactivityTask = nil
+        contactLifetime.reset()
+        deliverableRecognitionTokens.removeAll(keepingCapacity: true)
         eventTap?.disable()
         eventTap = nil
+        onOperationalStateChanged?(.disabled)
         worker.reset()
     }
 
@@ -164,38 +192,43 @@ final class SwipeGestureMonitor {
 
     func invalidateRecognition() {
         monitorEpoch &+= 1
-        recognitionSessionIsActive = false
-        activeTouchIdentities.removeAll(keepingCapacity: true)
+        contactInactivityTask?.cancel()
+        contactInactivityTask = nil
+        if let transition = contactLifetime.interrupt(),
+            case .ended(let id) = transition
+        {
+            onPhysicalContactEnded?(id)
+        }
+        deliverableRecognitionTokens.removeAll(keepingCapacity: true)
         worker.reset()
     }
 
     func consume(_ sample: GestureSample) {
-        // Companion gesture events can contain no NSTouch objects between Dock
-        // segments even while every finger remains down. Only explicit ended
-        // touches, or replacement by a disjoint identity set, end a physical
-        // contact session.
-        guard !sample.touches.isEmpty else { return }
-        let currentIdentities = Set(
-            sample.touches.lazy.filter { !$0.isEnded }.map(\.identity)
-        )
-        guard !currentIdentities.isEmpty else {
-            activeTouchIdentities.removeAll(keepingCapacity: true)
-            finishRecognitionSession()
-            return
+        let transitions = contactLifetime.consume(sample)
+        var observedActivity = false
+        for transition in transitions {
+            switch transition {
+            case .began(let id):
+                observedActivity = true
+                let token = RecognitionToken(epoch: monitorEpoch, contactID: id)
+                deliverableRecognitionTokens.insert(token)
+                onRecognitionSessionBegan?(id)
+            case .ended(let id):
+                finishRecognitionSession(id: id)
+            case .sample(let id):
+                observedActivity = true
+                consume(sample, contactID: id)
+            }
         }
+        if observedActivity {
+            scheduleContactInactivityIfNeeded()
+        } else if contactLifetime.activeID == nil {
+            contactInactivityTask?.cancel()
+            contactInactivityTask = nil
+        }
+    }
 
-        if recognitionSessionIsActive,
-            !activeTouchIdentities.isEmpty,
-            activeTouchIdentities.isDisjoint(with: currentIdentities)
-        {
-            finishRecognitionSession()
-        }
-        if !recognitionSessionIsActive {
-            recognitionSessionSequence &+= 1
-            recognitionSessionIsActive = true
-            onRecognitionSessionBegan?(recognitionSessionSequence)
-        }
-        activeTouchIdentities = currentIdentities
+    private func consume(_ sample: GestureSample, contactID: UInt64) {
         let configuration = SwipeRecognizer.Configuration(
             flipsDirection: flipSwipeDirection,
             allowsSameDirectionRepeat: allowSameDirectionRepeat,
@@ -203,6 +236,10 @@ final class SwipeGestureMonitor {
         )
         let context = contextForRecognition?()
         let queuedEpoch = monitorEpoch
+        let recognitionToken = RecognitionToken(
+            epoch: queuedEpoch,
+            contactID: contactID
+        )
 
         worker.consume(
             sample,
@@ -215,6 +252,7 @@ final class SwipeGestureMonitor {
                     guard
                         let self,
                         self.monitorEpoch == queuedEpoch,
+                        self.deliverableRecognitionTokens.contains(recognitionToken),
                         (!self.requiresHealthyTapForDispatch
                             || self.eventTap?.isHealthy == true),
                         self.isContextValidBeforeDispatch?(result.context) ?? true
@@ -237,23 +275,55 @@ final class SwipeGestureMonitor {
     /// Places normal teardown behind every recognition already accepted by the
     /// serial worker. The serial delivery queue preserves that order on main.
     func finishRecognitionSession() {
-        guard recognitionSessionIsActive else { return }
-        recognitionSessionIsActive = false
-        activeTouchIdentities.removeAll(keepingCapacity: true)
-        let queuedEpoch = monitorEpoch
-        let endedSession = recognitionSessionSequence
+        guard let transition = contactLifetime.finish(),
+            case .ended(let id) = transition
+        else {
+            return
+        }
+        finishRecognitionSession(id: id)
+    }
+
+    private func finishRecognitionSession(id: UInt64) {
+        let token = RecognitionToken(epoch: monitorEpoch, contactID: id)
+        onPhysicalContactEnded?(id)
         worker.finishSession { [weak self] in
             self?.deliveryQueue.async { [weak self] in
                 MainActor.assumeIsolated {
-                    guard
-                        let self,
-                        self.monitorEpoch == queuedEpoch,
-                        self.recognitionSessionSequence == endedSession,
-                        !self.recognitionSessionIsActive
-                    else {
-                        return
+                    guard let self else { return }
+                    self.deliverableRecognitionTokens.remove(token)
+                    if self.contactLifetime.activeID == nil {
+                        self.onRecognitionSessionEnded?(id)
                     }
-                    self.onRecognitionSessionEnded?(endedSession)
+                }
+            }
+        }
+    }
+
+    private func scheduleContactInactivityIfNeeded() {
+        contactInactivityTask?.cancel()
+        guard let activityToken = contactLifetime.activityToken else {
+            contactInactivityTask = nil
+            return
+        }
+        let duration = contactInactivityDuration
+        contactInactivityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            guard let transition = contactLifetime.expire(
+                activityToken: activityToken
+            ), case .ended(let id) = transition else {
+                return
+            }
+            contactInactivityTask = nil
+            finishRecognitionSession(id: id)
+        }
+    }
+
+    func drain() async {
+        await withCheckedContinuation { continuation in
+            worker.drain { [deliveryQueue] in
+                deliveryQueue.async {
+                    continuation.resume()
                 }
             }
         }

@@ -43,6 +43,16 @@ nonisolated final class EventTapRecoveryLifecycle: @unchecked Sendable {
     func isCurrent(_ token: UInt64) -> Bool {
         lock.withLock { enabled && generation == token }
     }
+
+    var intendsToBeEnabled: Bool {
+        lock.withLock { enabled }
+    }
+}
+
+nonisolated enum EventTapOperationalState: Equatable, Sendable {
+    case disabled
+    case armed
+    case degraded
 }
 
 /// A type that receives system events from various locations within the
@@ -161,6 +171,11 @@ final class EventTap {
 
     var isHealthy: Bool {
         isValid && isEnabled
+    }
+
+    var operationalState: EventTapOperationalState {
+        guard recoveryLifecycle.intendsToBeEnabled else { return .disabled }
+        return isHealthy ? .armed : .degraded
     }
 
     /// Creates a new event tap.

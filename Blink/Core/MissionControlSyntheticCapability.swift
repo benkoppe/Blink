@@ -1,41 +1,62 @@
 import Foundation
 
 nonisolated final class MissionControlSyntheticCapability: @unchecked Sendable {
-    private struct Failure: Equatable {
-        let displayID: DisplayID
-        let uptime: TimeInterval
+    static let confirmedNonmovementThreshold = 2
+
+    private struct DisplayState {
+        var consecutiveConfirmedNonmovement = 0
+        var lastConfirmedNonmovementUptime: TimeInterval?
+        var openedAtUptime: TimeInterval?
     }
 
     private let lock = NSLock()
-    private var failure: Failure?
+    private var states: [DisplayID: DisplayState] = [:]
 
-    init(initialState: MissionControlSyntheticState = .available) {
-        if initialState == .unavailableUntilOverlayExit {
-            // Tests and recovery state created without a display cannot be
-            // reopened by an unrelated observation.
-            failure = Failure(
-                displayID: DisplayID(rawValue: "unknown-display")!,
-                uptime: ProcessInfo.processInfo.systemUptime
-            )
-        }
-    }
-
-    var state: MissionControlSyntheticState {
+    func state(on displayID: DisplayID) -> MissionControlSyntheticState {
         lock.withLock {
-            failure == nil ? .available : .unavailableUntilOverlayExit
+            states[displayID]?.openedAtUptime == nil
+                ? .available : .unavailableUntilOverlayExit
         }
     }
 
     @discardableResult
-    func markUnavailable(
+    func recordPostRejection(
         on displayID: DisplayID,
         at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> Bool {
         lock.withLock {
-            let candidate = Failure(displayID: displayID, uptime: uptime)
-            guard failure != candidate else { return false }
-            failure = candidate
+            var state = states[displayID] ?? DisplayState()
+            guard state.openedAtUptime == nil else { return false }
+            state.openedAtUptime = uptime
+            states[displayID] = state
             return true
+        }
+    }
+
+    @discardableResult
+    func recordConfirmedNonmovement(
+        on displayID: DisplayID,
+        at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
+        lock.withLock {
+            var state = states[displayID] ?? DisplayState()
+            guard state.openedAtUptime == nil else { return false }
+            state.consecutiveConfirmedNonmovement += 1
+            state.lastConfirmedNonmovementUptime = uptime
+            if state.consecutiveConfirmedNonmovement >= Self.confirmedNonmovementThreshold {
+                state.openedAtUptime = uptime
+            }
+            states[displayID] = state
+            return state.openedAtUptime != nil
+        }
+    }
+
+    func recordAuthoritativeAcknowledgement(on displayID: DisplayID) {
+        lock.withLock {
+            guard var state = states[displayID], state.openedAtUptime == nil else { return }
+            state.consecutiveConfirmedNonmovement = 0
+            state.lastConfirmedNonmovementUptime = nil
+            states[displayID] = state
         }
     }
 
@@ -47,15 +68,16 @@ nonisolated final class MissionControlSyntheticCapability: @unchecked Sendable {
     ) -> Bool {
         guard mode == .none else { return false }
         return lock.withLock {
-            guard
-                let failure,
-                failure.displayID == displayID,
-                sampledAtUptime > failure.uptime
-            else {
-                return false
-            }
-            self.failure = nil
-            return true
+            guard var state = states[displayID] else { return false }
+            let failureUptime = state.openedAtUptime
+                ?? state.lastConfirmedNonmovementUptime
+            guard let failureUptime, sampledAtUptime > failureUptime else { return false }
+            let recoveredCircuit = state.openedAtUptime != nil
+            state.openedAtUptime = nil
+            state.consecutiveConfirmedNonmovement = 0
+            state.lastConfirmedNonmovementUptime = nil
+            states[displayID] = state
+            return recoveredCircuit
         }
     }
 }

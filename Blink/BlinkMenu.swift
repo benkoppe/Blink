@@ -12,9 +12,10 @@ struct BlinkMenu: View {
     private var switcher: SpaceSwitcher { appState.spaceSwitcher }
 
     var body: some View {
-        switchSection
+        let actionContext = switcher.captureMenuActionContext()
+        switchSection(actionContext)
 
-        jumpToSpaceSection
+        jumpToSpaceSection(actionContext)
 
         Divider()
 
@@ -29,19 +30,25 @@ struct BlinkMenu: View {
         return hotkey.keyCombination
     }
 
-    private var switchSection: some View {
+    private func switchSection(_ context: SpaceActionContext?) -> some View {
         VStack {
             Button("Switch left", systemImage: "arrow.left") {
-                appState.actionDispatcher.dispatch(.step(.left), source: .menu)
+                guard let context else { return }
+                appState.actionDispatcher.dispatch(
+                    context.request(for: .step(.left), source: .menu)
+                )
             }
             .keyboardShortcut(from: hotkey(for: .left))
-            .disabled(!switcher.canMoveLeft())
+            .disabled(context?.canSubmit(.step(.left)) != true)
 
             Button("Switch right", systemImage: "arrow.right") {
-                appState.actionDispatcher.dispatch(.step(.right), source: .menu)
+                guard let context else { return }
+                appState.actionDispatcher.dispatch(
+                    context.request(for: .step(.right), source: .menu)
+                )
             }
             .keyboardShortcut(from: hotkey(for: .right))
-            .disabled(!switcher.canMoveRight())
+            .disabled(context?.canSubmit(.step(.right)) != true)
         }
     }
 
@@ -50,44 +57,46 @@ struct BlinkMenu: View {
         case index(_ index: Int)
     }
 
-    private var jumpSelection: Binding<JumpSelection?> {
+    private func jumpSelection(
+        _ context: SpaceActionContext
+    ) -> Binding<JumpSelection?> {
         Binding(
             get: {
-                guard let index = switcher.spaceInfo?.currentIndex else { return nil }
-                return .index(index)
+                .index(context.topology.currentIndex)
             },
             set: { newValue in
                 guard let selection = newValue else { return }
                 switch selection {
                 case .lastSpace:
                     appState.actionDispatcher.dispatch(
-                        SpaceSwitchAction.lastSpace,
-                        source: .menu
+                        context.request(for: .lastSpace, source: .menu)
                     )
                 case .index(let index):
-                    appState.actionDispatcher.dispatch(.index(index), source: .menu)
+                    appState.actionDispatcher.dispatch(
+                        context.request(for: .index(index), source: .menu)
+                    )
                 }
             }
         )
     }
 
-    private var jumpToSpaceSection: some View {
+    private func jumpToSpaceSection(_ context: SpaceActionContext?) -> some View {
         Group {
-            if let info = switcher.spaceInfo, info.spaceCount > 0 {
+            if let context, context.spaceInfo.spaceCount > 0 {
                 Divider()
                 Picker(
                     "Jump to...", systemImage: "square.and.line.vertical.and.square",
-                    selection: jumpSelection
+                    selection: jumpSelection(context)
                 ) {
                     Text("Last Space")
-                        .selectionDisabled(!switcher.canSwitchToLastSpace())
+                        .selectionDisabled(!context.canSubmit(.lastSpace))
                         .keyboardShortcut(from: hotkey(for: BoundAction.lastSpace))
                         .tag(Optional(JumpSelection.lastSpace))
 
                     Divider()
 
-                    ForEach(0..<info.spaceCount, id: \.self) { index in
-                        Text("Space \(index + 1)")
+                    ForEach(0..<context.spaceInfo.spaceCount, id: \.self) { index in
+                        Text(context.title(forSpaceAt: index))
                             .keyboardShortcut(
                                 from: BoundAction.indexedSpaceActions.indices.contains(index)
                                     ? hotkey(for: BoundAction.indexedSpaceActions[index])

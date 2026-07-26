@@ -9,6 +9,60 @@ nonisolated struct WindowDescriptor: Equatable, Sendable {
     let bounds: CGRect
 }
 
+nonisolated enum WindowServerParseResult: Equatable, Sendable {
+    case verified([WindowDescriptor])
+    case unknown
+}
+
+/// Parses only Dock records needed by overlay classification. A record that
+/// identifies itself as Dock is never discarded: incomplete or unverifiable
+/// evidence makes the entire observation unknown.
+nonisolated struct WindowServerWindowParser: Sendable {
+    func parse(
+        _ rawWindows: [[String: Any]],
+        verifiedDockBundleIDsByPID: [pid_t: String]
+    ) -> WindowServerParseResult {
+        var windows: [WindowDescriptor] = []
+
+        for value in rawWindows {
+            guard value[kCGWindowOwnerName as String] as? String == "Dock" else {
+                continue
+            }
+            guard
+                let ownerPID = integer(value[kCGWindowOwnerPID as String]).map(pid_t.init),
+                verifiedDockBundleIDsByPID[ownerPID] == "com.apple.dock",
+                let layer = integer(value[kCGWindowLayer as String]),
+                let rawBounds = value[kCGWindowBounds as String] as? NSDictionary,
+                let bounds = CGRect(dictionaryRepresentation: rawBounds)
+            else {
+                return .unknown
+            }
+
+            windows.append(
+                WindowDescriptor(
+                    ownerName: "Dock",
+                    ownerBundleID: "com.apple.dock",
+                    layer: layer,
+                    bounds: bounds
+                )
+            )
+        }
+
+        return .verified(windows)
+    }
+
+    private func integer(_ value: Any?) -> Int? {
+        switch value {
+        case let value as Int:
+            value
+        case let value as NSNumber:
+            value.intValue
+        default:
+            nil
+        }
+    }
+}
+
 nonisolated struct OverlayClassifier: Sendable {
     private enum Layer {
         static let thumbnail = 17
@@ -167,6 +221,7 @@ private extension CGRect {
 nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
     let displayLocator: any DisplayLocating
     let classifier = OverlayClassifier()
+    let parser = WindowServerWindowParser()
 
     init(displayLocator: any DisplayLocating = DisplayLocator()) {
         self.displayLocator = displayLocator
@@ -194,39 +249,26 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
             guard value[kCGWindowOwnerName as String] as? String == "Dock" else {
                 return nil
             }
-            return value[kCGWindowOwnerPID as String] as? pid_t
+            if let pid = value[kCGWindowOwnerPID as String] as? Int {
+                return pid_t(pid)
+            }
+            if let pid = value[kCGWindowOwnerPID as String] as? NSNumber {
+                return pid_t(pid.intValue)
+            }
+            return nil
         })
-        let dockBundleIDsByPID = Dictionary(
-            uniqueKeysWithValues: dockPIDs.map { pid in
-                (pid, NSRunningApplication(processIdentifier: pid)?.bundleIdentifier)
+        let verifiedDockBundleIDsByPID = Dictionary(
+            uniqueKeysWithValues: dockPIDs.compactMap { pid in
+                NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map {
+                    (pid, $0)
+                }
             }
         )
-
-        let windows = rawWindows.compactMap { value -> WindowDescriptor? in
-            guard
-                let ownerName = value[kCGWindowOwnerName as String] as? String,
-                let layer = value[kCGWindowLayer as String] as? Int,
-                let rawBounds = value[kCGWindowBounds as String] as? NSDictionary,
-                let bounds = CGRect(dictionaryRepresentation: rawBounds)
-            else {
-                return nil
-            }
-
-            let ownerBundleID: String? =
-                if ownerName == "Dock",
-                    let ownerPID = value[kCGWindowOwnerPID as String] as? pid_t
-                {
-                    dockBundleIDsByPID[ownerPID] ?? nil
-                } else {
-                    nil
-                }
-
-            return WindowDescriptor(
-                ownerName: ownerName,
-                ownerBundleID: ownerBundleID,
-                layer: layer,
-                bounds: bounds
-            )
+        guard case .verified(let windows) = parser.parse(
+            rawWindows,
+            verifiedDockBundleIDsByPID: verifiedDockBundleIDsByPID
+        ) else {
+            return .unknown
         }
 
         return classifier.classify(

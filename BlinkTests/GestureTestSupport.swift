@@ -4,23 +4,14 @@ import Testing
 
 @testable import Blink
 
-func waitUntil(
-    _ condition: @escaping @MainActor () async -> Bool
-) async {
-    for _ in 0..<1_000 {
-        if await condition() { return }
-        try? await Task.sleep(for: .milliseconds(1))
-    }
-    Issue.record("Timed out waiting for gesture test condition")
-}
-
 func routingLease(
     mode: OverlayMode = .none,
     generation: UInt64 = 1,
     displayID: DisplayID,
     sampledAtUptime: TimeInterval = 100,
     expirationUptime: TimeInterval = 130,
-    requestSequence: UInt64 = 1
+    requestSequence: UInt64 = 1,
+    evidenceToken: UInt64? = nil
 ) -> OverlayRoutingLease {
     OverlayRoutingLease(
         generation: generation,
@@ -28,7 +19,8 @@ func routingLease(
         overlayMode: mode,
         sampledAtUptime: sampledAtUptime,
         expirationUptime: expirationUptime,
-        requestSequence: requestSequence
+        requestSequence: requestSequence,
+        evidenceToken: evidenceToken
     )
 }
 
@@ -74,6 +66,7 @@ nonisolated final class RecognitionProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storedCompletionCount = 0
     private var storedRecognitions: [SwipeRecognitionWorker.Recognition] = []
+    private var completionWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     var completionCount: Int { lock.withLock { storedCompletionCount } }
     var recognitions: [SwipeRecognitionWorker.Recognition] {
@@ -81,11 +74,28 @@ nonisolated final class RecognitionProbe: @unchecked Sendable {
     }
 
     func record(_ recognition: SwipeRecognitionWorker.Recognition?) {
-        lock.withLock {
+        let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
             storedCompletionCount += 1
             if let recognition {
                 storedRecognitions.append(recognition)
             }
+            let ready = completionWaiters
+                .filter { storedCompletionCount >= $0.0 }
+                .map(\.1)
+            completionWaiters.removeAll { storedCompletionCount >= $0.0 }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+    }
+
+    func waitForCompletionCount(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            let isReady = lock.withLock {
+                guard storedCompletionCount < count else { return true }
+                completionWaiters.append((count, continuation))
+                return false
+            }
+            if isReady { continuation.resume() }
         }
     }
 }
@@ -107,6 +117,7 @@ nonisolated final class ControlledOverlayDetector: OverlayDetecting, @unchecked 
     private let modes: [OverlayMode]
     private var blockedSamples: Set<Int>
     private var sampleCount = 0
+    private var startedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     init(modes: [OverlayMode], blockedSamples: Set<Int> = []) {
         self.modes = modes
@@ -122,7 +133,10 @@ nonisolated final class ControlledOverlayDetector: OverlayDetecting, @unchecked 
         condition.lock()
         sampleCount += 1
         let sample = sampleCount
+        let ready = startedWaiters.filter { sample >= $0.0 }
+        startedWaiters.removeAll { sample >= $0.0 }
         condition.broadcast()
+        ready.forEach { $0.1.resume() }
         while blockedSamples.contains(sample) {
             condition.wait()
         }
@@ -131,6 +145,18 @@ nonisolated final class ControlledOverlayDetector: OverlayDetecting, @unchecked 
             : .unknown
         condition.unlock()
         return mode
+    }
+
+    func waitUntilStarted(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            condition.withLock {
+                if sampleCount >= count {
+                    continuation.resume()
+                } else {
+                    startedWaiters.append((count, continuation))
+                }
+            }
+        }
     }
 
     func release(sample: Int) {
@@ -145,6 +171,7 @@ nonisolated final class RoutingLeaseSink: @unchecked Sendable {
     private let lock = NSLock()
     private var state = OverlayRoutingLeaseState()
     private var storedLeases: [OverlayRoutingLease] = []
+    private var leaseWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     var lease: OverlayRoutingLease? {
         lock.withLock { state.lease }
@@ -162,6 +189,21 @@ nonisolated final class RoutingLeaseSink: @unchecked Sendable {
         lock.withLock {
             guard state.accept(lease) else { return }
             storedLeases.append(lease)
+            let ready = leaseWaiters.filter { storedLeases.count >= $0.0 }
+            leaseWaiters.removeAll { storedLeases.count >= $0.0 }
+            ready.forEach { $0.1.resume() }
+        }
+    }
+
+    func waitUntilLeaseCount(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                if storedLeases.count >= count {
+                    continuation.resume()
+                } else {
+                    leaseWaiters.append((count, continuation))
+                }
+            }
         }
     }
 }
@@ -188,6 +230,11 @@ actor RoutingTestSleeper {
     }
 
     private var waiters: [Waiter] = []
+    private var registrationWaiters: [(
+        duration: TimeInterval,
+        continuation: CheckedContinuation<Void, Never>
+    )] = []
+    private var emptyWaiters: [CheckedContinuation<Void, Never>] = []
 
     var waitingDurations: [TimeInterval] {
         waiters.map(\.duration)
@@ -208,6 +255,12 @@ actor RoutingTestSleeper {
                             continuation: continuation
                         )
                     )
+                    let ready = registrationWaiters.indices.reversed().filter {
+                        registrationWaiters[$0].duration == duration
+                    }
+                    for index in ready {
+                        registrationWaiters.remove(at: index).continuation.resume()
+                    }
                 }
             }
         } onCancel: {
@@ -216,9 +269,17 @@ actor RoutingTestSleeper {
         try Task.checkCancellation()
     }
 
+    func waitUntilWaiting(for duration: TimeInterval) async {
+        if waiters.contains(where: { $0.duration == duration }) { return }
+        await withCheckedContinuation { continuation in
+            registrationWaiters.append((duration, continuation))
+        }
+    }
+
     func resumeFirst() {
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().continuation.resume()
+        notifyIfEmpty()
     }
 
     func resumeFirst(for duration: TimeInterval) {
@@ -226,10 +287,24 @@ actor RoutingTestSleeper {
             return
         }
         waiters.remove(at: index).continuation.resume()
+        notifyIfEmpty()
+    }
+
+    func waitUntilEmpty() async {
+        guard !waiters.isEmpty else { return }
+        await withCheckedContinuation { emptyWaiters.append($0) }
     }
 
     private func resume(id: UUID) {
         guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
         waiters.remove(at: index).continuation.resume()
+        notifyIfEmpty()
+    }
+
+    private func notifyIfEmpty() {
+        guard waiters.isEmpty else { return }
+        let ready = emptyWaiters
+        emptyWaiters.removeAll()
+        ready.forEach { $0.resume() }
     }
 }

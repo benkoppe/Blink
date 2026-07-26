@@ -9,6 +9,17 @@ import AppKit
 import Foundation
 import ObservableDefaults
 
+nonisolated enum NativeSuppressionReadiness {
+    static func canOwnInput(
+        suppressionState: EventTapOperationalState,
+        recognitionRequired: Bool,
+        recognitionState: EventTapOperationalState
+    ) -> Bool {
+        suppressionState == .armed
+            && (!recognitionRequired || recognitionState == .armed)
+    }
+}
+
 @MainActor @ObservableDefaults(autoInit: false)
 final class GestureSettingsManager {
     @ObservableOnly private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
@@ -21,17 +32,20 @@ final class GestureSettingsManager {
     @Ignore private let dispatcher: ActionDispatcher
     @Ignore private let generalSettings: GeneralSettingsManager
     @Ignore private let missionControlCapability: MissionControlSyntheticCapability
+    @Ignore private let userDefaults: UserDefaults
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
     @Ignore private let displayLocator: any DisplayLocating
-    @Ignore private let overlayDetector: CoreGraphicsOverlayDetector
     @Ignore private let overlayModeSampler: OverlayModeSampler
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
     @Ignore private var displayObservers: [NSObjectProtocol] = []
     @Ignore private var routingState = OverlayRoutingLeaseState()
     @Ignore private var gestureGeneration: UInt64 = 0
+    @Ignore private var evidenceTokenSequence: UInt64 = 0
     @Ignore private var overlaySamplingEnabled = false
     @Ignore private var systemSwipeSuppressionEnabled = false
+    @Ignore private var recognitionRequiredForSuppression = false
+    @Ignore private var recognitionOperationalState: EventTapOperationalState = .disabled
     @Ignore private var touchRoutingCoordinator = TouchRoutingSessionCoordinator()
     @Ignore private var isShutdown = false
 
@@ -50,15 +64,17 @@ final class GestureSettingsManager {
     init(
         dispatcher: ActionDispatcher,
         generalSettings: GeneralSettingsManager,
-        missionControlCapability: MissionControlSyntheticCapability
+        missionControlCapability: MissionControlSyntheticCapability,
+        userDefaults: UserDefaults = .standard
     ) {
+        self._userDefaults = userDefaults
         self.dispatcher = dispatcher
         self.generalSettings = generalSettings
         self.missionControlCapability = missionControlCapability
+        self.userDefaults = userDefaults
         let displayLocator = DisplayLocator()
         let overlayDetector = CoreGraphicsOverlayDetector(displayLocator: displayLocator)
         self.displayLocator = displayLocator
-        self.overlayDetector = overlayDetector
         self.overlayModeSampler = OverlayModeSampler(
             displayLocator: displayLocator,
             detector: overlayDetector
@@ -69,7 +85,7 @@ final class GestureSettingsManager {
             if let context = touchRoutingCoordinator.selectedContext {
                 return context
             }
-            guard !systemSwipeSuppressionEnabled else { return nil }
+            guard systemSwipeSuppressor.operationalState != .armed else { return nil }
             return bindCachedGestureContextIfNeeded()
         }
         monitor.isContextValidBeforeDispatch = { [weak self] context in
@@ -78,11 +94,25 @@ final class GestureSettingsManager {
         monitor.onRecognitionSessionBegan = { [weak self] id in
             self?.beginTouchRoutingSession(id: id)
         }
-        monitor.onRecognitionSessionEnded = { [weak self] id in
+        monitor.onPhysicalContactEnded = { [weak self] id in
             self?.endTouchRoutingSession(id: id)
         }
-        systemSwipeSuppressor.contextForNewGesture = { [weak self] in
-            self?.contextForDockSegment()
+        monitor.onOperationalStateChanged = { [weak self] state in
+            guard let self else { return }
+            recognitionOperationalState = state
+            guard recognitionRequiredForSuppression, state != .armed else { return }
+            systemSwipeSuppressor.failOpenCurrentSegment()
+            interruptTouchRoutingSession()
+            monitor.invalidateRecognition()
+        }
+        systemSwipeSuppressor.contextForNewGesture = { [weak self] id in
+            self?.contextForDockSegment(id: id)
+        }
+        systemSwipeSuppressor.onDockSegmentMayBegin = { [weak self] id in
+            self?.beginDockRoutingSegment(id: id)
+        }
+        systemSwipeSuppressor.onDockSegmentEnded = { [weak self] id in
+            self?.endDockRoutingSegment(id: id)
         }
         systemSwipeSuppressor.onPotentialOverlayTransition = { [weak self] in
             self?.invalidateOverlayStateAndRefresh()
@@ -100,6 +130,11 @@ final class GestureSettingsManager {
         systemSwipeSuppressor.onMonitoringInterrupted = { [weak self] in
             self?.interruptTouchRoutingSession()
             self?.monitor.invalidateRecognition()
+        }
+        systemSwipeSuppressor.onOperationalStateChanged = { [weak self] state, _ in
+            guard let self, state != .armed else { return }
+            self.interruptTouchRoutingSession()
+            self.monitor.invalidateRecognition()
         }
 
         monitor.onSwipe = { [weak self] context, direction, fingerCount in
@@ -134,7 +169,7 @@ final class GestureSettingsManager {
 
     // MARK - Setup
     private func loadInitialState() {
-        let dict = UserDefaults.standard.dictionary(forKey: "swipeGestures") as? [String: Data]
+        let dict = userDefaults.dictionary(forKey: "swipeGestures") as? [String: Data]
         for gesture in gestures {
             if let data = dict?[gesture.id.defaultsKey] {
                 do {
@@ -174,6 +209,7 @@ final class GestureSettingsManager {
         monitor.flipSwipeDirection = flipSwipeDirection
 
         let anyEnabled = bindingsEnabled && gestures.contains { $0.action != nil }
+        recognitionRequiredForSuppression = anyEnabled
         anyEnabled ? monitor.startMonitoring() : monitor.stopMonitoring()
 
         let shouldSuppressSystemSwipes = bindingsEnabled && disableSystemSwipeGestures
@@ -181,10 +217,10 @@ final class GestureSettingsManager {
         shouldSuppressSystemSwipes
             ? systemSwipeSuppressor.startMonitoring() : systemSwipeSuppressor.stopMonitoring()
 
-        // Suppressed gestures take an authoritative boundary observation.
-        // Background sampling is only needed when recognition runs without
-        // the suppressing tap, so the two paths never contend with each other.
-        setOverlaySamplingEnabled(anyEnabled && !shouldSuppressSystemSwipes)
+        // One serial sampler serves both renewed asynchronous routing and
+        // event-bound suppression evidence. A degraded suppressor therefore
+        // remains on the non-blocking asynchronous route.
+        setOverlaySamplingEnabled(anyEnabled || shouldSuppressSystemSwipes)
     }
 
     private func setOverlaySamplingEnabled(_ enabled: Bool) {
@@ -300,13 +336,18 @@ final class GestureSettingsManager {
                 Logger.gestureSettingsManager.error("Error encoding gesture action: \(error)")
             }
         }
-        UserDefaults.standard.set(dict, forKey: "swipeGestures")
+        userDefaults.set(dict, forKey: "swipeGestures")
     }
 
     // MARK - Swipe handling
 
     private func beginTouchRoutingSession(id: UInt64) {
-        touchRoutingCoordinator.beginTouchSession(id: id)
+        evidenceTokenSequence &+= 1
+        let token = touchRoutingCoordinator.beginTouchSession(
+            id: id,
+            evidenceToken: evidenceTokenSequence
+        )
+        requestBoundarySample(evidenceToken: token)
     }
 
     private func endTouchRoutingSession(id: UInt64) {
@@ -317,13 +358,60 @@ final class GestureSettingsManager {
         touchRoutingCoordinator.interrupt()
     }
 
-    private func contextForDockSegment() -> GestureSessionContext? {
-        if touchRoutingCoordinator.hasOwnershipDecision {
-            return touchRoutingCoordinator.selectedContext
+    private func beginDockRoutingSegment(id: UInt64) {
+        evidenceTokenSequence &+= 1
+        let token = touchRoutingCoordinator.beginDockSegment(
+            id: id,
+            evidenceToken: evidenceTokenSequence
+        )
+        requestBoundarySample(evidenceToken: token)
+    }
+
+    private func endDockRoutingSegment(id: UInt64) {
+        _ = touchRoutingCoordinator.endDockSegment(id: id)
+    }
+
+    private func contextForDockSegment(id: UInt64) -> GestureSessionContext? {
+        if touchRoutingCoordinator.currentEvidenceToken == nil {
+            beginDockRoutingSegment(id: id)
         }
-        let context = selectSuppressionContext()
-        touchRoutingCoordinator.bindContext(context)
+        if touchRoutingCoordinator.hasOwnershipDecision {
+            guard
+                let context = touchRoutingCoordinator.selectedContext,
+                activeOwnershipIsCurrent(for: context)
+            else {
+                return nil
+            }
+            return context
+        }
+        guard let evidenceToken = touchRoutingCoordinator.currentEvidenceToken else {
+            return nil
+        }
+        let context = selectSuppressionContext(evidenceToken: evidenceToken)
+        touchRoutingCoordinator.bindContext(
+            context,
+            evidenceToken: evidenceToken
+        )
         return context
+    }
+
+    private func activeOwnershipIsCurrent(
+        for context: GestureSessionContext
+    ) -> Bool {
+        guard
+            let displayID = try? displayLocator.cursorDisplayID(),
+            NativeSuppressionReadiness.canOwnInput(
+                suppressionState: systemSwipeSuppressor.operationalState,
+                recognitionRequired: recognitionRequiredForSuppression,
+                recognitionState: recognitionOperationalState
+            )
+        else {
+            return false
+        }
+        return context.isValidForDispatch(
+            currentDisplayID: displayID,
+            currentMissionControlSyntheticState: missionControlCapability.state(on: displayID)
+        )
     }
 
     private func bindCachedGestureContextIfNeeded() -> GestureSessionContext? {
@@ -331,55 +419,93 @@ final class GestureSettingsManager {
             return touchRoutingCoordinator.selectedContext
         }
         let context = selectGestureContext()
-        touchRoutingCoordinator.bindContext(context)
+        guard let evidenceToken = touchRoutingCoordinator.currentEvidenceToken else {
+            return nil
+        }
+        touchRoutingCoordinator.bindContext(context, evidenceToken: evidenceToken)
         return context
     }
 
-    /// Dock requires an ownership answer from its `began` callback. A cached
-    /// observation cannot prove that an unobserved Exposé transition did not
-    /// occur, so ownership uses one authoritative boundary observation rather
-    /// than a timeout, pending route, or stale lease.
-    private func selectSuppressionContext() -> GestureSessionContext? {
+    /// Dock `began` only reads evidence asynchronously requested at the matching
+    /// physical/Dock boundary. It never enumerates WindowServer in the tap.
+    private func selectSuppressionContext(
+        evidenceToken: UInt64
+    ) -> GestureSessionContext? {
         guard
             systemSwipeSuppressionEnabled,
-            let displayID = try? displayLocator.cursorDisplayID()
+            NativeSuppressionReadiness.canOwnInput(
+                suppressionState: systemSwipeSuppressor.operationalState,
+                recognitionRequired: recognitionRequiredForSuppression,
+                recognitionState: recognitionOperationalState
+            ),
+            let displayID = try? displayLocator.cursorDisplayID(),
+            routingState.lease?.evidenceToken == evidenceToken
         else {
             return nil
         }
 
         gestureGeneration &+= 1
-        let sampledAtUptime = ProcessInfo.processInfo.systemUptime
-        let overlayMode = overlayDetector.detect(on: displayID)
-        guard overlayMode != .unknown else { return nil }
-
-        missionControlCapability.observeOverlay(
-            overlayMode,
-            on: displayID,
-            sampledAtUptime: sampledAtUptime
-        )
-        return .observed(
-            generation: gestureGeneration,
-            targetDisplayID: displayID,
-            overlayMode: overlayMode,
-            missionControlSyntheticState: missionControlCapability.state
+        return routingState.makeContext(
+            sessionGeneration: gestureGeneration,
+            at: ProcessInfo.processInfo.systemUptime,
+            currentDisplayID: displayID,
+            missionControlSyntheticState: missionControlCapability.state(on: displayID)
         )
     }
 
     private func selectGestureContext() -> GestureSessionContext? {
         gestureGeneration &+= 1
-        return routingState.makeContext(
+        guard let displayID = try? displayLocator.cursorDisplayID() else { return nil }
+        let selection = routingState.selectContext(
             sessionGeneration: gestureGeneration,
             at: ProcessInfo.processInfo.systemUptime,
-            missionControlSyntheticState: missionControlCapability.state
+            currentDisplayID: displayID,
+            missionControlSyntheticState: missionControlCapability.state(on: displayID)
         )
+        switch selection {
+        case .context(let context):
+            return context
+        case .refresh:
+            requestOverlayRefresh(for: displayID)
+            return nil
+        }
+    }
+
+    private func requestBoundarySample(evidenceToken: UInt64) {
+        guard
+            overlaySamplingEnabled,
+            let displayID = try? displayLocator.cursorDisplayID()
+        else { return }
+        let sampler = overlayModeSampler
+        let generation = routingState.generation
+        Task {
+            await sampler.refresh(
+                generation: generation,
+                targetDisplayID: displayID,
+                evidenceToken: evidenceToken
+            )
+        }
+    }
+
+    private func requestOverlayRefresh(for displayID: DisplayID) {
+        guard overlaySamplingEnabled else { return }
+        let sampler = overlayModeSampler
+        let generation = routingState.generation
+        Task {
+            await sampler.refresh(
+                generation: generation,
+                targetDisplayID: displayID
+            )
+        }
     }
 
     private func gestureContextIsValid(_ context: GestureSessionContext) -> Bool {
         generalSettings.bindingsEnabled
-            && touchRoutingCoordinator.selectedContext == context
             && context.isValidForDispatch(
                 currentDisplayID: try? displayLocator.cursorDisplayID(),
-                currentMissionControlSyntheticState: missionControlCapability.state
+                currentMissionControlSyntheticState: missionControlCapability.state(
+                    on: context.targetDisplayID
+                )
             )
     }
 
@@ -398,6 +524,7 @@ final class GestureSettingsManager {
 
     func shutdown() async {
         guard !isShutdown else { return }
+        persistGestures()
         isShutdown = true
         monitor.stopMonitoring()
         systemSwipeSuppressor.stopMonitoring()

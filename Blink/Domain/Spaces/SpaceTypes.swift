@@ -9,6 +9,19 @@ nonisolated struct DisplayID: RawRepresentable, Hashable, Codable, Sendable {
     }
 }
 
+nonisolated struct ManagedDisplayID: RawRepresentable, Hashable, Codable, Sendable {
+    static let main = ManagedDisplayID(rawValue: "Main")!
+
+    let rawValue: String
+
+    init?(rawValue: String) {
+        guard !rawValue.isEmpty else { return nil }
+        self.rawValue = rawValue
+    }
+
+    var isMain: Bool { self == .main }
+}
+
 nonisolated struct SpaceID: RawRepresentable, Hashable, Codable, Sendable {
     let rawValue: UInt64
 
@@ -19,12 +32,12 @@ nonisolated struct SpaceID: RawRepresentable, Hashable, Codable, Sendable {
 }
 
 nonisolated struct DisplayTopology: Equatable, Sendable {
-    let displayID: DisplayID
+    let managedDisplayID: ManagedDisplayID
     let spaceIDs: [SpaceID]
     let currentSpaceID: SpaceID
 
     init?(
-        displayID: DisplayID,
+        managedDisplayID: ManagedDisplayID,
         spaceIDs: [SpaceID],
         currentSpaceID: SpaceID
     ) {
@@ -36,7 +49,7 @@ nonisolated struct DisplayTopology: Equatable, Sendable {
             return nil
         }
 
-        self.displayID = displayID
+        self.managedDisplayID = managedDisplayID
         self.spaceIDs = spaceIDs
         self.currentSpaceID = currentSpaceID
     }
@@ -51,19 +64,33 @@ nonisolated struct DisplayTopology: Equatable, Sendable {
 }
 
 nonisolated struct SystemSpaceSnapshot: Equatable, Sendable {
-    let topologiesByDisplay: [DisplayID: DisplayTopology]
+    let topologiesByManagedDisplay: [ManagedDisplayID: DisplayTopology]
     let menuBarDisplayID: DisplayID?
 
-    var menuBarTopology: DisplayTopology? {
-        if let menuBarDisplayID,
-            let topology = topologiesByDisplay[menuBarDisplayID]
+    func managedDisplayID(for physicalDisplayID: DisplayID) -> ManagedDisplayID? {
+        if topologiesByManagedDisplay.count == 1,
+            topologiesByManagedDisplay[.main] != nil
         {
-            return topology
+            return .main
         }
 
-        return topologiesByDisplay.values.sorted {
-            $0.displayID.rawValue < $1.displayID.rawValue
-        }.first
+        let managedDisplayID = ManagedDisplayID(rawValue: physicalDisplayID.rawValue)!
+        return topologiesByManagedDisplay[managedDisplayID] == nil ? nil : managedDisplayID
+    }
+
+    func topology(for physicalDisplayID: DisplayID) -> DisplayTopology? {
+        managedDisplayID(for: physicalDisplayID)
+            .flatMap { topologiesByManagedDisplay[$0] }
+    }
+
+    var menuBarTopology: DisplayTopology? {
+        if let menuBarDisplayID {
+            return topology(for: menuBarDisplayID)
+        }
+        if topologiesByManagedDisplay.count == 1 {
+            return topologiesByManagedDisplay[.main]
+        }
+        return nil
     }
 }
 
@@ -84,19 +111,19 @@ nonisolated enum MissionControlSyntheticState: Equatable, Sendable {
 
 nonisolated struct SpacePresentation: Equatable, Sendable {
     let snapshot: SystemSpaceSnapshot?
-    let projectedSpaceByDisplay: [DisplayID: SpaceID]
-    let lastSpaceByDisplay: [DisplayID: SpaceID]
+    let projectedSpaceByManagedDisplay: [ManagedDisplayID: SpaceID]
+    let lastSpaceByManagedDisplay: [ManagedDisplayID: SpaceID]
 
-    func projectedTopology(for displayID: DisplayID) -> DisplayTopology? {
+    func projectedTopology(for managedDisplayID: ManagedDisplayID) -> DisplayTopology? {
         guard
-            let topology = snapshot?.topologiesByDisplay[displayID],
-            let projectedSpaceID = projectedSpaceByDisplay[displayID]
+            let topology = snapshot?.topologiesByManagedDisplay[managedDisplayID],
+            let projectedSpaceID = projectedSpaceByManagedDisplay[managedDisplayID]
         else {
-            return snapshot?.topologiesByDisplay[displayID]
+            return snapshot?.topologiesByManagedDisplay[managedDisplayID]
         }
 
         return DisplayTopology(
-            displayID: topology.displayID,
+            managedDisplayID: topology.managedDisplayID,
             spaceIDs: topology.spaceIDs,
             currentSpaceID: projectedSpaceID
         )
@@ -122,8 +149,6 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
     let wraps: Bool
     let velocity: Double
     let requiredMode: SpaceSwitchMode?
-    /// The semantic target captured when a `lastSpace` input is accepted.
-    let resolvedLastSpaceID: SpaceID?
 
     init(
         action: SpaceSwitchAction,
@@ -131,8 +156,7 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
         targetDisplayID: DisplayID,
         wraps: Bool,
         velocity: Double,
-        requiredMode: SpaceSwitchMode? = nil,
-        resolvedLastSpaceID: SpaceID? = nil
+        requiredMode: SpaceSwitchMode? = nil
     ) {
         self.action = action
         self.source = source
@@ -140,7 +164,6 @@ nonisolated struct SpaceSwitchRequest: Equatable, Sendable {
         self.wraps = wraps
         self.velocity = velocity
         self.requiredMode = requiredMode
-        self.resolvedLastSpaceID = resolvedLastSpaceID
     }
 }
 

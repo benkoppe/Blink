@@ -6,32 +6,39 @@ final class SettingsManager {
     let generalSettingsManager: GeneralSettingsManager
     let hotkeySettingsManager: HotkeySettingsManager
     let gestureSettingsManager: GestureSettingsManager
-    let menuBarSettingsManager = MenuBarSettingsManager()
-
-    private let spaceSwitcher: SpaceSwitcher
+    let menuBarSettingsManager: MenuBarSettingsManager
 
     init(
         registry: HotkeyRegistry,
         dispatcher: ActionDispatcher,
-        spaceSwitcher: SpaceSwitcher
+        spaceSwitcher: SpaceSwitcher,
+        userDefaults: UserDefaults = .standard
     ) {
-        let generalSettings = GeneralSettingsManager()
+        let generalSettings = GeneralSettingsManager(userDefaults: userDefaults)
         self.generalSettingsManager = generalSettings
-        self.spaceSwitcher = spaceSwitcher
+        self.menuBarSettingsManager = MenuBarSettingsManager(userDefaults: userDefaults)
         self.hotkeySettingsManager = HotkeySettingsManager(
             registry: registry,
             dispatcher: dispatcher,
-            generalSettings: generalSettings
+            generalSettings: generalSettings,
+            userDefaults: userDefaults
         )
         self.gestureSettingsManager = GestureSettingsManager(
             dispatcher: dispatcher,
             generalSettings: generalSettings,
-            missionControlCapability: spaceSwitcher.missionControlSyntheticCapability
+            missionControlCapability: spaceSwitcher.missionControlSyntheticCapability,
+            userDefaults: userDefaults
         )
+        spaceSwitcher.setConfigurationProvider { [weak generalSettings] in
+            guard let generalSettings else { return .defaultValue }
+            return SpaceSwitchConfiguration(
+                wraps: generalSettings.wrapSpaceSwitching,
+                velocity: generalSettings.instantGestureSpeed.velocity
+            )
+        }
     }
 
     func performSetup() {
-        observeSwitchConfiguration()
         hotkeySettingsManager.performSetup()
         gestureSettingsManager.performSetup()
     }
@@ -41,18 +48,5 @@ final class SettingsManager {
         // dispatch or Space execution is torn down.
         hotkeySettingsManager.shutdown()
         await gestureSettingsManager.shutdown()
-    }
-
-    private func observeSwitchConfiguration() {
-        withObservationTracking {
-            spaceSwitcher.applyConfiguration(
-                wraps: generalSettingsManager.wrapSpaceSwitching,
-                velocity: generalSettingsManager.instantGestureSpeed.velocity
-            )
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.observeSwitchConfiguration()
-            }
-        }
     }
 }

@@ -1,69 +1,124 @@
-/// Binds one immutable ownership decision to a physical trackpad contact
-/// session. Dock can announce its first segment before or after HID reports the
-/// touches, so a decision may be provisional until the HID session ID arrives.
+/// Joins physical HID contact and Dock segments while keeping one immutable
+/// ownership decision for the contact. `nil` is an explicit fail-open decision.
 nonisolated struct TouchRoutingSessionCoordinator: Sendable {
     private enum Decision: Sendable {
         case undecided
-        /// `nil` is an explicit fail-open decision, not missing state.
         case decided(GestureSessionContext?)
     }
 
-    private enum State: Sendable {
-        case idle
-        case provisional(GestureSessionContext?)
-        case active(id: UInt64, decision: Decision)
+    private struct PhysicalContact: Sendable {
+        let id: UInt64
+        let evidenceToken: UInt64
+        var decision: Decision
     }
 
-    private var state: State = .idle
+    private struct DockSegment: Sendable {
+        let id: UInt64
+        let evidenceToken: UInt64
+        var decision: Decision
+    }
+
+    private var physicalContact: PhysicalContact?
+    private var dockSegment: DockSegment?
 
     var hasOwnershipDecision: Bool {
-        switch state {
-        case .provisional, .active(_, .decided): return true
-        case .idle, .active(_, .undecided): return false
+        switch physicalContact?.decision ?? dockSegment?.decision {
+        case .decided: true
+        case .undecided, nil: false
         }
     }
 
     var selectedContext: GestureSessionContext? {
-        switch state {
-        case .provisional(let context), .active(_, .decided(let context)):
-            context
-        case .idle, .active(_, .undecided):
-            nil
+        switch physicalContact?.decision ?? dockSegment?.decision {
+        case .decided(let context): context
+        case .undecided, nil: nil
         }
     }
 
-    mutating func beginTouchSession(id: UInt64) {
-        switch state {
-        case .provisional(let context):
-            state = .active(id: id, decision: .decided(context))
-        case .idle, .active:
-            state = .active(id: id, decision: .undecided)
-        }
+    var currentEvidenceToken: UInt64? {
+        physicalContact?.evidenceToken ?? dockSegment?.evidenceToken
     }
 
-    mutating func bindContext(_ context: GestureSessionContext?) {
-        switch state {
-        case .idle:
-            state = .provisional(context)
-        case .active(let id, .undecided):
-            state = .active(id: id, decision: .decided(context))
-        case .provisional, .active(_, .decided):
-            break
+    @discardableResult
+    mutating func beginTouchSession(id: UInt64, evidenceToken: UInt64) -> UInt64 {
+        if let dockSegment {
+            physicalContact = PhysicalContact(
+                id: id,
+                evidenceToken: dockSegment.evidenceToken,
+                decision: dockSegment.decision
+            )
+            return dockSegment.evidenceToken
+        }
+        physicalContact = PhysicalContact(
+            id: id,
+            evidenceToken: evidenceToken,
+            decision: .undecided
+        )
+        return evidenceToken
+    }
+
+    @discardableResult
+    mutating func beginDockSegment(id: UInt64, evidenceToken: UInt64) -> UInt64 {
+        let token = physicalContact?.evidenceToken ?? evidenceToken
+        dockSegment = DockSegment(
+            id: id,
+            evidenceToken: token,
+            decision: physicalContact?.decision ?? .undecided
+        )
+        return token
+    }
+
+    mutating func bindContext(
+        _ context: GestureSessionContext?,
+        evidenceToken: UInt64
+    ) {
+        if var contact = physicalContact,
+            contact.evidenceToken == evidenceToken
+        {
+            if case .undecided = contact.decision {
+                contact.decision = .decided(context)
+                physicalContact = contact
+                if var segment = dockSegment,
+                    segment.evidenceToken == evidenceToken
+                {
+                    segment.decision = contact.decision
+                    dockSegment = segment
+                }
+            }
+            return
+        }
+
+        if var segment = dockSegment,
+            segment.evidenceToken == evidenceToken,
+            case .undecided = segment.decision
+        {
+            segment.decision = .decided(context)
+            dockSegment = segment
         }
     }
 
     @discardableResult
     mutating func endTouchSession(id: UInt64) -> Bool {
-        guard case .active(id: let activeID, decision: _) = state,
-            activeID == id
-        else {
-            return false
+        guard physicalContact?.id == id else { return false }
+        physicalContact = nil
+        if var segment = dockSegment {
+            // A Dock segment that outlives finger-up cannot transfer the old
+            // contact's destructive ownership to a subsequent contact.
+            segment.decision = .decided(nil)
+            dockSegment = segment
         }
-        state = .idle
+        return true
+    }
+
+    @discardableResult
+    mutating func endDockSegment(id: UInt64) -> Bool {
+        guard dockSegment?.id == id else { return false }
+        dockSegment = nil
         return true
     }
 
     mutating func interrupt() {
-        state = .idle
+        physicalContact = nil
+        dockSegment = nil
     }
 }

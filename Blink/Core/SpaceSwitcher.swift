@@ -12,6 +12,103 @@ nonisolated struct SpaceInfo: Equatable, Sendable {
 
 }
 
+nonisolated struct SpaceSwitchConfiguration: Equatable, Sendable {
+    static let defaultValue = SpaceSwitchConfiguration(
+        wraps: false,
+        velocity: 999_999
+    )
+
+    let wraps: Bool
+    let velocity: Double
+
+    init(wraps: Bool, velocity: Double) {
+        self.wraps = wraps
+        self.velocity = max(1, velocity)
+    }
+}
+
+nonisolated struct SpaceActionContext: Equatable, Sendable {
+    let targetDisplayID: DisplayID
+    let topology: DisplayTopology
+    let lastSpaceID: SpaceID?
+    let configuration: SpaceSwitchConfiguration
+
+    var spaceInfo: SpaceInfo {
+        SpaceInfo(
+            currentIndex: topology.currentIndex,
+            spaceCount: topology.spaceIDs.count
+        )
+    }
+
+    func title(forSpaceAt index: Int) -> String {
+        "Space \(index + 1)"
+    }
+
+    func canSubmit(_ action: SpaceSwitchAction) -> Bool {
+        switch action {
+        case .step(.left):
+            topology.spaceIDs.count > 1
+                && (configuration.wraps || topology.currentIndex > 0)
+        case .step(.right):
+            topology.spaceIDs.count > 1
+                && (configuration.wraps
+                    || topology.currentIndex + 1 < topology.spaceIDs.count)
+        case .index(let index):
+            topology.spaceIDs.indices.contains(index)
+        case .lastSpace:
+            lastSpaceID.map {
+                topology.spaceIDs.contains($0) && topology.currentSpaceID != $0
+            } ?? false
+        }
+    }
+
+    func request(
+        for action: SpaceSwitchAction,
+        source: SpaceInputSource
+    ) -> SpaceSwitchRequest {
+        SpaceSwitchRequest(
+            action: action,
+            source: source,
+            targetDisplayID: targetDisplayID,
+            wraps: configuration.wraps,
+            velocity: configuration.velocity
+        )
+    }
+}
+
+nonisolated extension SpacePresentation {
+    var menuBarSpaceInfo: SpaceInfo? {
+        guard
+            let topology = snapshot?.menuBarTopology,
+            let projected = projectedTopology(for: topology.managedDisplayID)
+        else {
+            return nil
+        }
+        return SpaceInfo(
+            currentIndex: projected.currentIndex,
+            spaceCount: projected.spaceIDs.count
+        )
+    }
+
+    func actionContext(
+        for physicalDisplayID: DisplayID,
+        configuration: SpaceSwitchConfiguration
+    ) -> SpaceActionContext? {
+        guard
+            let managedDisplayID = snapshot?.managedDisplayID(for: physicalDisplayID),
+            let topology = projectedTopology(for: managedDisplayID)
+        else {
+            return nil
+        }
+        return SpaceActionContext(
+            targetDisplayID: physicalDisplayID,
+            topology: topology,
+            lastSpaceID: lastSpaceByManagedDisplay[managedDisplayID],
+            configuration: configuration
+        )
+    }
+}
+
 @MainActor
 @Observable
 final class SpaceSwitcher {
@@ -19,23 +116,12 @@ final class SpaceSwitcher {
 
     private(set) var presentation = SpacePresentation(
         snapshot: nil,
-        projectedSpaceByDisplay: [:],
-        lastSpaceByDisplay: [:]
+        projectedSpaceByManagedDisplay: [:],
+        lastSpaceByManagedDisplay: [:]
     )
 
     var spaceInfo: SpaceInfo? {
-        guard
-            let snapshot = presentation.snapshot,
-            let topology = snapshot.menuBarTopology,
-            let projected = presentation.projectedTopology(for: topology.displayID)
-        else {
-            return nil
-        }
-
-        return SpaceInfo(
-            currentIndex: projected.currentIndex,
-            spaceCount: projected.spaceIDs.count
-        )
+        presentation.menuBarSpaceInfo
     }
 
     @ObservationIgnored
@@ -67,8 +153,10 @@ final class SpaceSwitcher {
     @ObservationIgnored
     private var presentationConsumer: Task<Void, Never>?
 
-    private var wraps = false
-    private var velocity = 999_999.0
+    @ObservationIgnored
+    private var configurationProvider: @MainActor () -> SpaceSwitchConfiguration = {
+        .defaultValue
+    }
 
     init(
         missionControlSyntheticCapability: MissionControlSyntheticCapability = .init()
@@ -85,9 +173,10 @@ final class SpaceSwitcher {
         }
     }
 
-    func applyConfiguration(wraps: Bool, velocity: Double) {
-        self.wraps = wraps
-        self.velocity = max(1, velocity)
+    func setConfigurationProvider(
+        _ provider: @escaping @MainActor () -> SpaceSwitchConfiguration
+    ) {
+        configurationProvider = provider
     }
 
     deinit {
@@ -108,17 +197,14 @@ final class SpaceSwitcher {
         guard let targetDisplayID = try? displayLocator.cursorDisplayID() else {
             return nil
         }
+        let configuration = configurationProvider()
 
         return SpaceSwitchRequest(
             action: action,
             source: source,
             targetDisplayID: targetDisplayID,
-            wraps: wraps,
-            velocity: velocity,
-            resolvedLastSpaceID: resolvedLastSpaceID(
-                for: action,
-                displayID: targetDisplayID
-            )
+            wraps: configuration.wraps,
+            velocity: configuration.velocity
         )
     }
 
@@ -127,26 +213,15 @@ final class SpaceSwitcher {
         context: GestureSessionContext
     ) -> SpaceSwitchRequest? {
         guard context.isAuthoritativeBlinkContext else { return nil }
+        let configuration = configurationProvider()
         return SpaceSwitchRequest(
             action: action,
             source: .gesture,
             targetDisplayID: context.targetDisplayID,
-            wraps: wraps,
-            velocity: velocity,
-            requiredMode: context.requiredPostingMode,
-            resolvedLastSpaceID: resolvedLastSpaceID(
-                for: action,
-                displayID: context.targetDisplayID
-            )
+            wraps: configuration.wraps,
+            velocity: configuration.velocity,
+            requiredMode: context.requiredPostingMode
         )
-    }
-
-    private func resolvedLastSpaceID(
-        for action: SpaceSwitchAction,
-        displayID: DisplayID
-    ) -> SpaceID? {
-        guard action == .lastSpace else { return nil }
-        return presentation.lastSpaceByDisplay[displayID]
     }
 
     func submit(_ request: SpaceSwitchRequest) async -> SpaceSwitchOutcome {
@@ -161,52 +236,18 @@ final class SpaceSwitcher {
         presentationConsumer = nil
     }
 
-    func canMoveLeft() -> Bool {
-        canSubmit(.step(.left))
-    }
-
-    func canMoveRight() -> Bool {
-        canSubmit(.step(.right))
-    }
-
-    func canSwitchToLastSpace() -> Bool {
-        guard
-            let displayID = actionDisplayID(),
-            let topology = presentation.projectedTopology(for: displayID),
-            let lastSpaceID = presentation.lastSpaceByDisplay[displayID]
-        else {
-            return false
-        }
-
-        return topology.spaceIDs.contains(lastSpaceID)
-            && topology.currentSpaceID != lastSpaceID
-    }
-
-    private func canSubmit(_ action: SpaceSwitchAction) -> Bool {
-        guard
-            let displayID = actionDisplayID(),
-            let topology = presentation.projectedTopology(for: displayID)
-        else {
-            return false
-        }
-
-        switch action {
-        case .step(.left):
-            return topology.spaceIDs.count > 1 && (wraps || topology.currentIndex > 0)
-        case .step(.right):
-            return topology.spaceIDs.count > 1
-                && (wraps || topology.currentIndex + 1 < topology.spaceIDs.count)
-        case .index(let index):
-            return topology.spaceIDs.indices.contains(index)
-        case .lastSpace:
-            return canSwitchToLastSpace()
-        }
+    func captureMenuActionContext() -> SpaceActionContext? {
+        guard let displayID = actionDisplayID() else { return nil }
+        let configuration = configurationProvider()
+        return presentation.actionContext(
+            for: displayID,
+            configuration: configuration
+        )
     }
 
     private func actionDisplayID() -> DisplayID? {
         (try? displayLocator.cursorDisplayID())
             ?? presentation.snapshot?.menuBarDisplayID
-            ?? presentation.snapshot?.menuBarTopology?.displayID
     }
 
     private func removeObservers() {

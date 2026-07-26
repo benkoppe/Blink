@@ -33,6 +33,9 @@ nonisolated struct OverlayRoutingLease: Equatable, Sendable {
     let sampledAtUptime: TimeInterval
     let expirationUptime: TimeInterval
     let requestSequence: UInt64
+    /// Identifies an input boundary that requested this observation. Periodic
+    /// leases have no token and cannot authorize native event suppression.
+    let evidenceToken: UInt64?
 
     func isValid(
         at uptime: TimeInterval,
@@ -128,15 +131,45 @@ nonisolated struct OverlayRoutingLeaseState: Equatable, Sendable {
     func makeContext(
         sessionGeneration: UInt64,
         at uptime: TimeInterval,
+        currentDisplayID: DisplayID,
         missionControlSyntheticState: MissionControlSyntheticState
     ) -> GestureSessionContext? {
         guard let lease else { return nil }
+        guard lease.isValid(
+            at: uptime,
+            requiredGeneration: generation,
+            currentTargetDisplayID: currentDisplayID
+        ) else {
+            return nil
+        }
         return lease.makeContext(
             sessionGeneration: sessionGeneration,
             requiredGeneration: generation,
-            currentDisplayID: lease.targetDisplayID,
+            currentDisplayID: currentDisplayID,
             at: uptime,
             missionControlSyntheticState: missionControlSyntheticState
         )
     }
+
+    func selectContext(
+        sessionGeneration: UInt64,
+        at uptime: TimeInterval,
+        currentDisplayID: DisplayID,
+        missionControlSyntheticState: MissionControlSyntheticState
+    ) -> OverlayRoutingSelection {
+        guard let context = makeContext(
+            sessionGeneration: sessionGeneration,
+            at: uptime,
+            currentDisplayID: currentDisplayID,
+            missionControlSyntheticState: missionControlSyntheticState
+        ) else {
+            return .refresh(displayID: currentDisplayID)
+        }
+        return .context(context)
+    }
+}
+
+nonisolated enum OverlayRoutingSelection: Equatable, Sendable {
+    case context(GestureSessionContext)
+    case refresh(displayID: DisplayID)
 }

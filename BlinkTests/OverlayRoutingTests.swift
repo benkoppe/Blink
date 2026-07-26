@@ -199,6 +199,7 @@ struct OverlayRoutingTests {
             state.makeContext(
                 sessionGeneration: 1,
                 at: 100,
+                currentDisplayID: display,
                 missionControlSyntheticState: .available
             ) == nil
         )
@@ -219,6 +220,7 @@ struct OverlayRoutingTests {
             #expect(state.makeContext(
                 sessionGeneration: 1,
                 at: 100,
+                currentDisplayID: display,
                 missionControlSyntheticState: .available
             )?.route == .blink)
 
@@ -226,6 +228,7 @@ struct OverlayRoutingTests {
             #expect(state.makeContext(
                 sessionGeneration: 2,
                 at: 100,
+                currentDisplayID: display,
                 missionControlSyntheticState: .available
             ) == nil)
         }
@@ -267,9 +270,9 @@ struct OverlayRoutingTests {
         let original = blinkContext(generation: 1)
         let replacement = blinkContext(generation: 2)
 
-        coordinator.beginTouchSession(id: 10)
-        coordinator.bindContext(original)
-        coordinator.bindContext(replacement)
+        coordinator.beginTouchSession(id: 10, evidenceToken: 100)
+        coordinator.bindContext(original, evidenceToken: 100)
+        coordinator.bindContext(replacement, evidenceToken: 100)
 
         #expect(coordinator.hasOwnershipDecision)
         #expect(coordinator.selectedContext == original)
@@ -286,8 +289,9 @@ struct OverlayRoutingTests {
         var coordinator = TouchRoutingSessionCoordinator()
         let context = blinkContext()
 
-        coordinator.bindContext(context)
-        coordinator.beginTouchSession(id: 1)
+        coordinator.beginDockSegment(id: 20, evidenceToken: 100)
+        coordinator.bindContext(context, evidenceToken: 100)
+        coordinator.beginTouchSession(id: 1, evidenceToken: 101)
 
         #expect(coordinator.hasOwnershipDecision)
         #expect(coordinator.selectedContext == context)
@@ -298,12 +302,12 @@ struct OverlayRoutingTests {
     @Test("A system decision is stable across an entire touch session")
     func nilOwnershipDecisionRemainsDecided() {
         var coordinator = TouchRoutingSessionCoordinator()
-        coordinator.beginTouchSession(id: 1)
-        coordinator.bindContext(nil)
+        coordinator.beginTouchSession(id: 1, evidenceToken: 100)
+        coordinator.bindContext(nil, evidenceToken: 100)
 
         #expect(coordinator.hasOwnershipDecision)
         #expect(coordinator.selectedContext == nil)
-        coordinator.bindContext(blinkContext())
+        coordinator.bindContext(blinkContext(), evidenceToken: 100)
         #expect(coordinator.selectedContext == nil)
     }
 
@@ -316,6 +320,7 @@ struct OverlayRoutingTests {
         #expect(state.makeContext(
             sessionGeneration: 1,
             at: 100,
+            currentDisplayID: display,
             missionControlSyntheticState: .available
         ) == nil)
         let acceptedDesktop = state.accept(
@@ -325,6 +330,7 @@ struct OverlayRoutingTests {
         #expect(state.makeContext(
             sessionGeneration: 2,
             at: 100,
+            currentDisplayID: display,
             missionControlSyntheticState: .available
         )?.route == .blink)
 
@@ -340,13 +346,15 @@ struct OverlayRoutingTests {
         #expect(state.makeContext(
             sessionGeneration: 3,
             at: 100,
+            currentDisplayID: display,
             missionControlSyntheticState: .available
         )?.route == .system)
         #expect(state.makeContext(
             sessionGeneration: 4,
             at: 131,
+            currentDisplayID: display,
             missionControlSyntheticState: .available
-        )?.route == .system)
+        ) == nil)
         #expect(
             GestureSessionContext.observed(
                 generation: 1,
@@ -385,6 +393,7 @@ struct OverlayRoutingTests {
         let activeContext = state.makeContext(
             sessionGeneration: 1,
             at: 100,
+            currentDisplayID: display,
             missionControlSyntheticState: .available
         )!
         _ = state.invalidate()
@@ -393,6 +402,7 @@ struct OverlayRoutingTests {
             state.makeContext(
                 sessionGeneration: 2,
                 at: 100,
+                currentDisplayID: display,
                 missionControlSyntheticState: .available
             ) == nil
         )
@@ -419,14 +429,13 @@ struct OverlayRoutingTests {
 
         let firstGeneration = sink.invalidate()
         await sampler.start(generation: firstGeneration) { sink.accept($0) }
-        await waitUntil { detector.startedSamples >= 1 }
+        await detector.waitUntilStarted(1)
 
         let secondGeneration = sink.invalidate()
         await sampler.start(generation: secondGeneration) { sink.accept($0) }
-        for _ in 0..<20 { await Task.yield() }
         #expect(detector.startedSamples == 1)
         detector.release(sample: 1)
-        await waitUntil { sink.lease?.generation == secondGeneration }
+        await sink.waitUntilLeaseCount(1)
 
         #expect(sink.leases.map(\.generation) == [secondGeneration])
         #expect(sink.lease?.overlayMode == OverlayMode.none)
@@ -481,8 +490,9 @@ struct OverlayRoutingTests {
             generation: generation,
             settlesTransition: true
         ) { sink.accept($0) }
-        await waitUntil { detector.startedSamples == 1 }
-        await waitUntil { await sleeper.waitingDurations == [0.5] }
+        await detector.waitUntilStarted(1)
+        await sleeper.waitUntilWaiting(for: 0.5)
+        await sleeper.waitUntilWaiting(for: 24)
         #expect(sink.lease?.overlayMode == .appExpose)
         #expect(
             sink.lease?.route(
@@ -493,11 +503,11 @@ struct OverlayRoutingTests {
         )
 
         await sleeper.resumeFirst(for: 0.5)
-        await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
+        await sink.waitUntilLeaseCount(2)
         #expect(detector.startedSamples == 2)
-        #expect(await sleeper.waitingDurations.isEmpty)
+        #expect(await sleeper.waitingDurations == [24])
         await sampler.stop(generation: generation + 1)
-        await waitUntil { await sleeper.waitingDurations.isEmpty }
+        await sleeper.waitUntilEmpty()
     }
 
     @Test("Settling confirmation follows desktop and Mission Control transitions")
@@ -531,17 +541,18 @@ struct OverlayRoutingTests {
                 generation: generation,
                 settlesTransition: true
             ) { sink.accept($0) }
-            await waitUntil { sink.leases.count == 1 }
-            await waitUntil { await sleeper.waitingDurations == [0.5] }
+            await sink.waitUntilLeaseCount(1)
+            await sleeper.waitUntilWaiting(for: 0.5)
+            await sleeper.waitUntilWaiting(for: 24)
             #expect(sink.lease?.overlayMode == scenario.initial)
 
             await sleeper.resumeFirst(for: 0.5)
-            await waitUntil { sink.leases.count == 2 }
+            await sink.waitUntilLeaseCount(2)
             #expect(sink.lease?.overlayMode == scenario.settled)
-            #expect(await sleeper.waitingDurations.isEmpty)
+            #expect(await sleeper.waitingDurations == [24])
 
             await sampler.stop(generation: generation + 1)
-            await waitUntil { await sleeper.waitingDurations.isEmpty }
+            await sleeper.waitUntilEmpty()
         }
     }
 
@@ -563,10 +574,9 @@ struct OverlayRoutingTests {
         )
 
         await sampler.start(generation: generation) { sink.accept($0) }
-        await waitUntil { await sleeper.waitingDurations == [0.5] }
+        await sleeper.waitUntilWaiting(for: 0.5)
         await sampler.stop(generation: generation + 1)
-        await waitUntil { await sleeper.waitingDurations.isEmpty }
-        for _ in 0..<20 { await Task.yield() }
+        await sleeper.waitUntilEmpty()
 
         #expect(detector.startedSamples == 1)
         #expect(sink.lease == nil)
@@ -591,31 +601,29 @@ struct OverlayRoutingTests {
 
         let oldGeneration = sink.invalidate()
         await sampler.start(generation: oldGeneration) { sink.accept($0) }
-        await waitUntil { detector.startedSamples >= 1 }
+        await detector.waitUntilStarted(1)
         let stoppedGeneration = sink.invalidate()
         let stopTask = Task {
             await sampler.stop(generation: stoppedGeneration)
         }
-        for _ in 0..<20 { await Task.yield() }
         #expect(detector.startedSamples == 1)
         detector.release(sample: 1)
         await stopTask.value
         await sampler.start(generation: stoppedGeneration) { sink.accept($0) }
-        for _ in 0..<20 { await Task.yield() }
         #expect(detector.startedSamples == 1)
         #expect(await sleeper.waitingDurations.isEmpty)
 
         let restartedGeneration = sink.invalidate()
         await sampler.start(generation: restartedGeneration) { sink.accept($0) }
-        await waitUntil { sink.lease?.generation == restartedGeneration }
-        #expect(await sleeper.waitingDurations.isEmpty)
+        await sink.waitUntilLeaseCount(1)
+        #expect(await sleeper.waitingDurations == [24])
 
         #expect(sink.leases.map(\.generation) == [restartedGeneration])
         await sampler.stop(generation: restartedGeneration + 1)
-        await waitUntil { await sleeper.waitingDurations.isEmpty }
+        await sleeper.waitUntilEmpty()
     }
 
-    @Test("Repeated start performs one scan and idle does not poll")
+    @Test("Repeated start coalesces and schedules one pre-expiry renewal")
     func samplerStartAndIdleAreLowFrequency() async {
         let display = DisplayID(rawValue: "display-a")!
         let clock = RoutingTestClock(now: 100)
@@ -632,14 +640,13 @@ struct OverlayRoutingTests {
 
         await sampler.start(generation: generation) { sink.accept($0) }
         await sampler.start(generation: generation) { sink.accept($0) }
-        await waitUntil { sink.lease != nil }
-        #expect(await sleeper.waitingDurations.isEmpty)
+        await sink.waitUntilLeaseCount(1)
+        #expect(await sleeper.waitingDurations == [24])
         clock.now = 120
-        for _ in 0..<50 { await Task.yield() }
 
         #expect(detector.startedSamples == 1)
-        #expect(await sleeper.waitingDurations.isEmpty)
+        #expect(await sleeper.waitingDurations == [24])
         await sampler.stop(generation: generation + 1)
-        await waitUntil { await sleeper.waitingDurations.isEmpty }
+        await sleeper.waitUntilEmpty()
     }
 }

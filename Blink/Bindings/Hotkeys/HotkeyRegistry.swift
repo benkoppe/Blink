@@ -94,6 +94,8 @@ final class HotkeyRegistry {
     private var matcher = HotkeyEventMatcher()
     private var nextID: UInt32 = 1
     private var recordingHandler: ((HotkeyKeyEvent) -> Void)?
+    private var pendingRecordingDelivery: Task<Void, Never>?
+    private var recordingEpoch: UInt64 = 0
     private var eventMonitor: (any HotkeyEventMonitoring)?
     private let monitorFactory: MonitorFactory
 
@@ -262,6 +264,7 @@ final class HotkeyRegistry {
         handler: @escaping (HotkeyKeyEvent) -> Void
     ) -> Bool {
         guard recordingHandler == nil else { return false }
+        recordingEpoch &+= 1
         recordingHandler = handler
         guard startMonitoring() else {
             recordingHandler = nil
@@ -271,12 +274,16 @@ final class HotkeyRegistry {
     }
 
     func endRecording() {
+        recordingEpoch &+= 1
         recordingHandler = nil
         stopMonitoring()
     }
 
     func shutdown() {
+        recordingEpoch &+= 1
         recordingHandler = nil
+        pendingRecordingDelivery?.cancel()
+        pendingRecordingDelivery = nil
         registrations.removeAll()
         matcher = HotkeyEventMatcher()
         eventMonitor?.disable()
@@ -287,10 +294,21 @@ final class HotkeyRegistry {
     /// Returns whether the event must be removed from the system event stream.
     /// Matching repeats are consumed but intentionally do not invoke the action.
     func handleKeyEvent(_ event: HotkeyKeyEvent) -> Bool {
-        if let recordingHandler {
+        if recordingHandler != nil {
             if !event.isAutorepeat {
-                Task { @MainActor in
-                    recordingHandler(event)
+                let previousDelivery = pendingRecordingDelivery
+                let epoch = recordingEpoch
+                pendingRecordingDelivery = Task { @MainActor [weak self] in
+                    await previousDelivery?.value
+                    guard
+                        !Task.isCancelled,
+                        let self,
+                        recordingEpoch == epoch,
+                        let currentHandler = self.recordingHandler
+                    else {
+                        return
+                    }
+                    currentHandler(event)
                 }
             }
             return true
@@ -305,6 +323,10 @@ final class HotkeyRegistry {
             registrations[registrationID]?.handler()
             return true
         }
+    }
+
+    func waitForPendingRecordingDelivery() async {
+        await pendingRecordingDelivery?.value
     }
 
     func handleTapDisabled() {

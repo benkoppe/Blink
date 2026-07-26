@@ -31,6 +31,7 @@ final class ActionDispatcher {
     private let continuation: AsyncStream<QueuedRequest>.Continuation
     private var consumerTask: Task<Void, Never>?
     private var nextSequence: UInt64 = 0
+    private var isAcceptingRequests = true
 
     convenience init(spaceSwitcher: SpaceSwitcher) {
         self.init(
@@ -83,8 +84,7 @@ final class ActionDispatcher {
                 targetDisplayID: context.targetDisplayID,
                 wraps: request.wraps,
                 velocity: request.velocity,
-                requiredMode: context.requiredPostingMode,
-                resolvedLastSpaceID: request.resolvedLastSpaceID
+                requiredMode: context.requiredPostingMode
             )
         }
         self.diagnoseLifecycle = diagnoseLifecycle
@@ -99,6 +99,7 @@ final class ActionDispatcher {
                 )
                 let request = queued.request
                 let outcome = await submitRequest(request)
+                guard !Task.isCancelled else { break }
                 guard
                     outcome != .accepted,
                     outcome != .missionControlSyntheticUnavailable
@@ -119,6 +120,7 @@ final class ActionDispatcher {
         _ action: SpaceSwitchAction,
         gestureContext: GestureSessionContext
     ) {
+        guard isAcceptingRequests else { return }
         guard
             gestureContext.isAuthoritativeBlinkContext,
             let request = captureGestureRequest(
@@ -138,6 +140,7 @@ final class ActionDispatcher {
         _ action: SpaceSwitchAction,
         source: SpaceInputSource
     ) {
+        guard isAcceptingRequests else { return }
         guard let request = captureRequest(action, source) else {
             Logger.actionDispatcher.warning(
                 "Could not capture display context for \(source.rawValue) action"
@@ -147,19 +150,27 @@ final class ActionDispatcher {
         enqueue(request)
     }
 
+    func dispatch(_ request: SpaceSwitchRequest) {
+        guard isAcceptingRequests else { return }
+        enqueue(request)
+    }
+
     private func enqueue(_ request: SpaceSwitchRequest) {
-        nextSequence &+= 1
+        guard isAcceptingRequests else { return }
+        let sequence = nextSequence &+ 1
         let acceptedAt = ProcessInfo.processInfo.systemUptime
-        let message =
-            "input accepted sequence=\(nextSequence) source=\(request.source.rawValue) "
-            + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
-        diagnoseLifecycle(message)
-        continuation.yield(
+        let result = continuation.yield(
             QueuedRequest(
-                sequence: nextSequence,
+                sequence: sequence,
                 acceptedAtUptime: acceptedAt,
                 request: request
             )
+        )
+        guard case .enqueued = result else { return }
+        nextSequence = sequence
+        diagnoseLifecycle(
+            "input accepted sequence=\(sequence) source=\(request.source.rawValue) "
+                + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
         )
     }
 
@@ -168,7 +179,10 @@ final class ActionDispatcher {
     }
 
     func shutdown() async {
+        guard isAcceptingRequests || consumerTask != nil else { return }
+        isAcceptingRequests = false
         continuation.finish()
+        diagnoseLifecycle("dispatcher shutdown cancelling queued commands")
         consumerTask?.cancel()
         await consumerTask?.value
         consumerTask = nil

@@ -51,6 +51,7 @@ actor SpaceSwitchEngine {
     }
 
     private struct Transaction {
+        let targetDisplayID: DisplayID
         let originSpaceID: SpaceID
         var desiredSpaceID: SpaceID
         var inFlightSteps: [PostedStep]
@@ -84,8 +85,8 @@ actor SpaceSwitchEngine {
     private let dependencies: Dependencies
     private let presentationContinuation: AsyncStream<SpacePresentation>.Continuation
     private var snapshot: SystemSpaceSnapshot?
-    private var displayStates: [DisplayID: DisplayState] = [:]
-    private var transactionDisplayID: DisplayID?
+    private var displayStates: [ManagedDisplayID: DisplayState] = [:]
+    private var transactionManagedDisplayID: ManagedDisplayID?
     private var acknowledgementGeneration: UInt64 = 0
     private var acknowledgementTask: Task<Void, Never>?
     private var isStopped = false
@@ -108,8 +109,8 @@ actor SpaceSwitchEngine {
     func stop() {
         guard !isStopped else { return }
         isStopped = true
-        for displayID in displayStates.keys {
-            diagnoseRollback(for: displayID, reason: "engine teardown")
+        for managedDisplayID in displayStates.keys {
+            diagnoseRollback(for: managedDisplayID, reason: "engine teardown")
         }
         cancelExecution()
         snapshot = nil
@@ -120,10 +121,14 @@ actor SpaceSwitchEngine {
 
     @discardableResult
     func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
+        guard !Task.isCancelled else { return .unavailable }
         guard !isStopped else { return .unavailable }
         guard
             let freshSnapshot = loadSnapshot(reason: .request),
-            let topology = freshSnapshot.topologiesByDisplay[request.targetDisplayID],
+            let managedDisplayID = freshSnapshot.managedDisplayID(
+                for: request.targetDisplayID
+            ),
+            let topology = freshSnapshot.topologiesByManagedDisplay[managedDisplayID],
             postingContextIsValid(for: request.targetDisplayID),
             let mode = mode(
                 for: request.targetDisplayID,
@@ -134,12 +139,17 @@ actor SpaceSwitchEngine {
         }
 
         if mode == .missionControl,
-            dependencies.missionControlCapability.state != .available
+            dependencies.missionControlCapability.state(on: request.targetDisplayID) != .available
         {
             return .missionControlSyntheticUnavailable
         }
 
-        return submit(request, topology: topology, mode: mode)
+        return submit(
+            request,
+            managedDisplayID: managedDisplayID,
+            topology: topology,
+            mode: mode
+        )
     }
 
     func refresh(reason: ReconciliationReason) {
@@ -153,9 +163,19 @@ actor SpaceSwitchEngine {
 
     private func submit(
         _ request: SpaceSwitchRequest,
+        managedDisplayID: ManagedDisplayID,
         topology: DisplayTopology,
         mode: SpaceSwitchMode
     ) -> SpaceSwitchOutcome {
+        if let transaction = displayStates[managedDisplayID]?.transaction,
+            transaction.targetDisplayID != request.targetDisplayID
+        {
+            cancelTransaction(
+                for: managedDisplayID,
+                reason: "superseded by physical display \(request.targetDisplayID.rawValue)"
+            )
+        }
+
         guard var state = matchingState(for: topology) else {
             return .unavailable
         }
@@ -194,7 +214,7 @@ actor SpaceSwitchEngine {
             targetSpaceID = topology.spaceIDs[index]
         case .lastSpace:
             guard
-                let lastSpaceID = request.resolvedLastSpaceID,
+                let lastSpaceID = state.lastSpaceID,
                 topology.spaceIDs.contains(lastSpaceID),
                 lastSpaceID != planningSpaceID
             else {
@@ -208,11 +228,11 @@ actor SpaceSwitchEngine {
         }
 
         if let transaction = state.transaction, transaction.mode != mode {
-            cancelTransaction(for: topology.displayID, reason: "overlay mode changed")
+            cancelTransaction(for: managedDisplayID, reason: "overlay mode changed")
             return .unavailable
         }
 
-        acquireTransactionLease(for: topology.displayID)
+        acquireTransactionLease(for: managedDisplayID)
 
         if var transaction = state.transaction {
             transaction.desiredSpaceID = targetSpaceID
@@ -221,6 +241,7 @@ actor SpaceSwitchEngine {
             state.transaction = transaction
         } else {
             state.transaction = Transaction(
+                targetDisplayID: request.targetDisplayID,
                 originSpaceID: state.confirmedSpaceID,
                 desiredSpaceID: targetSpaceID,
                 inFlightSteps: [],
@@ -232,11 +253,11 @@ actor SpaceSwitchEngine {
             )
         }
 
-        displayStates[topology.displayID] = state
-        transactionDisplayID = topology.displayID
+        displayStates[managedDisplayID] = state
+        transactionManagedDisplayID = managedDisplayID
         publish()
         let postingResult = postNextWindowIfPossible(
-            for: topology.displayID,
+            for: managedDisplayID,
             validatedMode: mode,
             contextAlreadyValidated: true
         )
@@ -246,7 +267,8 @@ actor SpaceSwitchEngine {
         dependencies.diagnose(
             "switch",
             "transaction accepted source=\(request.source.rawValue) "
-                + "display=\(topology.displayID.rawValue) confirmed=\(state.confirmedSpaceID.rawValue) "
+                + "display=\(request.targetDisplayID.rawValue) topology=\(managedDisplayID.rawValue) "
+                + "confirmed=\(state.confirmedSpaceID.rawValue) "
                 + "desired=\(targetSpaceID.rawValue) uptime=\(ProcessInfo.processInfo.systemUptime)"
         )
         return .accepted
@@ -315,19 +337,19 @@ actor SpaceSwitchEngine {
     private func reconcile(
         snapshot: SystemSpaceSnapshot,
         reason: ReconciliationReason
-    ) -> [DisplayID: SpaceSwitchMode] {
-        var resumableDisplays: [DisplayID: SpaceSwitchMode] = [:]
+    ) -> [ManagedDisplayID: SpaceSwitchMode] {
+        var resumableDisplays: [ManagedDisplayID: SpaceSwitchMode] = [:]
         let cursorDisplayID = try? dependencies.displays.cursorDisplayID()
-        let removed = Set(displayStates.keys).subtracting(snapshot.topologiesByDisplay.keys)
-        for displayID in removed {
-            diagnoseRollback(for: displayID, reason: "display removed")
-            cancelExecution(for: displayID)
-            displayStates.removeValue(forKey: displayID)
+        let removed = Set(displayStates.keys).subtracting(snapshot.topologiesByManagedDisplay.keys)
+        for managedDisplayID in removed {
+            diagnoseRollback(for: managedDisplayID, reason: "display removed")
+            cancelExecution(for: managedDisplayID)
+            displayStates.removeValue(forKey: managedDisplayID)
         }
 
-        for (displayID, topology) in snapshot.topologiesByDisplay {
-            guard var state = displayStates[displayID] else {
-                displayStates[displayID] = DisplayState(
+        for (managedDisplayID, topology) in snapshot.topologiesByManagedDisplay {
+            guard var state = displayStates[managedDisplayID] else {
+                displayStates[managedDisplayID] = DisplayState(
                     topology: topology,
                     confirmedSpaceID: topology.currentSpaceID,
                     lastSpaceID: nil,
@@ -338,8 +360,8 @@ actor SpaceSwitchEngine {
 
             let previousConfirmed = state.confirmedSpaceID
             guard state.topology.spaceIDs == topology.spaceIDs else {
-                diagnoseRollback(for: displayID, reason: "topology changed")
-                cancelExecution(for: displayID)
+                diagnoseRollback(for: managedDisplayID, reason: "topology changed")
+                cancelExecution(for: managedDisplayID)
                 state.topology = topology
                 state.confirmedSpaceID = topology.currentSpaceID
                 state.transaction = nil
@@ -349,17 +371,11 @@ actor SpaceSwitchEngine {
                     state.lastSpaceID = previousConfirmed
                 }
                 pruneHistory(in: &state)
-                displayStates[displayID] = state
+                displayStates[managedDisplayID] = state
                 continue
             }
 
             state.topology = topology
-            let sampledOverlay: OverlayMode? =
-                if reason != .request, cursorDisplayID == displayID {
-                    observeOverlay(on: displayID)
-                } else {
-                    nil
-                }
 
             if var transaction = state.transaction {
                 // Authoritative movement is processed before cursor and overlay
@@ -374,23 +390,27 @@ actor SpaceSwitchEngine {
                     state.confirmedSpaceID = topology.currentSpaceID
                     transaction.inFlightSteps.removeFirst(acknowledgedIndex + 1)
                     state.transaction = transaction
+                    if transaction.mode == .missionControl {
+                        dependencies.missionControlCapability
+                            .recordAuthoritativeAcknowledgement(on: transaction.targetDisplayID)
+                    }
                     dependencies.diagnose(
                         "switch-timing",
-                        "authoritative acknowledgement display=\(displayID.rawValue) "
+                        "authoritative acknowledgement display=\(transaction.targetDisplayID.rawValue) "
                             + "space=\(topology.currentSpaceID.rawValue) "
                             + "post-to-ack-ms=\(milliseconds(since: acknowledgedStep.postedAtUptime))"
                     )
                     if transaction.inFlightSteps.isEmpty {
-                        cancelAcknowledgement(for: displayID)
+                        cancelAcknowledgement(for: managedDisplayID)
                         if transaction.desiredSpaceID == topology.currentSpaceID {
-                            settleTransaction(in: &state, displayID: displayID)
+                            settleTransaction(in: &state, managedDisplayID: managedDisplayID)
                         }
                     }
                 } else if topology.currentSpaceID != state.confirmedSpaceID,
                     reason.resolvesConflicts
                 {
-                    diagnoseRollback(for: displayID, reason: "authoritative disagreement")
-                    cancelExecution(for: displayID)
+                    diagnoseRollback(for: managedDisplayID, reason: "authoritative disagreement")
+                    cancelExecution(for: managedDisplayID)
                     state.transaction = nil
                     state.confirmedSpaceID = topology.currentSpaceID
                     if topology.spaceIDs.contains(previousConfirmed) {
@@ -398,44 +418,44 @@ actor SpaceSwitchEngine {
                     }
                     dependencies.diagnose(
                         "switch",
-                        "unexpected authoritative space display=\(displayID.rawValue) "
+                        "unexpected authoritative space topology=\(managedDisplayID.rawValue) "
                             + "space=\(topology.currentSpaceID.rawValue)"
                     )
                 }
 
                 if let remaining = state.transaction {
                     guard
-                        dependencies.displays.bounds(for: displayID) != nil,
-                        cursorDisplayID == displayID
+                        dependencies.displays.bounds(for: remaining.targetDisplayID) != nil,
+                        cursorDisplayID == remaining.targetDisplayID
                     else {
-                        diagnoseRollback(for: displayID, reason: "cursor display changed")
-                        cancelExecution(for: displayID)
+                        diagnoseRollback(for: managedDisplayID, reason: "cursor display changed")
+                        cancelExecution(for: managedDisplayID)
                         preserveTransactionOriginIfAdvanced(remaining, in: &state)
                         state.transaction = nil
-                        displayStates[displayID] = state
+                        displayStates[managedDisplayID] = state
                         continue
                     }
 
-                    let observedOverlay = sampledOverlay ?? observeOverlay(on: displayID)
+                    let observedOverlay = observeOverlay(on: remaining.targetDisplayID)
                     if observedOverlay != .unknown,
                         mode(from: observedOverlay, requiredMode: remaining.requiredMode)
                             != remaining.mode
                     {
-                        diagnoseRollback(for: displayID, reason: "overlay mode changed")
-                        cancelExecution(for: displayID)
+                        diagnoseRollback(for: managedDisplayID, reason: "overlay mode changed")
+                        cancelExecution(for: managedDisplayID)
                         preserveTransactionOriginIfAdvanced(remaining, in: &state)
                         state.transaction = nil
                         dependencies.diagnose(
                             "switch",
-                            "cancelled display=\(displayID.rawValue) reason=overlay mode changed"
+                            "cancelled display=\(remaining.targetDisplayID.rawValue) reason=overlay mode changed"
                         )
                     } else if observedOverlay != .unknown,
                         remaining.inFlightSteps.isEmpty
                     {
                         if remaining.desiredSpaceID == state.confirmedSpaceID {
-                            settleTransaction(in: &state, displayID: displayID)
+                            settleTransaction(in: &state, managedDisplayID: managedDisplayID)
                         } else {
-                            resumableDisplays[displayID] = remaining.mode
+                            resumableDisplays[managedDisplayID] = remaining.mode
                         }
                     }
                     // Unknown is fail-closed for posting but preserves the
@@ -449,7 +469,7 @@ actor SpaceSwitchEngine {
             }
 
             pruneHistory(in: &state)
-            displayStates[displayID] = state
+            displayStates[managedDisplayID] = state
         }
 
         return resumableDisplays
@@ -457,12 +477,12 @@ actor SpaceSwitchEngine {
 
     @discardableResult
     private func postNextWindowIfPossible(
-        for displayID: DisplayID,
+        for managedDisplayID: ManagedDisplayID,
         validatedMode: SpaceSwitchMode? = nil,
         contextAlreadyValidated: Bool = false
     ) -> PostingResult {
         guard
-            var state = displayStates[displayID],
+            var state = displayStates[managedDisplayID],
             var transaction = state.transaction,
             transaction.inFlightSteps.isEmpty
         else {
@@ -470,23 +490,23 @@ actor SpaceSwitchEngine {
         }
 
         guard transaction.desiredSpaceID != state.confirmedSpaceID else {
-            settleTransaction(in: &state, displayID: displayID)
-            displayStates[displayID] = state
+            settleTransaction(in: &state, managedDisplayID: managedDisplayID)
+            displayStates[managedDisplayID] = state
             publish()
             return .waiting
         }
 
         if !contextAlreadyValidated,
-            !postingContextIsValid(for: displayID)
+            !postingContextIsValid(for: transaction.targetDisplayID)
         {
-            abortTransaction(for: displayID, reason: "posting context changed")
+            abortTransaction(for: managedDisplayID, reason: "posting context changed")
             return .failed(.unavailable)
         }
         let currentMode: SpaceSwitchMode?
         if let validatedMode {
             currentMode = validatedMode
         } else {
-            let observedOverlay = observeOverlay(on: displayID)
+            let observedOverlay = observeOverlay(on: transaction.targetDisplayID)
             guard observedOverlay != .unknown else {
                 // Keep acknowledged intent for a later refresh, but never post
                 // from uncertain overlay state.
@@ -502,7 +522,7 @@ actor SpaceSwitchEngine {
             let confirmedIndex = state.topology.index(of: state.confirmedSpaceID),
             let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
         else {
-            abortTransaction(for: displayID, reason: "posting context changed")
+            abortTransaction(for: managedDisplayID, reason: "posting context changed")
             return .failed(.unavailable)
         }
 
@@ -513,9 +533,9 @@ actor SpaceSwitchEngine {
             : 1
 
         if transaction.mode == .missionControl,
-            dependencies.missionControlCapability.state != .available
+            dependencies.missionControlCapability.state(on: transaction.targetDisplayID) != .available
         {
-            abortTransaction(for: displayID, reason: "Mission Control synthetic unavailable")
+            abortTransaction(for: managedDisplayID, reason: "Mission Control synthetic unavailable")
             return .failed(.missionControlSyntheticUnavailable)
         }
 
@@ -525,7 +545,7 @@ actor SpaceSwitchEngine {
         for offset in 1...windowSize {
             let nextIndex = confirmedIndex + (direction == .right ? offset : -offset)
             guard state.topology.spaceIDs.indices.contains(nextIndex) else {
-                abortTransaction(for: displayID, reason: "next target is outside topology")
+                abortTransaction(for: managedDisplayID, reason: "next target is outside topology")
                 return .failed(.invalidTarget)
             }
 
@@ -548,7 +568,7 @@ actor SpaceSwitchEngine {
 
         guard !postedSteps.isEmpty else {
             abortTransaction(
-                for: displayID,
+                for: managedDisplayID,
                 reason: "event posting failed",
                 reportsMissionControlFailure: true
             )
@@ -561,11 +581,11 @@ actor SpaceSwitchEngine {
         transaction.inFlightSteps = postedSteps
         transaction.postedStepCount += postedSteps.count
         state.transaction = transaction
-        displayStates[displayID] = state
+        displayStates[managedDisplayID] = state
         let lastPostedSpaceID = postedSteps.last!.targetSpaceID
         dependencies.diagnose(
             "switch",
-            "synthetic post display=\(displayID.rawValue) mode=\(transaction.mode) "
+            "synthetic post display=\(transaction.targetDisplayID.rawValue) mode=\(transaction.mode) "
                 + "direction=\(direction) steps=\(postedSteps.count) "
                 + "target=\(lastPostedSpaceID.rawValue) "
                 + "desired=\(transaction.desiredSpaceID.rawValue) "
@@ -573,14 +593,14 @@ actor SpaceSwitchEngine {
         )
         publish()
         scheduleAcknowledgementDeadline(
-            for: displayID,
+            for: managedDisplayID,
             targetSpaceID: lastPostedSpaceID
         )
         return .posted
     }
 
     private func scheduleAcknowledgementDeadline(
-        for displayID: DisplayID,
+        for managedDisplayID: ManagedDisplayID,
         targetSpaceID: SpaceID
     ) {
         acknowledgementTask?.cancel()
@@ -594,7 +614,7 @@ actor SpaceSwitchEngine {
                 return
             }
             await self.handleAcknowledgementDeadline(
-                for: displayID,
+                for: managedDisplayID,
                 targetSpaceID: targetSpaceID,
                 generation: generation
             )
@@ -602,22 +622,28 @@ actor SpaceSwitchEngine {
     }
 
     private func handleAcknowledgementDeadline(
-        for displayID: DisplayID,
+        for managedDisplayID: ManagedDisplayID,
         targetSpaceID: SpaceID,
         generation: UInt64
     ) {
         guard
             generation == acknowledgementGeneration,
-            let state = displayStates[displayID],
+            let state = displayStates[managedDisplayID],
             state.transaction?.inFlightSteps.last?.targetSpaceID == targetSpaceID
         else {
             return
         }
 
-        if let fresh = try? dependencies.system.loadSnapshot(),
-            let topology = fresh.topologiesByDisplay[displayID],
-            topology.currentSpaceID != state.confirmedSpaceID
-        {
+        guard
+            let fresh = try? dependencies.system.loadSnapshot(),
+            let topology = fresh.topologiesByManagedDisplay[managedDisplayID],
+            topology.spaceIDs == state.topology.spaceIDs
+        else {
+            abortTransaction(for: managedDisplayID, reason: "acknowledgement unverifiable")
+            return
+        }
+
+        if topology.currentSpaceID != state.confirmedSpaceID {
             snapshot = fresh
             let resumableDisplays = reconcile(snapshot: fresh, reason: .activeSpaceChanged)
             publish()
@@ -628,12 +654,12 @@ actor SpaceSwitchEngine {
                     contextAlreadyValidated: true
                 )
             }
-            if resumableDisplays[displayID] == nil,
-                let transaction = displayStates[displayID]?.transaction,
+            if resumableDisplays[managedDisplayID] == nil,
+                let transaction = displayStates[managedDisplayID]?.transaction,
                 let pendingTargetSpaceID = transaction.inFlightSteps.last?.targetSpaceID
             {
                 scheduleAcknowledgementDeadline(
-                    for: displayID,
+                    for: managedDisplayID,
                     targetSpaceID: pendingTargetSpaceID
                 )
             }
@@ -642,68 +668,103 @@ actor SpaceSwitchEngine {
 
         dependencies.diagnose(
             "switch-timing",
-            "timeout display=\(displayID.rawValue) target=\(targetSpaceID.rawValue)"
+            "timeout display=\(state.transaction!.targetDisplayID.rawValue) target=\(targetSpaceID.rawValue)"
         )
-        // A posted event without an acknowledgement is bounded by the timeout,
-        // but one slow Dock animation is not enough evidence to disable the
-        // Mission Control payload for the rest of the session.
+        let transaction = state.transaction!
+        if transaction.mode == .missionControl {
+            guard postingContextIsValid(for: transaction.targetDisplayID) else {
+                abortTransaction(
+                    for: managedDisplayID,
+                    reason: "acknowledgement context changed"
+                )
+                return
+            }
+            let observedOverlay = observeOverlay(on: transaction.targetDisplayID)
+            guard observedOverlay != .unknown,
+                mode(from: observedOverlay, requiredMode: transaction.requiredMode)
+                    == .missionControl
+            else {
+                abortTransaction(
+                    for: managedDisplayID,
+                    reason: "acknowledgement overlay unverifiable"
+                )
+                return
+            }
+        }
+        let openedCircuit = transaction.mode == .missionControl
+            && dependencies.missionControlCapability.recordConfirmedNonmovement(
+                on: transaction.targetDisplayID
+            )
         abortTransaction(
-            for: displayID,
+            for: managedDisplayID,
             reason: "acknowledgement timeout"
         )
+        if openedCircuit {
+            diagnoseMissionControlCircuitOpen(on: transaction.targetDisplayID)
+        }
     }
 
-    private func acquireTransactionLease(for displayID: DisplayID) {
-        guard let activeDisplayID = transactionDisplayID, activeDisplayID != displayID else {
+    private func acquireTransactionLease(for managedDisplayID: ManagedDisplayID) {
+        guard
+            let activeManagedDisplayID = transactionManagedDisplayID,
+            activeManagedDisplayID != managedDisplayID
+        else {
             return
         }
 
         diagnoseRollback(
-            for: activeDisplayID,
-            reason: "superseded by display \(displayID.rawValue)"
+            for: activeManagedDisplayID,
+            reason: "superseded by topology \(managedDisplayID.rawValue)"
         )
-        cancelExecution(for: activeDisplayID)
-        if var state = displayStates[activeDisplayID] {
+        cancelExecution(for: activeManagedDisplayID)
+        if var state = displayStates[activeManagedDisplayID] {
             state.transaction = nil
-            displayStates[activeDisplayID] = state
+            displayStates[activeManagedDisplayID] = state
         }
         dependencies.diagnose(
             "switch",
-            "superseded display=\(activeDisplayID.rawValue) by display=\(displayID.rawValue)"
+            "superseded topology=\(activeManagedDisplayID.rawValue) by topology=\(managedDisplayID.rawValue)"
         )
     }
 
-    private func cancelTransaction(for displayID: DisplayID, reason: String) {
-        diagnoseRollback(for: displayID, reason: reason)
-        cancelExecution(for: displayID)
-        if var state = displayStates[displayID] {
+    private func cancelTransaction(for managedDisplayID: ManagedDisplayID, reason: String) {
+        diagnoseRollback(for: managedDisplayID, reason: reason)
+        cancelExecution(for: managedDisplayID)
+        if var state = displayStates[managedDisplayID] {
             state.transaction = nil
-            displayStates[displayID] = state
+            displayStates[managedDisplayID] = state
         }
-        dependencies.diagnose("switch", "cancelled display=\(displayID.rawValue) reason=\(reason)")
+        dependencies.diagnose(
+            "switch",
+            "cancelled topology=\(managedDisplayID.rawValue) reason=\(reason)"
+        )
         publish()
     }
 
     private func abortTransaction(
-        for displayID: DisplayID,
+        for managedDisplayID: ManagedDisplayID,
         reason: String,
         reportsMissionControlFailure: Bool = false
     ) {
-        let mode = displayStates[displayID]?.transaction?.mode
-        diagnoseRollback(for: displayID, reason: reason)
-        cancelExecution(for: displayID)
-        if var state = displayStates[displayID] {
+        let transaction = displayStates[managedDisplayID]?.transaction
+        diagnoseRollback(for: managedDisplayID, reason: reason)
+        cancelExecution(for: managedDisplayID)
+        if var state = displayStates[managedDisplayID] {
             state.transaction = nil
-            displayStates[displayID] = state
+            displayStates[managedDisplayID] = state
         }
-        dependencies.diagnose("switch", "aborted display=\(displayID.rawValue) reason=\(reason)")
-        if reportsMissionControlFailure, mode == .missionControl,
-            dependencies.missionControlCapability.markUnavailable(on: displayID)
-        {
-            dependencies.diagnose(
-                "mission-control",
-                "synthetic path unavailable until confirmed overlay exit; gestures route to macOS and hotkey/menu actions fail fast"
+        dependencies.diagnose(
+            "switch",
+            "aborted topology=\(managedDisplayID.rawValue) reason=\(reason)"
+        )
+        if reportsMissionControlFailure,
+            let transaction,
+            transaction.mode == .missionControl,
+            dependencies.missionControlCapability.recordPostRejection(
+                on: transaction.targetDisplayID
             )
+        {
+            diagnoseMissionControlCircuitOpen(on: transaction.targetDisplayID)
         }
         publish()
     }
@@ -715,7 +776,7 @@ actor SpaceSwitchEngine {
 
     private func matchingState(for topology: DisplayTopology) -> DisplayState? {
         guard
-            let state = displayStates[topology.displayID],
+            let state = displayStates[topology.managedDisplayID],
             state.topology.spaceIDs == topology.spaceIDs
         else {
             return nil
@@ -723,11 +784,14 @@ actor SpaceSwitchEngine {
         return state
     }
 
-    private func settleTransaction(in state: inout DisplayState, displayID: DisplayID) {
+    private func settleTransaction(
+        in state: inout DisplayState,
+        managedDisplayID: ManagedDisplayID
+    ) {
         guard let transaction = state.transaction else { return }
         dependencies.diagnose(
             "switch-timing",
-            "transaction settlement display=\(displayID.rawValue) "
+            "transaction settlement display=\(transaction.targetDisplayID.rawValue) "
                 + "posts=\(transaction.postedStepCount) "
                 + "elapsed-ms=\(milliseconds(since: transaction.startedAtUptime))"
         )
@@ -737,19 +801,19 @@ actor SpaceSwitchEngine {
             state.lastSpaceID = transaction.originSpaceID
         }
         state.transaction = nil
-        cancelExecution(for: displayID)
+        cancelExecution(for: managedDisplayID)
     }
 
-    private func diagnoseRollback(for displayID: DisplayID, reason: String) {
+    private func diagnoseRollback(for managedDisplayID: ManagedDisplayID, reason: String) {
         guard
-            let state = displayStates[displayID],
+            let state = displayStates[managedDisplayID],
             let transaction = state.transaction
         else {
             return
         }
         dependencies.diagnose(
             "switch-timing",
-            "cancellation display=\(displayID.rawValue) reason=\(reason) "
+            "cancellation display=\(transaction.targetDisplayID.rawValue) reason=\(reason) "
                 + "projection-rollback=\(state.confirmedSpaceID.rawValue) "
                 + "elapsed-ms=\(milliseconds(since: transaction.startedAtUptime))"
         )
@@ -781,15 +845,15 @@ actor SpaceSwitchEngine {
         }
     }
 
-    private func cancelAcknowledgement(for displayID: DisplayID) {
-        guard transactionDisplayID == displayID else { return }
+    private func cancelAcknowledgement(for managedDisplayID: ManagedDisplayID) {
+        guard transactionManagedDisplayID == managedDisplayID else { return }
         acknowledgementGeneration &+= 1
         acknowledgementTask?.cancel()
         acknowledgementTask = nil
     }
 
-    private func cancelExecution(for displayID: DisplayID) {
-        guard transactionDisplayID == displayID else { return }
+    private func cancelExecution(for managedDisplayID: ManagedDisplayID) {
+        guard transactionManagedDisplayID == managedDisplayID else { return }
         cancelExecution()
     }
 
@@ -797,16 +861,23 @@ actor SpaceSwitchEngine {
         acknowledgementGeneration &+= 1
         acknowledgementTask?.cancel()
         acknowledgementTask = nil
-        transactionDisplayID = nil
+        transactionManagedDisplayID = nil
     }
 
     private func makePresentation() -> SpacePresentation {
         SpacePresentation(
             snapshot: snapshot,
-            projectedSpaceByDisplay: displayStates.mapValues {
+            projectedSpaceByManagedDisplay: displayStates.mapValues {
                 $0.transaction?.desiredSpaceID ?? $0.confirmedSpaceID
             },
-            lastSpaceByDisplay: displayStates.compactMapValues(\.lastSpaceID)
+            lastSpaceByManagedDisplay: displayStates.compactMapValues(\.lastSpaceID)
+        )
+    }
+
+    private func diagnoseMissionControlCircuitOpen(on displayID: DisplayID) {
+        dependencies.diagnose(
+            "mission-control",
+            "synthetic path unavailable display=\(displayID.rawValue) until confirmed overlay exit"
         )
     }
 

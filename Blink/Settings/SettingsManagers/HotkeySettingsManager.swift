@@ -22,6 +22,7 @@ final class HotkeySettingsManager {
     @Ignore private let registry: HotkeyRegistry
     @Ignore private let dispatcher: ActionDispatcher
     @Ignore private let generalSettings: GeneralSettingsManager
+    @Ignore private let userDefaults: UserDefaults
     @Ignore private var registeredBindings: [BoundAction: RegisteredBinding] = [:]
     @Ignore private var registrationFailures: [BoundAction: HotkeyRegistrationFailure] = [:]
     @Ignore private var recordingAction: BoundAction?
@@ -31,11 +32,14 @@ final class HotkeySettingsManager {
     init(
         registry: HotkeyRegistry,
         dispatcher: ActionDispatcher,
-        generalSettings: GeneralSettingsManager
+        generalSettings: GeneralSettingsManager,
+        userDefaults: UserDefaults = .standard
     ) {
+        self._userDefaults = userDefaults
         self.registry = registry
         self.dispatcher = dispatcher
         self.generalSettings = generalSettings
+        self.userDefaults = userDefaults
         self.monitoringState = registry.monitoringState
         registry.onMonitoringStateChanged = { [weak self] state in
             guard let self else { return }
@@ -100,7 +104,7 @@ final class HotkeySettingsManager {
     }
 
     private func loadInitialState() {
-        let values = UserDefaults.standard.dictionary(forKey: Self.defaultsKey) as? [String: Data]
+        let values = userDefaults.dictionary(forKey: Self.defaultsKey) as? [String: Data]
 
         for hotkey in hotkeys {
             guard let data = values?[hotkey.action.rawValue] else {
@@ -284,14 +288,15 @@ final class HotkeySettingsManager {
         }
 
         if values.isEmpty {
-            UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
+            userDefaults.removeObject(forKey: Self.defaultsKey)
         } else {
-            UserDefaults.standard.set(values, forKey: Self.defaultsKey)
+            userDefaults.set(values, forKey: Self.defaultsKey)
         }
     }
 
     func shutdown() {
         guard !isShutdown else { return }
+        persistHotkeys()
         isShutdown = true
         registry.endRecording()
         recordingAction = nil

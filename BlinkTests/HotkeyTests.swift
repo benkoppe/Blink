@@ -24,13 +24,14 @@ struct HotkeyTests {
 
     @Test("Every native default hotkey is registered and suppressed")
     func defaultHotkeysAreSuppressed() {
-        withCleanHotkeyDefaults {
+        withCleanHotkeyDefaults { defaults in
             let monitor = FakeHotkeyMonitor(isHealthy: true)
             let registry = HotkeyRegistry { _ in monitor }
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
 
@@ -153,14 +154,15 @@ struct HotkeyTests {
 
     @Test("Recording suspends and restores only the edited binding")
     func recordingSuspendsAndRestoresBinding() async {
-        await withCleanHotkeyDefaults {
+        await withCleanHotkeyDefaults { defaults in
             let monitor = FakeHotkeyMonitor(isHealthy: true)
             let registry = HotkeyRegistry { _ in monitor }
-            let generalSettings = GeneralSettingsManager()
+            let generalSettings = GeneralSettingsManager(userDefaults: defaults)
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: generalSettings
+                generalSettings: generalSettings,
+                userDefaults: defaults
             )
             manager.performSetup()
             let left = BoundAction.left.defaultKeyCombination!
@@ -174,7 +176,7 @@ struct HotkeyTests {
             })
             #expect(registry.handleKeyEvent(event(left)))
             #expect(registry.handleKeyEvent(event(right)))
-            for _ in 0..<20 { await Task.yield() }
+            await registry.waitForPendingRecordingDelivery()
             #expect(recorded == [left, right])
             #expect(manager.hotkey(withAction: .left)?.registrationState == .disabled)
 
@@ -186,12 +188,13 @@ struct HotkeyTests {
 
     @Test("Only the recorder that owns capture can end it")
     func recordingHasSingleOwner() async {
-        await withCleanHotkeyDefaults {
+        await withCleanHotkeyDefaults { defaults in
             let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
 
@@ -204,7 +207,7 @@ struct HotkeyTests {
             manager.endRecording(action: .right)
             let right = BoundAction.right.defaultKeyCombination!
             #expect(registry.handleKeyEvent(event(right)))
-            for _ in 0..<20 { await Task.yield() }
+            await registry.waitForPendingRecordingDelivery()
             #expect(captured == [right])
 
             manager.endRecording(action: .left)
@@ -212,15 +215,32 @@ struct HotkeyTests {
         }
     }
 
+    @Test("Queued recorder delivery cannot outlive its owner")
+    func queuedRecordingDeliveryHonorsOwnershipEpoch() async {
+        let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
+        var captured: [KeyCombination] = []
+        #expect(registry.beginRecording { captured.append($0.keyCombination) })
+        let left = BoundAction.left.defaultKeyCombination!
+        let right = BoundAction.right.defaultKeyCombination!
+
+        #expect(registry.handleKeyEvent(event(left)))
+        #expect(registry.handleKeyEvent(event(right)))
+        registry.endRecording()
+        await registry.waitForPendingRecordingDelivery()
+
+        #expect(captured.isEmpty)
+    }
+
     @Test("Global binding enablement unregisters and restores hotkeys")
     func globalEnablementControlsRegistrations() {
-        withCleanHotkeyDefaults {
+        withCleanHotkeyDefaults { defaults in
             let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
-            let generalSettings = GeneralSettingsManager()
+            let generalSettings = GeneralSettingsManager(userDefaults: defaults)
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: generalSettings
+                generalSettings: generalSettings,
+                userDefaults: defaults
             )
             manager.performSetup()
             let left = BoundAction.left.defaultKeyCombination!
@@ -243,12 +263,13 @@ struct HotkeyTests {
 
     @Test("Manager exposes shared monitor failure per configured binding")
     func managerExposesMonitorFailure() {
-        withCleanHotkeyDefaults {
+        withCleanHotkeyDefaults { defaults in
             let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: false) }
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
 
@@ -263,13 +284,14 @@ struct HotkeyTests {
 
     @Test("Duplicate configured actions are both disabled")
     func duplicateConfiguredActionsAreBothDisabled() {
-        withCleanHotkeyDefaults {
+        withCleanHotkeyDefaults { defaults in
             let monitor = FakeHotkeyMonitor(isHealthy: true)
             let registry = HotkeyRegistry { _ in monitor }
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
             let combination = BoundAction.left.defaultKeyCombination!
@@ -290,7 +312,7 @@ struct HotkeyTests {
 
     @Test("A failed shared monitor is created once per reconfiguration pass")
     func failedMonitorCreationIsBatched() {
-        withCleanHotkeyDefaults {
+        withCleanHotkeyDefaults { defaults in
             var creationCount = 0
             let registry = HotkeyRegistry { _ in
                 creationCount += 1
@@ -299,7 +321,8 @@ struct HotkeyTests {
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
 
@@ -309,12 +332,13 @@ struct HotkeyTests {
 
     @Test("Recorder captures an existing Blink shortcut before its action and swaps owners")
     func recorderCapturesAndSwapsExistingShortcut() async {
-        await withCleanHotkeyDefaults {
+        await withCleanHotkeyDefaults { defaults in
             let registry = HotkeyRegistry { _ in FakeHotkeyMonitor(isHealthy: true) }
             let manager = HotkeySettingsManager(
                 registry: registry,
                 dispatcher: makeDispatcher(),
-                generalSettings: GeneralSettingsManager()
+                generalSettings: GeneralSettingsManager(userDefaults: defaults),
+                userDefaults: defaults
             )
             manager.performSetup()
             let left = BoundAction.left.defaultKeyCombination!
@@ -325,7 +349,7 @@ struct HotkeyTests {
                 manager.endRecording(action: .left)
             })
             #expect(registry.handleKeyEvent(event(right)))
-            for _ in 0..<20 { await Task.yield() }
+            await registry.waitForPendingRecordingDelivery()
 
             #expect(manager.hotkey(withAction: .left)?.keyCombination == right)
             #expect(manager.hotkey(withAction: .right)?.keyCombination == left)
@@ -401,32 +425,20 @@ struct HotkeyTests {
         )
     }
 
-    private func withCleanHotkeyDefaults(_ body: () async -> Void) async {
-        let defaults = UserDefaults.standard
-        let saved = defaults.object(forKey: "hotkeys")
-        defaults.removeObject(forKey: "hotkeys")
-        defer {
-            if let saved {
-                defaults.set(saved, forKey: "hotkeys")
-            } else {
-                defaults.removeObject(forKey: "hotkeys")
-            }
-        }
-        await body()
+    private func withCleanHotkeyDefaults(
+        _ body: (UserDefaults) async -> Void
+    ) async {
+        let suiteName = "com.thekoppe.BlinkTests.hotkeys.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        await body(defaults)
     }
 
-    private func withCleanHotkeyDefaults(_ body: () -> Void) {
-        let defaults = UserDefaults.standard
-        let saved = defaults.object(forKey: "hotkeys")
-        defaults.removeObject(forKey: "hotkeys")
-        defer {
-            if let saved {
-                defaults.set(saved, forKey: "hotkeys")
-            } else {
-                defaults.removeObject(forKey: "hotkeys")
-            }
-        }
-        body()
+    private func withCleanHotkeyDefaults(_ body: (UserDefaults) -> Void) {
+        let suiteName = "com.thekoppe.BlinkTests.hotkeys.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        body(defaults)
     }
 }
 

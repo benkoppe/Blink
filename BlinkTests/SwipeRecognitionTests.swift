@@ -308,7 +308,7 @@ struct SwipeRecognitionTests {
             proposedContext: system,
             completion: probe.record
         )
-        await waitUntil { probe.completionCount == 1 }
+        await probe.waitForCompletionCount(1)
 
         worker.consume(
             GestureSample(touches: touches(at: 0)),
@@ -322,7 +322,7 @@ struct SwipeRecognitionTests {
             proposedContext: blink,
             completion: probe.record
         )
-        await waitUntil { probe.completionCount == 3 }
+        await probe.waitForCompletionCount(3)
 
         #expect(probe.recognitions.isEmpty)
     }
@@ -356,7 +356,7 @@ struct SwipeRecognitionTests {
             proposedContext: missionControl,
             completion: probe.record
         )
-        await waitUntil { probe.completionCount == 1 }
+        await probe.waitForCompletionCount(1)
         worker.consume(
             GestureSample(touches: touches(at: 0)),
             configuration: configuration,
@@ -369,7 +369,7 @@ struct SwipeRecognitionTests {
             proposedContext: desktop,
             completion: probe.record
         )
-        await waitUntil { probe.completionCount == 3 }
+        await probe.waitForCompletionCount(3)
 
         #expect(probe.recognitions.count == 1)
         #expect(probe.recognitions.first?.context == missionControl)
@@ -388,7 +388,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
         monitor.consume(GestureSample(touches: touches(at: 0)))
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
-        await waitUntil { directions.count == 3 }
+        await monitor.drain()
 
         #expect(directions == [.right, .left, .right])
     }
@@ -409,7 +409,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
         monitor.consume(GestureSample(touches: []))
         monitor.consume(GestureSample(touches: touches(at: 0)))
-        await waitUntil { directions.count == 2 }
+        await monitor.drain()
 
         #expect(directions == [.right, .left])
         #expect(beginnings.count == 1)
@@ -432,7 +432,7 @@ struct SwipeRecognitionTests {
             )
         }
         monitor.consume(GestureSample(touches: replacements))
-        for _ in 0..<20 { await Task.yield() }
+        await monitor.drain()
 
         #expect(beginnings == [1, 2])
     }
@@ -451,7 +451,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0).map {
             GestureTouchSample(identity: $0.identity, position: $0.position, isEnded: true)
         }))
-        await waitUntil { events.count == 2 }
+        await monitor.drain()
 
         #expect(events == ["swipe", "end"])
     }
@@ -468,7 +468,7 @@ struct SwipeRecognitionTests {
         monitor.onRecognitionSessionEnded = { _ in endings += 1 }
 
         monitor.consume(GestureSample(touches: []))
-        for _ in 0..<20 { await Task.yield() }
+        await monitor.drain()
 
         #expect(contextSelections == 0)
         #expect(endings == 0)
@@ -484,7 +484,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0)))
         monitor.finishRecognitionSession()
         monitor.finishRecognitionSession()
-        await waitUntil { endings == 1 }
+        await monitor.drain()
 
         #expect(endings == 1)
     }
@@ -499,11 +499,11 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0)))
         monitor.finishRecognitionSession()
         monitor.consume(GestureSample(touches: touches(at: 0)))
-        for _ in 0..<20 { await Task.yield() }
+        await monitor.drain()
         #expect(endings == 0)
 
         monitor.finishRecognitionSession()
-        await waitUntil { endings == 1 }
+        await monitor.drain()
         #expect(endings == 1)
     }
 
@@ -560,7 +560,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
         monitor.stopMonitoring()
         gate.signal()
-        try? await Task.sleep(for: .milliseconds(50))
+        await monitor.drain()
         #expect(dispatchCount == 0)
     }
 
@@ -582,7 +582,7 @@ struct SwipeRecognitionTests {
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
         monitor.invalidateRecognition()
         gate.signal()
-        try? await Task.sleep(for: .milliseconds(50))
+        await monitor.drain()
         #expect(dispatchCount == 0)
     }
 }
