@@ -45,10 +45,14 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
                     return
                 }
                 sessionContext = proposedContext
-            } else if sessionContext?.route == .pending,
+            } else if let currentContext = sessionContext,
                 let proposedContext,
-                proposedContext.isAuthoritativeBlinkContext
+                proposedContext != currentContext,
+                proposedContext.isAuthoritativeBlinkContext,
+                currentContext.route == .pending
+                    || currentContext.isAuthoritativeBlinkContext
             {
+                recognizer.reset()
                 sessionContext = proposedContext
             }
 

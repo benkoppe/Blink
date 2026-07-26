@@ -272,12 +272,11 @@ nonisolated struct OverlayRoutingLeaseState: Equatable, Sendable {
         at uptime: TimeInterval
     ) -> Bool {
         guard let lease else { return true }
-        return lease.overlayMode != .none
-            || !lease.isValid(
-                at: uptime,
-                requiredGeneration: generation,
-                currentTargetDisplayID: currentDisplayID
-            )
+        return !lease.isValid(
+            at: uptime,
+            requiredGeneration: generation,
+            currentTargetDisplayID: currentDisplayID
+        )
     }
 
     func makeContext(

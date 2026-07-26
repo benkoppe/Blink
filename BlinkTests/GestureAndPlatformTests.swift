@@ -230,6 +230,55 @@ struct GestureAndPlatformTests {
         #expect(probe.recognitions.first?.direction == .right)
     }
 
+    @Test("Recognition adopts a confirmed overlay-mode change within a gesture")
+    func recognitionAdoptsOverlayModeChange() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let worker = SwipeRecognitionWorker()
+        let probe = RecognitionProbe()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: false,
+            sameDirectionRepeatSensitivity: 0.06
+        )
+        let missionControl = GestureSessionContext.observed(
+            generation: 1,
+            targetDisplayID: display,
+            overlayMode: .missionControl,
+            missionControlSyntheticState: .available
+        )
+        let desktop = GestureSessionContext.observed(
+            generation: 1,
+            targetDisplayID: display,
+            overlayMode: .none,
+            missionControlSyntheticState: .available
+        )
+
+        worker.consume(
+            GestureSample(touches: touches(at: 0)),
+            configuration: configuration,
+            proposedContext: missionControl,
+            completion: probe.record
+        )
+        await waitUntil { probe.completionCount == 1 }
+        worker.consume(
+            GestureSample(touches: touches(at: 0)),
+            configuration: configuration,
+            proposedContext: desktop,
+            completion: probe.record
+        )
+        worker.consume(
+            GestureSample(touches: touches(at: 0.08)),
+            configuration: configuration,
+            proposedContext: desktop,
+            completion: probe.record
+        )
+        await waitUntil { probe.completionCount == 3 }
+
+        #expect(probe.recognitions.count == 1)
+        #expect(probe.recognitions.first?.context == desktop)
+        #expect(probe.recognitions.first?.direction == .right)
+    }
+
     @Test("Queued recognition cannot dispatch after monitor stop")
     func queuedRecognitionAfterStopIsDiscarded() async {
         let queue = DispatchQueue(label: "SwipeGestureMonitor.stop-test")
@@ -507,8 +556,8 @@ struct GestureAndPlatformTests {
         )
     }
 
-    @Test("Restrictive or stale routing state requires a synchronous gesture refresh")
-    func restrictiveRoutingStateRequiresSynchronousRefresh() {
+    @Test("Only missing or stale routing state requires a synchronous gesture refresh")
+    func staleRoutingStateRequiresSynchronousRefresh() {
         let display = DisplayID(rawValue: "display-a")!
         var state = OverlayRoutingLeaseState()
         let generation = state.invalidate()
@@ -529,7 +578,8 @@ struct GestureAndPlatformTests {
             )
         )
         #expect(acceptedAppExpose)
-        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        #expect(!state.requiresSynchronousRefresh(currentDisplayID: display, at: 100))
+        #expect(state.requiresSynchronousRefresh(currentDisplayID: display, at: 131))
         #expect(
             GestureSessionContext.observed(
                 generation: 1,

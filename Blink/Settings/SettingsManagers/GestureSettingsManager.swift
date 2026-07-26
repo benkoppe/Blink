@@ -285,11 +285,14 @@ final class GestureSettingsManager {
     private func updateRoutingLease(_ lease: OverlayRoutingLease) {
         let previousMode = routingState.lease?.overlayMode ?? .unknown
         guard routingState.accept(lease) else { return }
-        _ = overlayTransitionIsPending(
+        let transitionIsPending = overlayTransitionIsPending(
             observedMode: lease.overlayMode,
             at: lease.sampledAtUptime
         )
         missionControlCapability.observeOverlay(lease.overlayMode)
+        if !transitionIsPending {
+            updateSelectedGestureContext(from: lease)
+        }
         guard previousMode != lease.overlayMode else { return }
 
         DiagnosticsStore.shared.record(
@@ -391,6 +394,24 @@ final class GestureSettingsManager {
             at: uptime,
             missionControlSyntheticState: missionControlCapability.state
         )
+    }
+
+    private func updateSelectedGestureContext(from lease: OverlayRoutingLease) {
+        guard
+            let selectedGestureContext,
+            selectedGestureContext.route != .system,
+            selectedGestureContext.targetDisplayID == lease.targetDisplayID
+        else {
+            return
+        }
+        let updatedContext = GestureSessionContext.observed(
+            generation: selectedGestureContext.generation,
+            targetDisplayID: lease.targetDisplayID,
+            overlayMode: lease.overlayMode,
+            missionControlSyntheticState: missionControlCapability.state
+        )
+        guard updatedContext.isAuthoritativeBlinkContext else { return }
+        self.selectedGestureContext = updatedContext
     }
 
     private func promotePendingGestureContext(
