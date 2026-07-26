@@ -198,7 +198,10 @@ final class GestureSettingsManager {
         let sampler = overlayModeSampler
 
         if enabled {
-            startOverlaySampler(generation: generation)
+            startOverlaySampler(
+                generation: generation,
+                settlesTransition: false
+            )
         } else {
             Task {
                 await sampler.stop(generation: generation)
@@ -230,13 +233,22 @@ final class GestureSettingsManager {
         let generation = routingState.invalidate()
         guard overlaySamplingEnabled else { return }
 
-        startOverlaySampler(generation: generation)
+        startOverlaySampler(
+            generation: generation,
+            settlesTransition: true
+        )
     }
 
-    private func startOverlaySampler(generation: UInt64) {
+    private func startOverlaySampler(
+        generation: UInt64,
+        settlesTransition: Bool
+    ) {
         let sampler = overlayModeSampler
         Task { [weak self] in
-            await sampler.start(generation: generation) { [weak self] lease in
+            await sampler.start(
+                generation: generation,
+                settlesTransition: settlesTransition
+            ) { [weak self] lease in
                 Task { @MainActor [weak self] in
                     self?.updateRoutingLease(lease)
                 }

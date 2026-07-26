@@ -660,16 +660,20 @@ struct GestureAndPlatformTests {
             freshnessPolicy: .init(
                 leaseDuration: 30,
                 safetyRenewalLeadTime: 5,
+                activeOverlayRevalidationInterval: 30,
                 uncertaintyRetryDelays: [0.5]
             ),
             uptime: { clock.now },
             sleep: { try await sleeper.sleep($0) }
         )
 
-        await sampler.start(generation: generation) { sink.accept($0) }
+        await sampler.start(
+            generation: generation,
+            settlesTransition: true
+        ) { sink.accept($0) }
         await waitUntil { detector.startedSamples == 1 }
         await waitUntil {
-            Set(await sleeper.waitingDurations) == Set([0.5, 25])
+            Set(await sleeper.waitingDurations) == Set([0.5, 30])
         }
         #expect(sink.lease?.overlayMode == .appExpose)
         #expect(
@@ -684,6 +688,106 @@ struct GestureAndPlatformTests {
         await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
         #expect(detector.startedSamples == 2)
         #expect(await sleeper.waitingDurations == [25])
+        await sampler.stop(generation: generation + 1)
+        await waitUntil { await sleeper.waitingDurations.isEmpty }
+    }
+
+    @Test("Settling confirmation follows desktop and Mission Control transitions")
+    func settlingConfirmationFollowsOverlayTransitions() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let scenarios: [(initial: OverlayMode, settled: OverlayMode)] = [
+            (.none, .missionControl),
+            (.missionControl, .none),
+        ]
+
+        for scenario in scenarios {
+            let clock = RoutingTestClock(now: 100)
+            let sleeper = RoutingTestSleeper()
+            let detector = ControlledOverlayDetector(
+                modes: [scenario.initial, scenario.settled]
+            )
+            let sink = RoutingLeaseSink()
+            let generation = sink.invalidate()
+            let sampler = OverlayModeSampler(
+                displayLocator: FixedDisplayLocator(displayID: display),
+                detector: detector,
+                freshnessPolicy: .init(
+                    leaseDuration: 30,
+                    safetyRenewalLeadTime: 5,
+                    activeOverlayRevalidationInterval: 30,
+                    uncertaintyRetryDelays: [0.5]
+                ),
+                uptime: { clock.now },
+                sleep: { try await sleeper.sleep($0) }
+            )
+
+            await sampler.start(
+                generation: generation,
+                settlesTransition: true
+            ) { sink.accept($0) }
+            await waitUntil { sink.leases.count == 1 }
+            let initialSafetyDelay = scenario.initial == .none ? 25.0 : 30.0
+            await waitUntil {
+                Set(await sleeper.waitingDurations) == Set([0.5, initialSafetyDelay])
+            }
+            #expect(sink.lease?.overlayMode == scenario.initial)
+
+            await sleeper.resumeFirst(for: 0.5)
+            await waitUntil { sink.leases.count == 2 }
+            #expect(sink.lease?.overlayMode == scenario.settled)
+            let settledSafetyDelay = scenario.settled == .none ? 25.0 : 30.0
+            #expect(await sleeper.waitingDurations == [settledSafetyDelay])
+
+            await sampler.stop(generation: generation + 1)
+            await waitUntil { await sleeper.waitingDurations.isEmpty }
+        }
+    }
+
+    @Test("Active-overlay revalidation detects an unnotified Mission Control exit")
+    func activeOverlayRevalidationDetectsExit() async {
+        let display = DisplayID(rawValue: "display-a")!
+        let clock = RoutingTestClock(now: 100)
+        let sleeper = RoutingTestSleeper()
+        let detector = ControlledOverlayDetector(
+            modes: [.missionControl, .unknown, .none]
+        )
+        let sink = RoutingLeaseSink()
+        let generation = sink.invalidate()
+        let sampler = OverlayModeSampler(
+            displayLocator: FixedDisplayLocator(displayID: display),
+            detector: detector,
+            freshnessPolicy: .init(
+                leaseDuration: 30,
+                safetyRenewalLeadTime: 5,
+                activeOverlayRevalidationInterval: 0.5,
+                uncertaintyRetryDelays: []
+            ),
+            uptime: { clock.now },
+            sleep: { try await sleeper.sleep($0) }
+        )
+
+        await sampler.start(generation: generation) { sink.accept($0) }
+        await waitUntil { sink.lease?.overlayMode == .missionControl }
+        await waitUntil { await sleeper.waitingDurations == [0.5] }
+        #expect(
+            OverlayRoutingFreshnessPolicy.standard.shouldRenewOpportunistically(
+                sink.lease!,
+                at: 100
+            )
+        )
+
+        clock.now = 129
+        await sleeper.resumeFirst()
+        await waitUntil { detector.startedSamples == 2 }
+        await waitUntil { await sleeper.waitingDurations == [0.5] }
+        #expect(sink.lease?.overlayMode == .missionControl)
+
+        clock.now = 129.5
+        await sleeper.resumeFirst()
+        await waitUntil { sink.lease?.overlayMode == OverlayMode.none }
+        #expect(detector.startedSamples == 3)
+        #expect(await sleeper.waitingDurations == [25])
+
         await sampler.stop(generation: generation + 1)
         await waitUntil { await sleeper.waitingDurations.isEmpty }
     }

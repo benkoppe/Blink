@@ -62,11 +62,16 @@ nonisolated struct OverlayRoutingFreshnessPolicy: Equatable, Sendable {
     static let standard = OverlayRoutingFreshnessPolicy(
         leaseDuration: 30,
         safetyRenewalLeadTime: 5,
+        activeOverlayRevalidationInterval: 0.5,
         uncertaintyRetryDelays: [0.2, 0.6]
     )
 
     let leaseDuration: TimeInterval
     let safetyRenewalLeadTime: TimeInterval
+    // Mission Control and App Exposé do not reliably emit an observable event
+    // when dismissed through every system path. Revalidate only while an
+    // overlay lease is active; normal desktop idle remains event-driven.
+    let activeOverlayRevalidationInterval: TimeInterval
     // A transition sample can legitimately land inside Dock animation. These
     // two event-bound retries settle that uncertainty without creating an idle
     // polling loop.
@@ -75,14 +80,17 @@ nonisolated struct OverlayRoutingFreshnessPolicy: Equatable, Sendable {
     init(
         leaseDuration: TimeInterval,
         safetyRenewalLeadTime: TimeInterval,
+        activeOverlayRevalidationInterval: TimeInterval = 0.5,
         uncertaintyRetryDelays: [TimeInterval] = [0.2, 0.6]
     ) {
         precondition(leaseDuration > 0)
         precondition(safetyRenewalLeadTime > 0)
         precondition(safetyRenewalLeadTime < leaseDuration)
+        precondition(activeOverlayRevalidationInterval > 0)
         precondition(uncertaintyRetryDelays.allSatisfy { $0 > 0 })
         self.leaseDuration = leaseDuration
         self.safetyRenewalLeadTime = safetyRenewalLeadTime
+        self.activeOverlayRevalidationInterval = activeOverlayRevalidationInterval
         self.uncertaintyRetryDelays = uncertaintyRetryDelays
     }
 
@@ -94,14 +102,27 @@ nonisolated struct OverlayRoutingFreshnessPolicy: Equatable, Sendable {
         for lease: OverlayRoutingLease,
         at uptime: TimeInterval
     ) -> TimeInterval {
-        max(0, lease.expirationUptime - safetyRenewalLeadTime - uptime)
+        if lease.overlayMode != .none {
+            return max(
+                0,
+                min(
+                    activeOverlayRevalidationInterval,
+                    lease.expirationUptime - uptime
+                )
+            )
+        }
+        return max(
+            0,
+            lease.expirationUptime - safetyRenewalLeadTime - uptime
+        )
     }
 
     func shouldRenewOpportunistically(
         _ lease: OverlayRoutingLease,
         at uptime: TimeInterval
     ) -> Bool {
-        safetyRenewalDelay(for: lease, at: uptime) == 0
+        lease.overlayMode != .none
+            || safetyRenewalDelay(for: lease, at: uptime) == 0
     }
 }
 
@@ -246,10 +267,10 @@ actor OverlayModeSampler {
     typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
 
     private enum RefreshPurpose: Sendable {
-        case confirmation(attempt: Int)
+        case confirmation(attempt: Int, settlesTransition: Bool)
         case opportunistic
         case forced
-        case safetyRenewal
+        case safetyRenewal(previousLease: OverlayRoutingLease)
     }
 
     private let displayLocator: any DisplayLocating
@@ -300,6 +321,7 @@ actor OverlayModeSampler {
 
     func start(
         generation: UInt64,
+        settlesTransition: Bool = false,
         onUpdate: @escaping @Sendable (OverlayRoutingLease) -> Void
     ) {
         if isRunning, generation == acceptedGeneration {
@@ -314,7 +336,10 @@ actor OverlayModeSampler {
         self.onUpdate = onUpdate
         beginRefresh(
             generation: generation,
-            purpose: .confirmation(attempt: 0)
+            purpose: .confirmation(
+                attempt: 0,
+                settlesTransition: settlesTransition
+            )
         )
     }
 
@@ -411,12 +436,23 @@ actor OverlayModeSampler {
 
         samplingTask = nil
         guard let (displayID, overlayMode, sampledAtUptime) = observation else {
-            if case .confirmation(let attempt) = purpose {
+            switch purpose {
+            case .confirmation(let attempt, let settlesTransition):
                 scheduleUncertaintyRetry(
                     afterFailedAttempt: attempt,
+                    settlesTransition: settlesTransition,
                     generation: generation,
                     lifecycle: lifecycle
                 )
+            case .safetyRenewal(let previousLease)
+                where previousLease.overlayMode != .none
+                    && uptime() < previousLease.expirationUptime:
+                scheduleSafetyRenewal(
+                    for: previousLease,
+                    lifecycle: lifecycle
+                )
+            case .opportunistic, .forced, .safetyRenewal:
+                break
             }
             return
         }
@@ -434,11 +470,10 @@ actor OverlayModeSampler {
         )
         onUpdate?(lease)
         scheduleSafetyRenewal(for: lease, lifecycle: lifecycle)
-        if overlayMode == .appExpose,
-            case .confirmation(let attempt) = purpose
-        {
+        if case .confirmation(let attempt, true) = purpose {
             scheduleUncertaintyRetry(
                 afterFailedAttempt: attempt,
+                settlesTransition: true,
                 generation: generation,
                 lifecycle: lifecycle
             )
@@ -465,7 +500,7 @@ actor OverlayModeSampler {
             }
             guard !Task.isCancelled else { return }
             await self?.performSafetyRenewal(
-                generation: lease.generation,
+                for: lease,
                 lifecycle: lifecycle,
                 renewal: renewal
             )
@@ -473,24 +508,28 @@ actor OverlayModeSampler {
     }
 
     private func performSafetyRenewal(
-        generation: UInt64,
+        for lease: OverlayRoutingLease,
         lifecycle: UInt64,
         renewal: UInt64
     ) {
         guard
             isRunning,
-            generation == acceptedGeneration,
+            lease.generation == acceptedGeneration,
             lifecycle == lifecycleSequence,
             renewal == renewalSequence
         else {
             return
         }
         safetyRenewalTask = nil
-        beginRefresh(generation: generation, purpose: .safetyRenewal)
+        beginRefresh(
+            generation: lease.generation,
+            purpose: .safetyRenewal(previousLease: lease)
+        )
     }
 
     private func scheduleUncertaintyRetry(
         afterFailedAttempt attempt: Int,
+        settlesTransition: Bool,
         generation: UInt64,
         lifecycle: UInt64
     ) {
@@ -511,6 +550,7 @@ actor OverlayModeSampler {
             guard !Task.isCancelled else { return }
             await self?.performUncertaintyRetry(
                 nextAttempt: attempt + 1,
+                settlesTransition: settlesTransition,
                 generation: generation,
                 lifecycle: lifecycle,
                 retry: retry
@@ -520,6 +560,7 @@ actor OverlayModeSampler {
 
     private func performUncertaintyRetry(
         nextAttempt: Int,
+        settlesTransition: Bool,
         generation: UInt64,
         lifecycle: UInt64,
         retry: UInt64
@@ -536,6 +577,7 @@ actor OverlayModeSampler {
         guard samplingTask == nil else {
             scheduleUncertaintyRetry(
                 afterFailedAttempt: nextAttempt - 1,
+                settlesTransition: settlesTransition,
                 generation: generation,
                 lifecycle: lifecycle
             )
@@ -543,7 +585,10 @@ actor OverlayModeSampler {
         }
         beginRefresh(
             generation: generation,
-            purpose: .confirmation(attempt: nextAttempt)
+            purpose: .confirmation(
+                attempt: nextAttempt,
+                settlesTransition: settlesTransition
+            )
         )
     }
 
