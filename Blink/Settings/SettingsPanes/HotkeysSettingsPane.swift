@@ -19,6 +19,12 @@ struct HotkeysSettingsPane: View {
 
     var body: some View {
         BlinkForm {
+            if case .failed(let reason) = manager.monitoringState {
+                BlinkSection {
+                    Label(reason.description, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
             BlinkSection("Change Spaces") {
                 hotkeyRecorder(forAction: .left)
                 hotkeyRecorder(forAction: .right)
@@ -83,8 +89,13 @@ struct HotkeysSettingsPane: View {
             ) {
                 HStack {
                     Text(action.displayName)
+                    Spacer()
+                    if case .failed(let reason) = hotkey.registrationState {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .help(reason.description)
+                    }
                     if hotkey.keyCombination != action.defaultKeyCombination {
-                        Spacer()
                         Button {
                             resetActionConfirmationTarget = action
                         } label: {

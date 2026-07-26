@@ -22,7 +22,11 @@ struct BlinkMenu: View {
     }
 
     private func hotkey(for action: BoundAction) -> KeyCombination? {
-        appState.settingsManager.hotkeySettingsManager.hotkey(withAction: action)?.keyCombination
+        guard
+            let hotkey = appState.settingsManager.hotkeySettingsManager.hotkey(withAction: action),
+            hotkey.registrationState == .active
+        else { return nil }
+        return hotkey.keyCombination
     }
 
     private var switchSection: some View {
