@@ -22,6 +22,27 @@ struct HotkeyTests {
         #expect(invocationCount == 1)
     }
 
+    @Test("Every native default hotkey is registered and suppressed")
+    func defaultHotkeysAreSuppressed() {
+        withCleanHotkeyDefaults {
+            let monitor = FakeHotkeyMonitor(isHealthy: true)
+            let registry = HotkeyRegistry { _ in monitor }
+            let manager = HotkeySettingsManager(
+                registry: registry,
+                dispatcher: makeDispatcher(),
+                generalSettings: GeneralSettingsManager()
+            )
+            manager.performSetup()
+
+            for action in BoundAction.allCases {
+                let combination = action.defaultKeyCombination!
+                #expect(registry.handleKeyEvent(event(combination)))
+                #expect(registry.handleKeyEvent(event(combination, isAutorepeat: true)))
+                #expect(manager.hotkey(withAction: action)?.registrationState == .active)
+            }
+        }
+    }
+
     @Test("Unmatched events pass through")
     func unmatchedEventPassesThrough() {
         let monitor = FakeHotkeyMonitor(isHealthy: true)

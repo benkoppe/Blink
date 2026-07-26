@@ -18,27 +18,15 @@ nonisolated struct SpaceID: RawRepresentable, Hashable, Codable, Sendable {
     }
 }
 
-nonisolated enum SpaceKind: Int, Codable, Sendable {
-    case desktop = 0
-    case fullscreen = 2
-    case unknown = -1
-
-    init(rawValueOrUnknown rawValue: Int?) {
-        self = rawValue.flatMap(Self.init(rawValue:)) ?? .unknown
-    }
-}
-
 nonisolated struct DisplayTopology: Equatable, Sendable {
     let displayID: DisplayID
     let spaceIDs: [SpaceID]
     let currentSpaceID: SpaceID
-    let currentSpaceKind: SpaceKind
 
     init?(
         displayID: DisplayID,
         spaceIDs: [SpaceID],
-        currentSpaceID: SpaceID,
-        currentSpaceKind: SpaceKind
+        currentSpaceID: SpaceID
     ) {
         guard
             !spaceIDs.isEmpty,
@@ -51,7 +39,6 @@ nonisolated struct DisplayTopology: Equatable, Sendable {
         self.displayID = displayID
         self.spaceIDs = spaceIDs
         self.currentSpaceID = currentSpaceID
-        self.currentSpaceKind = currentSpaceKind
     }
 
     var currentIndex: Int {
@@ -66,7 +53,6 @@ nonisolated struct DisplayTopology: Equatable, Sendable {
 nonisolated struct SystemSpaceSnapshot: Equatable, Sendable {
     let topologiesByDisplay: [DisplayID: DisplayTopology]
     let menuBarDisplayID: DisplayID?
-    let frontmostBundleID: String?
 
     var menuBarTopology: DisplayTopology? {
         if let menuBarDisplayID,
@@ -158,8 +144,7 @@ nonisolated struct SpacePresentation: Equatable, Sendable {
         return DisplayTopology(
             displayID: topology.displayID,
             spaceIDs: topology.spaceIDs,
-            currentSpaceID: projectedSpaceID,
-            currentSpaceKind: topology.currentSpaceKind
+            currentSpaceID: projectedSpaceID
         )
     }
 }

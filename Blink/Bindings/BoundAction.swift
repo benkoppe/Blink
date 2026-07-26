@@ -30,10 +30,6 @@ enum BoundAction: String, Codable, CaseIterable {
         }
     }
 
-    func execute(appState: AppState) {
-        appState.actionDispatcher.dispatch(self, source: .menu)
-    }
-
     var spaceSwitchAction: SpaceSwitchAction {
         switch self {
         case .left: .step(.left)

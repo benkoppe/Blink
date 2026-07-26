@@ -17,11 +17,20 @@ final class ActionDispatcher {
         SpaceSwitchRequest,
         SpaceSwitchOutcome
     ) async -> Void
+    typealias LifecycleDiagnosis = @MainActor @Sendable (String) -> Void
+
+    private struct QueuedRequest: Sendable {
+        let sequence: UInt64
+        let acceptedAtUptime: TimeInterval
+        let request: SpaceSwitchRequest
+    }
 
     private let captureRequest: RequestCapture
     private let captureGestureRequest: GestureRequestCapture
-    private let continuation: AsyncStream<SpaceSwitchRequest>.Continuation
+    private let diagnoseLifecycle: LifecycleDiagnosis
+    private let continuation: AsyncStream<QueuedRequest>.Continuation
     private var consumerTask: Task<Void, Never>?
+    private var nextSequence: UInt64 = 0
 
     convenience init(spaceSwitcher: SpaceSwitcher) {
         self.init(
@@ -36,11 +45,15 @@ final class ActionDispatcher {
                 return await spaceSwitcher.submit(request)
             },
             diagnoseOutcome: { request, outcome in
-                await DiagnosticsStore.shared.record(
+                DiagnosticsStore.shared.record(
                     "switch",
                     "rejected source=\(request.source.rawValue) "
                         + "display=\(request.targetDisplayID.rawValue) outcome=\(outcome)"
                 )
+            },
+            diagnoseLifecycle: { message in
+                Logger.switchTiming.info(message)
+                DiagnosticsStore.shared.record("switch-timing", message)
             }
         )
     }
@@ -49,10 +62,11 @@ final class ActionDispatcher {
         captureRequest: @escaping RequestCapture,
         captureGestureRequest: GestureRequestCapture? = nil,
         submitRequest: @escaping RequestSubmission,
-        diagnoseOutcome: @escaping OutcomeDiagnosis = { _, _ in }
+        diagnoseOutcome: @escaping OutcomeDiagnosis = { _, _ in },
+        diagnoseLifecycle: @escaping LifecycleDiagnosis = { _ in }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(
-            of: SpaceSwitchRequest.self
+            of: QueuedRequest.self
         )
         self.captureRequest = captureRequest
         self.captureGestureRequest = captureGestureRequest ?? { action, context in
@@ -72,10 +86,17 @@ final class ActionDispatcher {
                 requiredMode: context.requiredPostingMode
             )
         }
+        self.diagnoseLifecycle = diagnoseLifecycle
         self.continuation = continuation
         self.consumerTask = Task {
-            for await request in stream {
+            for await queued in stream {
                 guard !Task.isCancelled else { break }
+                let dequeuedAt = ProcessInfo.processInfo.systemUptime
+                diagnoseLifecycle(
+                    "command dequeued sequence=\(queued.sequence) "
+                        + "queue-ms=\(Self.milliseconds(from: queued.acceptedAtUptime, to: dequeuedAt))"
+                )
+                let request = queued.request
                 let outcome = await submitRequest(request)
                 guard
                     outcome != .accepted,
@@ -94,20 +115,13 @@ final class ActionDispatcher {
     }
 
     func dispatch(
-        _ action: BoundAction,
-        source: SpaceInputSource
-    ) {
-        dispatch(action.spaceSwitchAction, source: source)
-    }
-
-    func dispatch(
-        _ action: BoundAction,
+        _ action: SpaceSwitchAction,
         gestureContext: GestureSessionContext
     ) {
         guard
             gestureContext.isAuthoritativeBlinkContext,
             let request = captureGestureRequest(
-                action.spaceSwitchAction,
+                action,
                 gestureContext
             )
         else {
@@ -116,7 +130,7 @@ final class ActionDispatcher {
             )
             return
         }
-        continuation.yield(request)
+        enqueue(request)
     }
 
     func dispatch(
@@ -129,7 +143,27 @@ final class ActionDispatcher {
             )
             return
         }
-        continuation.yield(request)
+        enqueue(request)
+    }
+
+    private func enqueue(_ request: SpaceSwitchRequest) {
+        nextSequence &+= 1
+        let acceptedAt = ProcessInfo.processInfo.systemUptime
+        diagnoseLifecycle(
+            "input accepted sequence=\(nextSequence) source=\(request.source.rawValue) "
+                + "display=\(request.targetDisplayID.rawValue) uptime=\(acceptedAt)"
+        )
+        continuation.yield(
+            QueuedRequest(
+                sequence: nextSequence,
+                acceptedAtUptime: acceptedAt,
+                request: request
+            )
+        )
+    }
+
+    private static func milliseconds(from start: TimeInterval, to end: TimeInterval) -> String {
+        String(format: "%.3f", max(0, end - start) * 1_000)
     }
 
     func shutdown() async {
@@ -142,4 +176,5 @@ final class ActionDispatcher {
 
 extension Logger {
     fileprivate static let actionDispatcher = Logger(category: "ActionDispatcher")
+    fileprivate static let switchTiming = Logger(category: "SwitchTiming")
 }

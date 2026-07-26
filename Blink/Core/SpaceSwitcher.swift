@@ -5,24 +5,11 @@ import Observation
 nonisolated struct SpaceInfo: Equatable, Sendable {
     let currentIndex: Int
     let spaceCount: Int
-    let spaceIDs: [UInt64]
 
     var displayNumber: Int { currentIndex + 1 }
     var isAtLeftEdge: Bool { currentIndex == 0 }
     var isAtRightEdge: Bool { currentIndex + 1 >= spaceCount }
 
-    let currentSpaceID: UInt64?
-    let currentSpaceType: Int?
-    let displayIdentifier: String?
-    let frontmostBundleID: String?
-
-    var isNormalDesktopSpace: Bool { currentSpaceType == 0 }
-    var isFullscreenSpace: Bool { currentSpaceType == 2 }
-    var isKnownStandardSpace: Bool { isNormalDesktopSpace || isFullscreenSpace }
-
-    func index(ofSpaceID spaceID: UInt64) -> Int? {
-        spaceIDs.firstIndex(of: spaceID)
-    }
 }
 
 @MainActor
@@ -47,14 +34,7 @@ final class SpaceSwitcher {
 
         return SpaceInfo(
             currentIndex: projected.currentIndex,
-            spaceCount: projected.spaceIDs.count,
-            spaceIDs: projected.spaceIDs.map(\.rawValue),
-            currentSpaceID: topology.currentSpaceID.rawValue,
-            currentSpaceType: topology.currentSpaceKind == .unknown
-                ? nil
-                : topology.currentSpaceKind.rawValue,
-            displayIdentifier: topology.displayID.rawValue,
-            frontmostBundleID: snapshot.frontmostBundleID
+            spaceCount: projected.spaceIDs.count
         )
     }
 
@@ -75,9 +55,8 @@ final class SpaceSwitcher {
             poster: DockGesturePoster(),
             missionControlCapability: missionControlSyntheticCapability,
             diagnose: { category, message in
-                Task {
-                    await DiagnosticsStore.shared.record(category, message)
-                }
+                Logger.spaceSwitcherTiming.info("[\(category)] \(message)")
+                DiagnosticsStore.shared.record(category, message)
             }
         )
     )
@@ -187,25 +166,6 @@ final class SpaceSwitcher {
             && topology.currentSpaceID != lastSpaceID
     }
 
-    func refreshSpaceInfo() {
-        Task { [engine] in
-            await engine.refresh(reason: .passive)
-        }
-    }
-
-    func isMissionControlActive() -> Bool {
-        currentOverlayMode() == .missionControl
-    }
-
-    func isAppExposeActive() -> Bool {
-        currentOverlayMode() == .appExpose
-    }
-
-    func currentOverlayMode() -> OverlayMode {
-        guard let displayID = actionDisplayID() else { return .unknown }
-        return overlayDetector.detect(on: displayID)
-    }
-
     private func canSubmit(_ action: SpaceSwitchAction) -> Bool {
         guard
             let displayID = actionDisplayID(),
@@ -253,6 +213,10 @@ final class SpaceSwitcher {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
+                let message = "active-space notification uptime="
+                    + "\(ProcessInfo.processInfo.systemUptime)"
+                Logger.spaceSwitcherTiming.info(message)
+                DiagnosticsStore.shared.record("switch-timing", message)
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.engine.refresh(reason: .activeSpaceChanged)
@@ -299,4 +263,8 @@ final class SpaceSwitcher {
             )
         }
     }
+}
+
+extension Logger {
+    nonisolated fileprivate static let spaceSwitcherTiming = Logger(category: "SwitchTiming")
 }

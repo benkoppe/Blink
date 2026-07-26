@@ -1,4 +1,3 @@
-import AppKit
 import CoreGraphics
 import Darwin
 import Foundation
@@ -46,8 +45,6 @@ nonisolated final class CGSSpaceSystemClient: SpaceSystemClient, @unchecked Send
         let menuBarDisplayID = symbols.menuBarDisplay?(connection)
             .map { $0.takeRetainedValue() as String }
             .flatMap(DisplayID.init(rawValue:))
-        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-
         var topologies: [DisplayID: DisplayTopology] = [:]
 
         for value in rawDisplays as NSArray {
@@ -67,8 +64,7 @@ nonisolated final class CGSSpaceSystemClient: SpaceSystemClient, @unchecked Send
 
         return SystemSpaceSnapshot(
             topologiesByDisplay: topologies,
-            menuBarDisplayID: menuBarDisplayID,
-            frontmostBundleID: frontmostBundleID
+            menuBarDisplayID: menuBarDisplayID
         )
     }
 
@@ -146,10 +142,7 @@ nonisolated final class CGSSpaceSystemClient: SpaceSystemClient, @unchecked Send
         return DisplayTopology(
             displayID: displayID,
             spaceIDs: spaceIDs,
-            currentSpaceID: currentSpaceID,
-            currentSpaceKind: SpaceKind(
-                rawValueOrUnknown: (currentSpace?["type"] as? NSNumber)?.intValue
-            )
+            currentSpaceID: currentSpaceID
         )
     }
 }

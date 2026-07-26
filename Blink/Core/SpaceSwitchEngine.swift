@@ -47,6 +47,7 @@ actor SpaceSwitchEngine {
 
     private struct PostedStep {
         let targetSpaceID: SpaceID
+        let postedAtUptime: TimeInterval
     }
 
     private struct Transaction {
@@ -56,6 +57,8 @@ actor SpaceSwitchEngine {
         let mode: SpaceSwitchMode
         var requiredMode: SpaceSwitchMode?
         var velocity: Double
+        let startedAtUptime: TimeInterval
+        var postedStepCount: Int
     }
 
     private struct DisplayState {
@@ -65,8 +68,9 @@ actor SpaceSwitchEngine {
         var transaction: Transaction?
     }
 
-    private static let instantBatchSize = 4
-    private static let instantBatchInterval: Duration = .milliseconds(40)
+    // Instant mode may post a small window so direct jumps do not visibly dwell
+    // on every intermediate Space. Mission Control remains strictly one-at-a-time.
+    private static let maximumInstantStepsInFlight = 4
     private static let acknowledgementTimeout: Duration = .seconds(2)
 
     nonisolated let presentations: AsyncStream<SpacePresentation>
@@ -78,8 +82,6 @@ actor SpaceSwitchEngine {
     private var transactionDisplayID: DisplayID?
     private var acknowledgementGeneration: UInt64 = 0
     private var acknowledgementTask: Task<Void, Never>?
-    private var instantBatchGeneration: UInt64 = 0
-    private var instantBatchTask: Task<Void, Never>?
 
     init(dependencies: Dependencies) {
         let (presentations, continuation) = AsyncStream.makeStream(
@@ -95,6 +97,9 @@ actor SpaceSwitchEngine {
     }
 
     func stop() {
+        for displayID in displayStates.keys {
+            diagnoseRollback(for: displayID, reason: "engine teardown")
+        }
         cancelExecution()
         snapshot = nil
         displayStates.removeAll()
@@ -104,18 +109,6 @@ actor SpaceSwitchEngine {
 
     @discardableResult
     func submit(_ request: SpaceSwitchRequest) -> SpaceSwitchOutcome {
-        guard let initialMode = mode(
-            for: request.targetDisplayID,
-            requiredMode: request.requiredMode
-        ) else {
-            return .unavailable
-        }
-        if initialMode == .missionControl,
-            dependencies.missionControlCapability.state != .available
-        {
-            return .missionControlSyntheticUnavailable
-        }
-
         guard
             let freshSnapshot = loadSnapshot(reason: .request),
             let topology = freshSnapshot.topologiesByDisplay[request.targetDisplayID],
@@ -220,7 +213,9 @@ actor SpaceSwitchEngine {
                 inFlightSteps: [],
                 mode: mode,
                 requiredMode: request.requiredMode,
-                velocity: max(1, request.velocity)
+                velocity: max(1, request.velocity),
+                startedAtUptime: ProcessInfo.processInfo.systemUptime,
+                postedStepCount: 0
             )
         }
 
@@ -228,11 +223,12 @@ actor SpaceSwitchEngine {
         transactionDisplayID = topology.displayID
         dependencies.diagnose(
             "switch",
-            "intent source=\(request.source.rawValue) display=\(topology.displayID.rawValue) "
-                + "confirmed=\(state.confirmedSpaceID.rawValue) desired=\(targetSpaceID.rawValue)"
+            "transaction accepted source=\(request.source.rawValue) "
+                + "display=\(topology.displayID.rawValue) confirmed=\(state.confirmedSpaceID.rawValue) "
+                + "desired=\(targetSpaceID.rawValue) uptime=\(ProcessInfo.processInfo.systemUptime)"
         )
         publish()
-        postNextBatchIfPossible(for: topology.displayID)
+        postNextWindowIfPossible(for: topology.displayID)
         if mode == .missionControl,
             dependencies.missionControlCapability.state != .available
         {
@@ -249,7 +245,11 @@ actor SpaceSwitchEngine {
         dependencies.missionControlCapability.observeOverlay(overlayMode)
 
         guard let requiredMode else {
-            return overlayMode == .missionControl ? .missionControl : .instant
+            switch overlayMode {
+            case .none: return .instant
+            case .missionControl: return .missionControl
+            case .appExpose, .unknown: return nil
+            }
         }
         switch (overlayMode, requiredMode) {
         case (.none, .instant), (.missionControl, .missionControl):
@@ -267,7 +267,8 @@ actor SpaceSwitchEngine {
         }
 
         snapshot = value
-        if let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
+        if reason != .request,
+            let cursorDisplayID = try? dependencies.displays.cursorDisplayID(),
             value.topologiesByDisplay[cursorDisplayID] != nil
         {
             _ = mode(for: cursorDisplayID)
@@ -277,7 +278,7 @@ actor SpaceSwitchEngine {
 
         if reason.resumesPendingWork {
             for displayID in resumableDisplays {
-                postNextBatchIfPossible(for: displayID)
+                postNextWindowIfPossible(for: displayID)
             }
         }
         return value
@@ -290,6 +291,7 @@ actor SpaceSwitchEngine {
         var resumableDisplays: [DisplayID] = []
         let removed = Set(displayStates.keys).subtracting(snapshot.topologiesByDisplay.keys)
         for displayID in removed {
+            diagnoseRollback(for: displayID, reason: "display removed")
             cancelExecution(for: displayID)
             displayStates.removeValue(forKey: displayID)
         }
@@ -307,6 +309,7 @@ actor SpaceSwitchEngine {
 
             let previousConfirmed = state.confirmedSpaceID
             guard state.topology.spaceIDs == topology.spaceIDs else {
+                diagnoseRollback(for: displayID, reason: "topology changed")
                 cancelExecution(for: displayID)
                 state.topology = topology
                 state.confirmedSpaceID = topology.currentSpaceID
@@ -324,10 +327,24 @@ actor SpaceSwitchEngine {
             state.topology = topology
 
             if var transaction = state.transaction {
+                guard
+                    dependencies.displays.bounds(for: displayID) != nil,
+                    (try? dependencies.displays.cursorDisplayID()) == displayID
+                else {
+                    diagnoseRollback(for: displayID, reason: "cursor display changed")
+                    cancelExecution(for: displayID)
+                    state.transaction = nil
+                    state.confirmedSpaceID = topology.currentSpaceID
+                    pruneHistory(in: &state)
+                    displayStates[displayID] = state
+                    continue
+                }
+
                 guard transaction.mode == mode(
                     for: displayID,
                     requiredMode: transaction.requiredMode
                 ) else {
+                    diagnoseRollback(for: displayID, reason: "overlay mode changed")
                     cancelExecution(for: displayID)
                     state.transaction = nil
                     state.confirmedSpaceID = topology.currentSpaceID
@@ -349,13 +366,15 @@ actor SpaceSwitchEngine {
                     if let acknowledgedIndex = transaction.inFlightSteps.firstIndex(where: {
                         $0.targetSpaceID == topology.currentSpaceID
                     }) {
+                        let acknowledgedStep = transaction.inFlightSteps[acknowledgedIndex]
                         state.confirmedSpaceID = topology.currentSpaceID
                         transaction.inFlightSteps.removeFirst(acknowledgedIndex + 1)
                         state.transaction = transaction
                         dependencies.diagnose(
-                            "switch",
-                            "acknowledged display=\(displayID.rawValue) "
-                                + "space=\(topology.currentSpaceID.rawValue)"
+                            "switch-timing",
+                            "authoritative acknowledgement display=\(displayID.rawValue) "
+                                + "space=\(topology.currentSpaceID.rawValue) "
+                                + "post-to-ack-ms=\(milliseconds(since: acknowledgedStep.postedAtUptime))"
                         )
 
                         if transaction.inFlightSteps.isEmpty {
@@ -369,6 +388,10 @@ actor SpaceSwitchEngine {
                     } else if topology.currentSpaceID != state.confirmedSpaceID,
                         reason.resolvesConflicts
                     {
+                        diagnoseRollback(
+                            for: displayID,
+                            reason: "authoritative disagreement"
+                        )
                         cancelExecution(for: displayID)
                         state.transaction = nil
                         state.confirmedSpaceID = topology.currentSpaceID
@@ -383,6 +406,10 @@ actor SpaceSwitchEngine {
                     }
                 } else if topology.currentSpaceID != state.confirmedSpaceID {
                     if reason.resolvesConflicts {
+                        diagnoseRollback(
+                            for: displayID,
+                            reason: "authoritative disagreement"
+                        )
                         cancelExecution(for: displayID)
                         state.transaction = nil
                         state.confirmedSpaceID = topology.currentSpaceID
@@ -409,71 +436,39 @@ actor SpaceSwitchEngine {
         return resumableDisplays
     }
 
-    private func postNextBatchIfPossible(
-        for displayID: DisplayID,
-        continuesInstantBatch: Bool = false
-    ) {
+    private func postNextWindowIfPossible(for displayID: DisplayID) {
         guard
             var state = displayStates[displayID],
-            var transaction = state.transaction
+            var transaction = state.transaction,
+            transaction.inFlightSteps.isEmpty
         else {
             return
         }
 
-        let startingSpaceID: SpaceID
-        if continuesInstantBatch {
-            guard
-                transaction.mode == .instant,
-                let lastPostedSpaceID = transaction.inFlightSteps.last?.targetSpaceID
-            else {
-                return
-            }
-            startingSpaceID = lastPostedSpaceID
-        } else {
-            guard transaction.inFlightSteps.isEmpty else { return }
-            cancelInstantBatchContinuation()
-            startingSpaceID = state.confirmedSpaceID
-        }
-
-        guard transaction.desiredSpaceID != startingSpaceID else {
-            if !continuesInstantBatch {
-                settleTransaction(in: &state, displayID: displayID)
-                displayStates[displayID] = state
-                publish()
-            }
+        guard transaction.desiredSpaceID != state.confirmedSpaceID else {
+            settleTransaction(in: &state, displayID: displayID)
+            displayStates[displayID] = state
+            publish()
             return
         }
 
         guard
-            postingContextIsValid(
-                for: displayID,
-                topology: state.topology,
-                requiresCurrentSpaceMatch: !continuesInstantBatch
-            ),
+            postingContextIsValid(for: displayID, topology: state.topology),
             mode(
                 for: displayID,
                 requiredMode: transaction.requiredMode
             ) == transaction.mode,
-            let startingIndex = state.topology.index(of: startingSpaceID),
+            let confirmedIndex = state.topology.index(of: state.confirmedSpaceID),
             let desiredIndex = state.topology.index(of: transaction.desiredSpaceID)
         else {
             abortTransaction(for: displayID, reason: "posting context changed")
             return
         }
 
-        if continuesInstantBatch {
-            guard let confirmedIndex = state.topology.index(of: state.confirmedSpaceID) else {
-                return
-            }
-            let continuesForward = confirmedIndex < startingIndex && startingIndex < desiredIndex
-            let continuesBackward = confirmedIndex > startingIndex && startingIndex > desiredIndex
-            guard continuesForward || continuesBackward else { return }
-        }
-
-        let direction: SpaceSwitchDirection = desiredIndex > startingIndex ? .right : .left
-        let remainingSteps = abs(desiredIndex - startingIndex)
-        let batchSize = transaction.mode == .instant
-            ? min(Self.instantBatchSize, remainingSteps)
+        let direction: SpaceSwitchDirection = desiredIndex > confirmedIndex ? .right : .left
+        let remainingSteps = abs(desiredIndex - confirmedIndex)
+        let windowSize = transaction.mode == .instant
+            ? min(Self.maximumInstantStepsInFlight, remainingSteps)
             : 1
 
         if transaction.mode == .missionControl,
@@ -485,8 +480,9 @@ actor SpaceSwitchEngine {
 
         let velocity = transaction.velocity * Double(max(1, remainingSteps))
         var postedSteps: [PostedStep] = []
-        for offset in 1...batchSize {
-            let nextIndex = startingIndex + (direction == .right ? offset : -offset)
+        var postingFailed = false
+        for offset in 1...windowSize {
+            let nextIndex = confirmedIndex + (direction == .right ? offset : -offset)
             guard state.topology.spaceIDs.indices.contains(nextIndex) else {
                 abortTransaction(for: displayID, reason: "next target is outside topology")
                 return
@@ -497,28 +493,39 @@ actor SpaceSwitchEngine {
                 direction: direction,
                 velocity: velocity
             ) else {
-                abortTransaction(
-                    for: displayID,
-                    reason: "event posting failed",
-                    reportsMissionControlFailure: true
-                )
-                return
+                postingFailed = true
+                break
             }
 
             postedSteps.append(
-                PostedStep(targetSpaceID: state.topology.spaceIDs[nextIndex])
+                PostedStep(
+                    targetSpaceID: state.topology.spaceIDs[nextIndex],
+                    postedAtUptime: ProcessInfo.processInfo.systemUptime
+                )
             )
         }
 
-        transaction.inFlightSteps.append(contentsOf: postedSteps)
+        guard !postedSteps.isEmpty else {
+            abortTransaction(
+                for: displayID,
+                reason: "event posting failed",
+                reportsMissionControlFailure: true
+            )
+            return
+        }
+
+        transaction.inFlightSteps = postedSteps
+        transaction.postedStepCount += postedSteps.count
         state.transaction = transaction
         displayStates[displayID] = state
         let lastPostedSpaceID = postedSteps.last!.targetSpaceID
         dependencies.diagnose(
             "switch",
-            "posted display=\(displayID.rawValue) mode=\(transaction.mode) direction=\(direction) "
-                + "steps=\(postedSteps.count) target=\(lastPostedSpaceID.rawValue) "
-                + "desired=\(transaction.desiredSpaceID.rawValue)"
+            "synthetic post display=\(displayID.rawValue) mode=\(transaction.mode) "
+                + "direction=\(direction) steps=\(postedSteps.count) "
+                + "target=\(lastPostedSpaceID.rawValue) "
+                + "desired=\(transaction.desiredSpaceID.rawValue) "
+                + "partial-failure=\(postingFailed)"
         )
         publish()
         scheduleAcknowledgementDeadline(
@@ -526,32 +533,6 @@ actor SpaceSwitchEngine {
             targetSpaceID: lastPostedSpaceID,
             mode: transaction.mode
         )
-        if transaction.mode == .instant,
-            lastPostedSpaceID != transaction.desiredSpaceID
-        {
-            scheduleInstantBatchContinuation(for: displayID)
-        }
-    }
-
-    private func scheduleInstantBatchContinuation(for displayID: DisplayID) {
-        instantBatchTask?.cancel()
-        instantBatchGeneration &+= 1
-        let generation = instantBatchGeneration
-        instantBatchTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.dependencies.sleep(Self.instantBatchInterval)
-            } catch {
-                return
-            }
-            await self.continueInstantBatch(for: displayID, generation: generation)
-        }
-    }
-
-    private func continueInstantBatch(for displayID: DisplayID, generation: UInt64) {
-        guard generation == instantBatchGeneration else { return }
-        instantBatchTask = nil
-        postNextBatchIfPossible(for: displayID, continuesInstantBatch: true)
     }
 
     private func scheduleAcknowledgementDeadline(
@@ -601,7 +582,7 @@ actor SpaceSwitchEngine {
             let resumableDisplays = reconcile(snapshot: fresh, reason: .activeSpaceChanged)
             publish()
             for resumableDisplayID in resumableDisplays {
-                postNextBatchIfPossible(for: resumableDisplayID)
+                postNextWindowIfPossible(for: resumableDisplayID)
             }
             if !resumableDisplays.contains(displayID),
                 let transaction = displayStates[displayID]?.transaction,
@@ -616,6 +597,10 @@ actor SpaceSwitchEngine {
             return
         }
 
+        dependencies.diagnose(
+            "switch-timing",
+            "timeout display=\(displayID.rawValue) target=\(targetSpaceID.rawValue)"
+        )
         abortTransaction(
             for: displayID,
             reason: "acknowledgement timeout",
@@ -628,6 +613,10 @@ actor SpaceSwitchEngine {
             return
         }
 
+        diagnoseRollback(
+            for: activeDisplayID,
+            reason: "superseded by display \(displayID.rawValue)"
+        )
         cancelExecution(for: activeDisplayID)
         if var state = displayStates[activeDisplayID] {
             state.transaction = nil
@@ -640,6 +629,7 @@ actor SpaceSwitchEngine {
     }
 
     private func cancelTransaction(for displayID: DisplayID, reason: String) {
+        diagnoseRollback(for: displayID, reason: reason)
         cancelExecution(for: displayID)
         if var state = displayStates[displayID] {
             state.transaction = nil
@@ -655,6 +645,7 @@ actor SpaceSwitchEngine {
         reportsMissionControlFailure: Bool = false
     ) {
         let mode = displayStates[displayID]?.transaction?.mode
+        diagnoseRollback(for: displayID, reason: reason)
         cancelExecution(for: displayID)
         if var state = displayStates[displayID] {
             state.transaction = nil
@@ -674,8 +665,7 @@ actor SpaceSwitchEngine {
 
     private func postingContextIsValid(
         for displayID: DisplayID,
-        topology: DisplayTopology,
-        requiresCurrentSpaceMatch: Bool = true
+        topology: DisplayTopology
     ) -> Bool {
         guard
             dependencies.displays.bounds(for: displayID) != nil,
@@ -687,8 +677,7 @@ actor SpaceSwitchEngine {
         }
 
         return currentTopology.spaceIDs == topology.spaceIDs
-            && (!requiresCurrentSpaceMatch
-                || currentTopology.currentSpaceID == topology.currentSpaceID)
+            && currentTopology.currentSpaceID == topology.currentSpaceID
     }
 
     private func matchingState(for topology: DisplayTopology) -> DisplayState? {
@@ -703,6 +692,12 @@ actor SpaceSwitchEngine {
 
     private func settleTransaction(in state: inout DisplayState, displayID: DisplayID) {
         guard let transaction = state.transaction else { return }
+        dependencies.diagnose(
+            "switch-timing",
+            "transaction settlement display=\(displayID.rawValue) "
+                + "posts=\(transaction.postedStepCount) "
+                + "elapsed-ms=\(milliseconds(since: transaction.startedAtUptime))"
+        )
         if transaction.originSpaceID != transaction.desiredSpaceID,
             state.topology.spaceIDs.contains(transaction.originSpaceID)
         {
@@ -710,6 +705,25 @@ actor SpaceSwitchEngine {
         }
         state.transaction = nil
         cancelExecution(for: displayID)
+    }
+
+    private func diagnoseRollback(for displayID: DisplayID, reason: String) {
+        guard
+            let state = displayStates[displayID],
+            let transaction = state.transaction
+        else {
+            return
+        }
+        dependencies.diagnose(
+            "switch-timing",
+            "cancellation display=\(displayID.rawValue) reason=\(reason) "
+                + "projection-rollback=\(state.confirmedSpaceID.rawValue) "
+                + "elapsed-ms=\(milliseconds(since: transaction.startedAtUptime))"
+        )
+    }
+
+    private func milliseconds(since start: TimeInterval) -> String {
+        String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - start) * 1_000)
     }
 
     private func pruneHistory(in state: inout DisplayState) {
@@ -733,17 +747,10 @@ actor SpaceSwitchEngine {
         cancelExecution()
     }
 
-    private func cancelInstantBatchContinuation() {
-        instantBatchGeneration &+= 1
-        instantBatchTask?.cancel()
-        instantBatchTask = nil
-    }
-
     private func cancelExecution() {
         acknowledgementGeneration &+= 1
         acknowledgementTask?.cancel()
         acknowledgementTask = nil
-        cancelInstantBatchContinuation()
         transactionDisplayID = nil
     }
 

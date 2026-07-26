@@ -37,9 +37,10 @@ nonisolated protocol SpaceGesturePosting: Sendable {
 }
 
 nonisolated enum MissionControlPayloadStrategy: Equatable, Sendable {
-    // Validated progress trace used by the supported macOS 14–25 deployments.
+    // Legacy progress trace selected explicitly for macOS 14–25. These releases
+    // still require manual qualification on the validation matrix.
     case legacyProgress
-    // Compact Dock-only trace required by Tahoe (macOS 26) and later.
+    // Compact Dock-only trace selected for Tahoe (macOS 26) and later.
     case tahoeCompact
     case unsupported
 
@@ -96,37 +97,47 @@ nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
         direction: SpaceSwitchDirection,
         velocity: Double
     ) -> Bool {
-        postDockEvent(
-            phase: SyntheticGestureProtocol.began,
-            direction: direction,
-            velocity: velocity
-        )
-            && postDockEvent(
+        guard
+            let began = makeDockEvents(
+                phase: SyntheticGestureProtocol.began,
+                direction: direction,
+                velocity: velocity
+            ),
+            let changed = makeDockEvents(
                 phase: SyntheticGestureProtocol.changed,
                 direction: direction,
                 velocity: velocity
-            )
-            && postDockEvent(
+            ),
+            let ended = makeDockEvents(
                 phase: SyntheticGestureProtocol.ended,
                 direction: direction,
                 velocity: velocity
             )
-    }
-
-    private func postDockEvent(
-        phase: Int64,
-        direction: SpaceSwitchDirection,
-        velocity: Double
-    ) -> Bool {
-        guard
-            let gestureEvent = CGEvent(source: nil),
-            let dockEvent = CGEvent(source: nil)
         else {
             return false
         }
 
+        for events in [began, changed, ended] {
+            events.dock.post(tap: .cgSessionEventTap)
+            events.gesture.post(tap: .cgSessionEventTap)
+        }
+        return true
+    }
+
+    private func makeDockEvents(
+        phase: Int64,
+        direction: SpaceSwitchDirection,
+        velocity: Double
+    ) -> (dock: CGEvent, gesture: CGEvent)? {
+        guard
+            let gestureEvent = CGEvent(source: nil),
+            let dockEvent = CGEvent(source: nil)
+        else {
+            return nil
+        }
+
         let signedVelocity = direction == .right ? velocity : -velocity
-        let flags = flagBits(for: direction)
+        let flags = Self.flagBits(for: direction)
 
         gestureEvent.setIntegerValueField(
             SyntheticGestureProtocol.eventType,
@@ -160,9 +171,7 @@ nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
         )
         markSynthetic(dockEvent)
 
-        dockEvent.post(tap: .cgSessionEventTap)
-        gestureEvent.post(tap: .cgSessionEventTap)
-        return true
+        return (dockEvent, gestureEvent)
     }
 
     private func postMissionControl(
@@ -331,10 +340,6 @@ nonisolated struct DockGesturePoster: SpaceGesturePosting, Sendable {
             value.negate()
         }
         return Int64(Int32(bitPattern: value.bitPattern))
-    }
-
-    private func flagBits(for direction: SpaceSwitchDirection) -> Int64 {
-        Self.flagBits(for: direction)
     }
 
     private func markSynthetic(_ event: CGEvent) {

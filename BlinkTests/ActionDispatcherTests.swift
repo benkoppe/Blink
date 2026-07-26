@@ -84,6 +84,7 @@ struct ActionDispatcherTests {
             wraps: false,
             velocity: 100
         )
+        var lifecycleEvents: [String] = []
         let dispatcher = ActionDispatcher(
             captureRequest: { action, source in
                 SpaceSwitchRequest(
@@ -96,7 +97,8 @@ struct ActionDispatcherTests {
             },
             submitRequest: { request in
                 await probe.submit(request)
-            }
+            },
+            diagnoseLifecycle: { lifecycleEvents.append($0) }
         )
 
         dispatcher.dispatch(SpaceSwitchAction.step(.right), source: .menu)
@@ -115,6 +117,11 @@ struct ActionDispatcherTests {
 
         try await waitUntil { await probe.requests.count == 1 }
         #expect(await probe.requests.count == 1)
+        #expect(lifecycleEvents.count == 4)
+        #expect(lifecycleEvents[0].hasPrefix("input accepted sequence=1"))
+        #expect(lifecycleEvents[1].hasPrefix("input accepted sequence=2"))
+        #expect(lifecycleEvents[2].hasPrefix("input accepted sequence=3"))
+        #expect(lifecycleEvents[3].hasPrefix("command dequeued sequence=1"))
 
         await probe.releaseFirstSubmission()
         try await waitUntil { await probe.requests.count == 3 }
@@ -125,6 +132,8 @@ struct ActionDispatcherTests {
         #expect(requests.map(\.targetDisplayID) == [displayA, displayB, displayA])
         #expect(requests.map(\.wraps) == [false, true, false])
         #expect(requests.map(\.velocity) == [100, 200, 300])
+        #expect(lifecycleEvents[4].hasPrefix("command dequeued sequence=2"))
+        #expect(lifecycleEvents[5].hasPrefix("command dequeued sequence=3"))
 
         await dispatcher.shutdown()
     }

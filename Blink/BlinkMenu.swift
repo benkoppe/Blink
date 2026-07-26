@@ -32,13 +32,13 @@ struct BlinkMenu: View {
     private var switchSection: some View {
         VStack {
             Button("Switch left", systemImage: "arrow.left") {
-                BoundAction.left.execute(appState: appState)
+                appState.actionDispatcher.dispatch(.step(.left), source: .menu)
             }
             .keyboardShortcut(from: hotkey(for: .left))
             .disabled(!switcher.canMoveLeft())
 
             Button("Switch right", systemImage: "arrow.right") {
-                BoundAction.right.execute(appState: appState)
+                appState.actionDispatcher.dispatch(.step(.right), source: .menu)
             }
             .keyboardShortcut(from: hotkey(for: .right))
             .disabled(!switcher.canMoveRight())

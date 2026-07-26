@@ -157,7 +157,7 @@ final class HotkeySettingsManager {
             else { continue }
 
             switch registry.register(keyCombination: combination, handler: { [weak dispatcher] in
-                dispatcher?.dispatch(action, source: .hotkey)
+                dispatcher?.dispatch(action.spaceSwitchAction, source: .hotkey)
             }) {
             case .success(let id):
                 registeredBindings[action] = RegisteredBinding(
