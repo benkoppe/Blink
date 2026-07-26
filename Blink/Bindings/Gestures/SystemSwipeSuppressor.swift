@@ -13,17 +13,17 @@ final class SystemSwipeSuppressor {
     private var bypassingNativeSwipe = false
 
     var contextForNewGesture: (() -> GestureSessionContext?)?
-    var onGestureMayBegin: (() -> Void)?
     var onPotentialOverlayTransition: (() -> Void)?
     var onContextSelected: ((GestureSessionContext?) -> Void)?
-    var onGestureEnded: (() -> Void)?
+    var onMonitoringInterrupted: (() -> Void)?
 
     func startMonitoring() {
         if let eventTap, eventTap.isHealthy { return }
 
         if eventTap != nil {
             eventTap?.disable()
-            endGesture()
+            resetDockSegment()
+            onMonitoringInterrupted?()
         }
 
         let tap = EventTap(
@@ -40,7 +40,8 @@ final class SystemSwipeSuppressor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    self.endGesture()
+                    self.resetDockSegment()
+                    self.onMonitoringInterrupted?()
                     return cgEvent
 
                 case .gesture:
@@ -65,9 +66,11 @@ final class SystemSwipeSuppressor {
     }
 
     func stopMonitoring() {
+        let wasMonitoring = eventTap != nil
         eventTap?.disable()
         eventTap = nil
-        endGesture()
+        resetDockSegment()
+        if wasMonitoring { onMonitoringInterrupted?() }
     }
 
     private func handleGestureEvent(_ event: CGEvent) -> CGEvent? {
@@ -104,12 +107,8 @@ final class SystemSwipeSuppressor {
 
         switch phase {
         case SyntheticGestureProtocol.mayBegin:
-            onGestureMayBegin?()
             return event
         case SyntheticGestureProtocol.began:
-            // Some macOS paths omit `mayBegin`. Preparation is idempotent and
-            // starts an off-callback scan before the bounded context wait.
-            onGestureMayBegin?()
             let context = contextForNewGesture?()
             let ownsGesture = context?.isAuthoritativeBlinkContext == true
             onContextSelected?(context)
@@ -119,10 +118,7 @@ final class SystemSwipeSuppressor {
 
         case SyntheticGestureProtocol.ended, SyntheticGestureProtocol.cancelled:
             let isBypassing = bypassingNativeSwipe
-            endGesture()
-            if isBypassing {
-                onPotentialOverlayTransition?()
-            }
+            resetDockSegment()
             return isBypassing ? event : nil
 
         default:
@@ -133,10 +129,9 @@ final class SystemSwipeSuppressor {
         }
     }
 
-    private func endGesture() {
+    private func resetDockSegment() {
         suppressingNativeSwipe = false
         bypassingNativeSwipe = false
-        onGestureEnded?()
     }
 
     private func isHorizontalDockSwipe(_ event: CGEvent) -> Bool {

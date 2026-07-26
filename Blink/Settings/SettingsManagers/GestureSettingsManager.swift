@@ -11,8 +11,6 @@ import ObservableDefaults
 
 @MainActor @ObservableDefaults(autoInit: false)
 final class GestureSettingsManager {
-    private static let gesturePreflightWaitDuration: TimeInterval = 0.012
-
     @ObservableOnly private(set) var gestures: [SwipeGesture] = SwipeGestureID.allSlots.map {
         SwipeGesture(id: $0, action: nil)
     }
@@ -25,16 +23,16 @@ final class GestureSettingsManager {
     @Ignore private let missionControlCapability: MissionControlSyntheticCapability
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
+    @Ignore private let displayLocator: any DisplayLocating
+    @Ignore private let overlayDetector: CoreGraphicsOverlayDetector
     @Ignore private let overlayModeSampler: OverlayModeSampler
-    @Ignore private let gestureOverlayPreflight: GestureOverlayPreflight
     @Ignore private var lifecycleObservers: [NSObjectProtocol] = []
     @Ignore private var displayObservers: [NSObjectProtocol] = []
     @Ignore private var routingState = OverlayRoutingLeaseState()
     @Ignore private var gestureGeneration: UInt64 = 0
     @Ignore private var overlaySamplingEnabled = false
     @Ignore private var systemSwipeSuppressionEnabled = false
-    @Ignore private var selectedGestureContext: GestureSessionContext?
-    @Ignore private var gesturePreparationIsActive = false
+    @Ignore private var touchRoutingCoordinator = TouchRoutingSessionCoordinator()
     @Ignore private var isShutdown = false
 
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
@@ -59,45 +57,37 @@ final class GestureSettingsManager {
         self.missionControlCapability = missionControlCapability
         let displayLocator = DisplayLocator()
         let overlayDetector = CoreGraphicsOverlayDetector(displayLocator: displayLocator)
+        self.displayLocator = displayLocator
+        self.overlayDetector = overlayDetector
         self.overlayModeSampler = OverlayModeSampler(
-            displayLocator: displayLocator,
-            detector: overlayDetector
-        )
-        self.gestureOverlayPreflight = GestureOverlayPreflight(
             displayLocator: displayLocator,
             detector: overlayDetector
         )
 
         monitor.contextForRecognition = { [weak self] in
             guard let self else { return nil }
-            if let selectedGestureContext { return selectedGestureContext }
+            if let context = touchRoutingCoordinator.selectedContext {
+                return context
+            }
             guard !systemSwipeSuppressionEnabled else { return nil }
-            let context = selectGestureContext()
-            selectedGestureContext = context
-            return context
+            return bindCachedGestureContextIfNeeded()
         }
         monitor.isContextValidBeforeDispatch = { [weak self] context in
             self?.gestureContextIsValid(context) ?? false
         }
-        monitor.onRecognitionSessionMayBegin = { [weak self] in
-            guard self?.systemSwipeSuppressionEnabled == true else { return }
-            self?.prepareRoutingForGesture()
+        monitor.onRecognitionSessionBegan = { [weak self] id in
+            self?.beginTouchRoutingSession(id: id)
         }
-        monitor.onRecognitionSessionEnded = { [weak self] in
-            self?.gesturePreparationIsActive = false
-            self?.selectedGestureContext = nil
+        monitor.onRecognitionSessionEnded = { [weak self] id in
+            self?.endTouchRoutingSession(id: id)
         }
         systemSwipeSuppressor.contextForNewGesture = { [weak self] in
-            self?.selectSuppressionContext()
-        }
-        systemSwipeSuppressor.onGestureMayBegin = { [weak self] in
-            self?.prepareRoutingForGesture()
+            self?.contextForDockSegment()
         }
         systemSwipeSuppressor.onPotentialOverlayTransition = { [weak self] in
             self?.invalidateOverlayStateAndRefresh()
         }
-        systemSwipeSuppressor.onContextSelected = { [weak self] context in
-            self?.selectedGestureContext = context
+        systemSwipeSuppressor.onContextSelected = { context in
             let route = context?.route.rawValue ?? "system"
             let overlay = context?.capturedOverlayMode.rawValue ?? "unavailable"
             DispatchQueue.main.async {
@@ -107,9 +97,9 @@ final class GestureSettingsManager {
                 )
             }
         }
-        systemSwipeSuppressor.onGestureEnded = { [weak self] in
-            self?.gesturePreparationIsActive = false
-            self?.monitor.finishRecognitionSession()
+        systemSwipeSuppressor.onMonitoringInterrupted = { [weak self] in
+            self?.interruptTouchRoutingSession()
+            self?.monitor.invalidateRecognition()
         }
 
         monitor.onSwipe = { [weak self] context, direction, fingerCount in
@@ -191,16 +181,17 @@ final class GestureSettingsManager {
         shouldSuppressSystemSwipes
             ? systemSwipeSuppressor.startMonitoring() : systemSwipeSuppressor.stopMonitoring()
 
-        setOverlaySamplingEnabled(anyEnabled || shouldSuppressSystemSwipes)
+        // Suppressed gestures take an authoritative boundary observation.
+        // Background sampling is only needed when recognition runs without
+        // the suppressing tap, so the two paths never contend with each other.
+        setOverlaySamplingEnabled(anyEnabled && !shouldSuppressSystemSwipes)
     }
 
     private func setOverlaySamplingEnabled(_ enabled: Bool) {
         guard overlaySamplingEnabled != enabled else { return }
         overlaySamplingEnabled = enabled
         let generation = routingState.invalidate()
-        gestureOverlayPreflight.invalidate(generation: generation)
-        gesturePreparationIsActive = false
-        selectedGestureContext = nil
+        interruptTouchRoutingSession()
         let sampler = overlayModeSampler
 
         if enabled {
@@ -215,51 +206,10 @@ final class GestureSettingsManager {
         }
     }
 
-    /// A `mayBegin` sample is the ownership boundary. Invalidate first so a
-    /// stale desktop or overlay lease can never suppress the coming gesture;
-    /// if the asynchronous scan has not completed by `began`, macOS owns it.
-    private func prepareRoutingForGesture() {
-        if gesturePreparationIsActive {
-            let generation = routingState.generation
-            guard gestureOverlayPreflight.needsPreparation(
-                generation: generation
-            ) else {
-                return
-            }
-            startGesturePreflight(generation: generation)
-            return
-        }
-
-        gesturePreparationIsActive = true
-        let generation = routingState.invalidate()
-        selectedGestureContext = nil
-        guard overlaySamplingEnabled else {
-            gestureOverlayPreflight.invalidate(generation: generation)
-            return
-        }
-        startGesturePreflight(generation: generation)
-    }
-
-    private func startGesturePreflight(generation: UInt64) {
-        let capability = missionControlCapability
-        gestureOverlayPreflight.prepare(generation: generation) { lease in
-            capability.observeOverlay(
-                lease.overlayMode,
-                on: lease.targetDisplayID,
-                sampledAtUptime: lease.sampledAtUptime
-            )
-            DiagnosticsStore.shared.record(
-                "overlay",
-                "gesture-preflight mode=\(lease.overlayMode.rawValue)"
-            )
-        }
-    }
-
     private func invalidateOverlayStateAndRefresh() {
         let generation = routingState.invalidate()
-        gestureOverlayPreflight.invalidate(generation: generation)
-        gesturePreparationIsActive = false
-        selectedGestureContext = nil
+        // Input-time ownership remains fixed until physical finger-up. The
+        // invalidation applies only to future touch sessions.
         guard overlaySamplingEnabled else { return }
         startOverlaySampler(generation: generation, settlesTransition: true)
     }
@@ -355,14 +305,63 @@ final class GestureSettingsManager {
 
     // MARK - Swipe handling
 
+    private func beginTouchRoutingSession(id: UInt64) {
+        touchRoutingCoordinator.beginTouchSession(id: id)
+    }
+
+    private func endTouchRoutingSession(id: UInt64) {
+        _ = touchRoutingCoordinator.endTouchSession(id: id)
+    }
+
+    private func interruptTouchRoutingSession() {
+        touchRoutingCoordinator.interrupt()
+    }
+
+    private func contextForDockSegment() -> GestureSessionContext? {
+        if touchRoutingCoordinator.hasOwnershipDecision {
+            return touchRoutingCoordinator.selectedContext
+        }
+        let context = selectSuppressionContext()
+        touchRoutingCoordinator.bindContext(context)
+        return context
+    }
+
+    private func bindCachedGestureContextIfNeeded() -> GestureSessionContext? {
+        if touchRoutingCoordinator.hasOwnershipDecision {
+            return touchRoutingCoordinator.selectedContext
+        }
+        let context = selectGestureContext()
+        touchRoutingCoordinator.bindContext(context)
+        return context
+    }
+
+    /// Dock requires an ownership answer from its `began` callback. A cached
+    /// observation cannot prove that an unobserved Exposé transition did not
+    /// occur, so ownership uses one authoritative boundary observation rather
+    /// than a timeout, pending route, or stale lease.
     private func selectSuppressionContext() -> GestureSessionContext? {
+        guard
+            systemSwipeSuppressionEnabled,
+            let displayID = try? displayLocator.cursorDisplayID()
+        else {
+            return nil
+        }
+
         gestureGeneration &+= 1
-        return gestureOverlayPreflight.makeContext(
-            sessionGeneration: gestureGeneration,
-            requiredGeneration: routingState.generation,
-            at: ProcessInfo.processInfo.systemUptime,
-            missionControlSyntheticState: missionControlCapability.state,
-            waitingUpTo: Self.gesturePreflightWaitDuration
+        let sampledAtUptime = ProcessInfo.processInfo.systemUptime
+        let overlayMode = overlayDetector.detect(on: displayID)
+        guard overlayMode != .unknown else { return nil }
+
+        missionControlCapability.observeOverlay(
+            overlayMode,
+            on: displayID,
+            sampledAtUptime: sampledAtUptime
+        )
+        return .observed(
+            generation: gestureGeneration,
+            targetDisplayID: displayID,
+            overlayMode: overlayMode,
+            missionControlSyntheticState: missionControlCapability.state
         )
     }
 
@@ -377,7 +376,7 @@ final class GestureSettingsManager {
 
     private func gestureContextIsValid(_ context: GestureSessionContext) -> Bool {
         generalSettings.bindingsEnabled
-            && selectedGestureContext == context
+            && touchRoutingCoordinator.selectedContext == context
             && context.isValidForDispatch(
                 currentDisplayID: context.targetDisplayID,
                 currentMissionControlSyntheticState: missionControlCapability.state
@@ -403,13 +402,9 @@ final class GestureSettingsManager {
         monitor.stopMonitoring()
         systemSwipeSuppressor.stopMonitoring()
         overlaySamplingEnabled = false
-        gesturePreparationIsActive = false
-        selectedGestureContext = nil
+        interruptTouchRoutingSession()
         let generation = routingState.invalidate()
-        gestureOverlayPreflight.invalidate(generation: generation)
-        async let stopSampler: Void = overlayModeSampler.stop(generation: generation)
-        async let stopPreflight: Void = gestureOverlayPreflight.stop()
-        _ = await (stopSampler, stopPreflight)
+        await overlayModeSampler.stop(generation: generation)
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         lifecycleObservers.forEach(workspaceCenter.removeObserver)

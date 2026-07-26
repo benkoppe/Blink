@@ -28,8 +28,9 @@ nonisolated final class SwipeRecognitionWorker: @unchecked Sendable {
         queue.async { [self] in
             if sessionContext == nil {
                 guard let proposedContext else {
-                    // HID delivery can precede route selection. Do not feed that
-                    // movement to the recognizer without an authoritative owner.
+                    // HID delivery can precede Dock ownership. Preserve the
+                    // touch baseline without allowing recognition to dispatch.
+                    recognizer.prime(sample, configuration: configuration)
                     completion(nil)
                     return
                 }
@@ -79,14 +80,20 @@ final class SwipeGestureMonitor {
     var sameDirectionRepeatSensitivity = 0.06
     var contextForRecognition: (() -> GestureSessionContext?)?
     var isContextValidBeforeDispatch: ((GestureSessionContext) -> Bool)?
-    var onRecognitionSessionMayBegin: (() -> Void)?
-    var onRecognitionSessionEnded: (() -> Void)?
+    var onRecognitionSessionBegan: ((UInt64) -> Void)?
+    var onRecognitionSessionEnded: ((UInt64) -> Void)?
 
     private var eventTap: EventTap?
     private let worker: SwipeRecognitionWorker
+    private let deliveryQueue = DispatchQueue(
+        label: "com.thekoppe.Blink.swipe-recognition-delivery",
+        target: .main
+    )
     private let requiresHealthyTapForDispatch: Bool
     private var monitorEpoch: UInt64 = 0
+    private var recognitionSessionSequence: UInt64 = 0
     private var recognitionSessionIsActive = false
+    private var activeTouchIdentities: Set<String> = []
 
     init(
         worker: SwipeRecognitionWorker = SwipeRecognitionWorker(),
@@ -144,6 +151,7 @@ final class SwipeGestureMonitor {
     func stopMonitoring() {
         monitorEpoch &+= 1
         recognitionSessionIsActive = false
+        activeTouchIdentities.removeAll(keepingCapacity: true)
         eventTap?.disable()
         eventTap = nil
         worker.reset()
@@ -157,19 +165,37 @@ final class SwipeGestureMonitor {
     func invalidateRecognition() {
         monitorEpoch &+= 1
         recognitionSessionIsActive = false
+        activeTouchIdentities.removeAll(keepingCapacity: true)
         worker.reset()
     }
 
     func consume(_ sample: GestureSample) {
-        guard sample.activeFingerCount > 0 else {
-            recognitionSessionIsActive = false
+        // Companion gesture events can contain no NSTouch objects between Dock
+        // segments even while every finger remains down. Only explicit ended
+        // touches, or replacement by a disjoint identity set, end a physical
+        // contact session.
+        guard !sample.touches.isEmpty else { return }
+        let currentIdentities = Set(
+            sample.touches.lazy.filter { !$0.isEnded }.map(\.identity)
+        )
+        guard !currentIdentities.isEmpty else {
+            activeTouchIdentities.removeAll(keepingCapacity: true)
             finishRecognitionSession()
             return
         }
-        if !recognitionSessionIsActive {
-            recognitionSessionIsActive = true
-            onRecognitionSessionMayBegin?()
+
+        if recognitionSessionIsActive,
+            !activeTouchIdentities.isEmpty,
+            activeTouchIdentities.isDisjoint(with: currentIdentities)
+        {
+            finishRecognitionSession()
         }
+        if !recognitionSessionIsActive {
+            recognitionSessionSequence &+= 1
+            recognitionSessionIsActive = true
+            onRecognitionSessionBegan?(recognitionSessionSequence)
+        }
+        activeTouchIdentities = currentIdentities
         let configuration = SwipeRecognizer.Configuration(
             flipsDirection: flipSwipeDirection,
             allowsSameDirectionRepeat: allowSameDirectionRepeat,
@@ -184,36 +210,51 @@ final class SwipeGestureMonitor {
             proposedContext: context
         ) { [weak self] result in
             guard let result else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard
-                    let self,
-                    self.monitorEpoch == queuedEpoch,
-                    (!self.requiresHealthyTapForDispatch
-                        || self.eventTap?.isHealthy == true),
-                    self.isContextValidBeforeDispatch?(result.context) ?? true
-                else {
-                    return
+            self?.deliveryQueue.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard
+                        let self,
+                        self.monitorEpoch == queuedEpoch,
+                        (!self.requiresHealthyTapForDispatch
+                            || self.eventTap?.isHealthy == true),
+                        self.isContextValidBeforeDispatch?(result.context) ?? true
+                    else {
+                        return
+                    }
+                    self.onSwipe?(
+                        result.context,
+                        result.direction,
+                        result.fingerCount
+                    )
+                    Logger.swipeGestureMonitor.debug(
+                        "recognized direction=\(result.direction) fingers=\(result.fingerCount) session=\(result.context.generation)"
+                    )
                 }
-                self.onSwipe?(
-                    result.context,
-                    result.direction,
-                    result.fingerCount
-                )
-                Logger.swipeGestureMonitor.debug(
-                    "recognized direction=\(result.direction) fingers=\(result.fingerCount) session=\(result.context.generation)"
-                )
             }
         }
     }
 
     /// Places normal teardown behind every recognition already accepted by the
-    /// serial worker. Main-queue delivery preserves that same order.
+    /// serial worker. The serial delivery queue preserves that order on main.
     func finishRecognitionSession() {
+        guard recognitionSessionIsActive else { return }
+        recognitionSessionIsActive = false
+        activeTouchIdentities.removeAll(keepingCapacity: true)
         let queuedEpoch = monitorEpoch
+        let endedSession = recognitionSessionSequence
         worker.finishSession { [weak self] in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.monitorEpoch == queuedEpoch else { return }
-                self.onRecognitionSessionEnded?()
+            self?.deliveryQueue.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard
+                        let self,
+                        self.monitorEpoch == queuedEpoch,
+                        self.recognitionSessionSequence == endedSession,
+                        !self.recognitionSessionIsActive
+                    else {
+                        return
+                    }
+                    self.onRecognitionSessionEnded?(endedSession)
+                }
             }
         }
     }

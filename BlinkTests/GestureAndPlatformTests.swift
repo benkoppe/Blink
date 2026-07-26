@@ -55,6 +55,106 @@ struct GestureAndPlatformTests {
         #expect(result == nil)
     }
 
+    @Test("Finger cardinality grows until the first recognition")
+    func recognizerWaitsForCompleteFingerCardinality() {
+        var recognizer = SwipeRecognizer()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: true,
+            sameDirectionRepeatSensitivity: 0
+        )
+        #expect(recognizer.consume(
+            GestureSample(touches: touches(count: 1, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        ) == nil)
+        #expect(recognizer.consume(
+            GestureSample(touches: touches(count: 1, at: 0.08)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        ) == nil)
+        #expect(recognizer.consume(
+            GestureSample(touches: touches(count: 2, at: 0.08)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        ) == nil)
+        let first = recognizer.consume(
+            GestureSample(touches: touches(count: 3, at: 0.08)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        let reversed = recognizer.consume(
+            GestureSample(touches: touches(count: 2, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+
+        #expect(first?.direction == .right)
+        #expect(first?.fingerCount == 3)
+        #expect(reversed?.direction == .left)
+        #expect(reversed?.fingerCount == 3)
+    }
+
+    @Test("Four-finger cardinality is captured before recognition")
+    func recognizerCapturesFourFingerCardinality() {
+        var recognizer = SwipeRecognizer()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: false,
+            sameDirectionRepeatSensitivity: 0.06
+        )
+        _ = recognizer.consume(
+            GestureSample(touches: touches(count: 1, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        _ = recognizer.consume(
+            GestureSample(touches: touches(count: 2, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        _ = recognizer.consume(
+            GestureSample(touches: touches(count: 3, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        _ = recognizer.consume(
+            GestureSample(touches: touches(count: 4, at: 0)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+        let result = recognizer.consume(
+            GestureSample(touches: touches(count: 4, at: 0.08)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+
+        #expect(result?.fingerCount == 4)
+    }
+
+    @Test("Deferred ownership preserves the initial touch baseline")
+    func recognizerPreservesDeferredOwnershipBaseline() {
+        var recognizer = SwipeRecognizer()
+        let configuration = SwipeRecognizer.Configuration(
+            flipsDirection: false,
+            allowsSameDirectionRepeat: false,
+            sameDirectionRepeatSensitivity: 0.06
+        )
+
+        recognizer.prime(
+            GestureSample(touches: touches(at: 0)),
+            configuration: configuration
+        )
+        let result = recognizer.consume(
+            GestureSample(touches: touches(at: 0.08)),
+            configuration: configuration,
+            ignoreNewGesture: false
+        )
+
+        #expect(result?.direction == .right)
+        #expect(result?.fingerCount == 3)
+    }
+
     @Test("Small deltas count toward same-direction repeat distance")
     func recognizerAccumulatesRepeatMovement() {
         var recognizer = SwipeRecognizer()
@@ -276,23 +376,65 @@ struct GestureAndPlatformTests {
         #expect(probe.recognitions.first?.direction == .right)
     }
 
-    @Test("First HID sample starts preflight once per touch session")
-    func hidSampleStartsPreflightOnce() async {
+    @Test("Alternating swipes remain active until physical finger-up")
+    func alternatingSwipesSharePhysicalTouchSession() async {
         let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
         let context = blinkContext()
         monitor.contextForRecognition = { context }
-        var starts = 0
-        var endings = 0
-        monitor.onRecognitionSessionMayBegin = { starts += 1 }
-        monitor.onRecognitionSessionEnded = { endings += 1 }
+        var directions: [SwipeDirection] = []
+        monitor.onSwipe = { _, direction, _ in directions.append(direction) }
 
         monitor.consume(GestureSample(touches: touches(at: 0)))
-        monitor.consume(GestureSample(touches: touches(at: 0.01)))
-        #expect(starts == 1)
-        monitor.consume(GestureSample(touches: []))
-        await waitUntil { endings == 1 }
+        monitor.consume(GestureSample(touches: touches(at: 0.08)))
         monitor.consume(GestureSample(touches: touches(at: 0)))
-        #expect(starts == 2)
+        monitor.consume(GestureSample(touches: touches(at: 0.08)))
+        await waitUntil { directions.count == 3 }
+
+        #expect(directions == [.right, .left, .right])
+    }
+
+    @Test("Empty companion events do not end physical touch ownership")
+    func emptyCompanionDoesNotEndTouchSession() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        let context = blinkContext()
+        monitor.contextForRecognition = { context }
+        var beginnings: [UInt64] = []
+        var endings: [UInt64] = []
+        var directions: [SwipeDirection] = []
+        monitor.onRecognitionSessionBegan = { beginnings.append($0) }
+        monitor.onRecognitionSessionEnded = { endings.append($0) }
+        monitor.onSwipe = { _, direction, _ in directions.append(direction) }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        monitor.consume(GestureSample(touches: touches(at: 0.08)))
+        monitor.consume(GestureSample(touches: []))
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        await waitUntil { directions.count == 2 }
+
+        #expect(directions == [.right, .left])
+        #expect(beginnings.count == 1)
+        #expect(endings.isEmpty)
+    }
+
+    @Test("Disjoint touch identities begin a new physical session")
+    func disjointTouchIdentitiesBeginNewSession() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        monitor.contextForRecognition = { self.blinkContext() }
+        var beginnings: [UInt64] = []
+        monitor.onRecognitionSessionBegan = { beginnings.append($0) }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        let replacements = touches(at: 0).map {
+            GestureTouchSample(
+                identity: "new-\($0.identity)",
+                position: $0.position,
+                isEnded: false
+            )
+        }
+        monitor.consume(GestureSample(touches: replacements))
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(beginnings == [1, 2])
     }
 
     @Test("Recognition queued before normal end dispatches before teardown")
@@ -302,7 +444,7 @@ struct GestureAndPlatformTests {
         monitor.contextForRecognition = { context }
         var events: [String] = []
         monitor.onSwipe = { _, _, _ in events.append("swipe") }
-        monitor.onRecognitionSessionEnded = { events.append("end") }
+        monitor.onRecognitionSessionEnded = { _ in events.append("end") }
 
         monitor.consume(GestureSample(touches: touches(at: 0)))
         monitor.consume(GestureSample(touches: touches(at: 0.08)))
@@ -323,12 +465,46 @@ struct GestureAndPlatformTests {
             contextSelections += 1
             return self.blinkContext()
         }
-        monitor.onRecognitionSessionEnded = { endings += 1 }
+        monitor.onRecognitionSessionEnded = { _ in endings += 1 }
 
         monitor.consume(GestureSample(touches: []))
-        await waitUntil { endings == 1 }
+        for _ in 0..<20 { await Task.yield() }
 
         #expect(contextSelections == 0)
+        #expect(endings == 0)
+    }
+
+    @Test("Recognition teardown is idempotent within a touch session")
+    func recognitionTeardownIsIdempotent() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        monitor.contextForRecognition = { self.blinkContext() }
+        var endings = 0
+        monitor.onRecognitionSessionEnded = { _ in endings += 1 }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        monitor.finishRecognitionSession()
+        monitor.finishRecognitionSession()
+        await waitUntil { endings == 1 }
+
+        #expect(endings == 1)
+    }
+
+    @Test("Delayed teardown cannot clear a newer recognition session")
+    func delayedTeardownCannotClearNewSession() async {
+        let monitor = SwipeGestureMonitor(requiresHealthyTapForDispatch: false)
+        monitor.contextForRecognition = { self.blinkContext() }
+        var endings = 0
+        monitor.onRecognitionSessionEnded = { _ in endings += 1 }
+
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        monitor.finishRecognitionSession()
+        monitor.consume(GestureSample(touches: touches(at: 0)))
+        for _ in 0..<20 { await Task.yield() }
+        #expect(endings == 0)
+
+        monitor.finishRecognitionSession()
+        await waitUntil { endings == 1 }
+        #expect(endings == 1)
     }
 
     @Test("Partial lift keeps four-finger repeat cardinality")
@@ -664,6 +840,52 @@ struct GestureAndPlatformTests {
         )
     }
 
+    @Test("Touch routing reuses one decision across Dock segments")
+    func touchRoutingReusesDecisionUntilFingerUp() {
+        var coordinator = TouchRoutingSessionCoordinator()
+        let original = blinkContext(generation: 1)
+        let replacement = blinkContext(generation: 2)
+
+        coordinator.beginTouchSession(id: 10)
+        coordinator.bindContext(original)
+        coordinator.bindContext(replacement)
+
+        #expect(coordinator.hasOwnershipDecision)
+        #expect(coordinator.selectedContext == original)
+        let rejectedOldEnd = coordinator.endTouchSession(id: 9)
+        #expect(!rejectedOldEnd)
+        #expect(coordinator.selectedContext == original)
+        let acceptedEnd = coordinator.endTouchSession(id: 10)
+        #expect(acceptedEnd)
+        #expect(!coordinator.hasOwnershipDecision)
+    }
+
+    @Test("Dock-first ownership joins the following HID touch session")
+    func dockFirstOwnershipJoinsTouchSession() {
+        var coordinator = TouchRoutingSessionCoordinator()
+        let context = blinkContext()
+
+        coordinator.bindContext(context)
+        coordinator.beginTouchSession(id: 1)
+
+        #expect(coordinator.hasOwnershipDecision)
+        #expect(coordinator.selectedContext == context)
+        let acceptedEnd = coordinator.endTouchSession(id: 1)
+        #expect(acceptedEnd)
+    }
+
+    @Test("A system decision is stable across an entire touch session")
+    func nilOwnershipDecisionRemainsDecided() {
+        var coordinator = TouchRoutingSessionCoordinator()
+        coordinator.beginTouchSession(id: 1)
+        coordinator.bindContext(nil)
+
+        #expect(coordinator.hasOwnershipDecision)
+        #expect(coordinator.selectedContext == nil)
+        coordinator.bindContext(blinkContext())
+        #expect(coordinator.selectedContext == nil)
+    }
+
     @Test("Missing or stale routing state fails open without synchronous work")
     func staleRoutingStateFailsOpen() {
         let display = DisplayID(rawValue: "display-a")!
@@ -728,91 +950,6 @@ struct GestureAndPlatformTests {
                 missionControlSyntheticState: .available
             ).route == .system
         )
-    }
-
-    @Test("Gesture preflight starts immediately and publishes authoritative context")
-    func gesturePreflightPublishesContext() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(modes: [.none])
-        let preflight = GestureOverlayPreflight(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector,
-            uptime: { 100 }
-        )
-        let sink = RoutingLeaseSink()
-        let generation = sink.invalidate()
-
-        preflight.prepare(generation: generation) { sink.accept($0) }
-        await waitUntil { sink.lease != nil }
-        let context = preflight.makeContext(
-            sessionGeneration: 1,
-            requiredGeneration: generation,
-            at: 100,
-            missionControlSyntheticState: .available
-        )
-
-        #expect(context?.route == .blink)
-        #expect(context?.requiredPostingMode == .instant)
-        await preflight.stop()
-    }
-
-    @Test("Gesture preflight can finish during a bounded ownership wait")
-    func gesturePreflightCompletesDuringBoundedWait() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(
-            modes: [.none],
-            blockedSamples: [1]
-        )
-        let preflight = GestureOverlayPreflight(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector,
-            uptime: { 100 }
-        )
-        let generation: UInt64 = 1
-        preflight.prepare(generation: generation) { _ in }
-        await waitUntil { detector.startedSamples == 1 }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.002) {
-            detector.release(sample: 1)
-        }
-
-        let context = preflight.makeContext(
-            sessionGeneration: 1,
-            requiredGeneration: generation,
-            at: 100,
-            missionControlSyntheticState: .available,
-            waitingUpTo: 0.02
-        )
-
-        #expect(context?.route == .blink)
-        await preflight.stop()
-    }
-
-    @Test("Gesture preflight serializes invalidated scans")
-    func gesturePreflightSerializesInvalidatedScans() async {
-        let display = DisplayID(rawValue: "display-a")!
-        let detector = ControlledOverlayDetector(
-            modes: [.missionControl, .none],
-            blockedSamples: [1]
-        )
-        let preflight = GestureOverlayPreflight(
-            displayLocator: FixedDisplayLocator(displayID: display),
-            detector: detector,
-            uptime: { 100 }
-        )
-        let sink = RoutingLeaseSink()
-        let firstGeneration = sink.invalidate()
-        preflight.prepare(generation: firstGeneration) { sink.accept($0) }
-        await waitUntil { detector.startedSamples == 1 }
-
-        let secondGeneration = sink.invalidate()
-        preflight.prepare(generation: secondGeneration) { sink.accept($0) }
-        for _ in 0..<20 { await Task.yield() }
-        #expect(detector.startedSamples == 1)
-        detector.release(sample: 1)
-        await waitUntil { sink.lease?.generation == secondGeneration }
-
-        #expect(sink.leases.map(\.overlayMode) == [.none])
-        await preflight.stop()
     }
 
     @Test("Transition invalidation fails new sessions open without changing the active session")
@@ -1384,8 +1521,12 @@ struct GestureAndPlatformTests {
         OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: 0)
     }
 
-    private func touches(at x: CGFloat, y: CGFloat = 0) -> [GestureTouchSample] {
-        (0..<3).map {
+    private func touches(
+        count: Int = 3,
+        at x: CGFloat,
+        y: CGFloat = 0
+    ) -> [GestureTouchSample] {
+        (0..<count).map {
             GestureTouchSample(
                 identity: String($0),
                 position: CGPoint(x: x, y: y + CGFloat($0) * 0.01),
@@ -1394,9 +1535,9 @@ struct GestureAndPlatformTests {
         }
     }
 
-    private func blinkContext() -> GestureSessionContext {
+    private func blinkContext(generation: UInt64 = 1) -> GestureSessionContext {
         GestureSessionContext(
-            generation: 1,
+            generation: generation,
             route: .blink,
             targetDisplayID: DisplayID(rawValue: "display-a")!,
             capturedOverlayMode: .none,

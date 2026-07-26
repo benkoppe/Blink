@@ -171,8 +171,6 @@ private extension CGRect {
     nonisolated var isUsableDisplayBounds: Bool { isUsableWindowBounds }
 }
 
-private nonisolated let overlayDetectionLock = NSLock()
-
 nonisolated protocol OverlayDetecting: Sendable {
     func detect(on displayID: DisplayID) -> OverlayMode
 }
@@ -186,9 +184,6 @@ nonisolated struct CoreGraphicsOverlayDetector: OverlayDetecting, Sendable {
     }
 
     func detect(on displayID: DisplayID) -> OverlayMode {
-        overlayDetectionLock.lock()
-        defer { overlayDetectionLock.unlock() }
-
         let startedAt = ProcessInfo.processInfo.systemUptime
         defer {
             DiagnosticsStore.shared.recordOverlayScan(
