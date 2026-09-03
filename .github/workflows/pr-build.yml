@@ -1,0 +1,52 @@
+name: Build PR
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr_build:
+    name: Test and package PR
+    if: github.event_name == 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout PR tip
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Magic Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Xcode Cache
+        uses: irgaly/xcode-cache@v1
+        with:
+          key: xcode-cache-deriveddata-${{ github.workflow }}-${{ github.sha }}
+          restore-keys: xcode-cache-deriveddata-${{ github.workflow }}-
+
+      - name: Test and package Blink Dev
+        run: nix develop . --command fastlane pr_build
+
+      - name: Upload Blink Dev
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blink-Dev-PR-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: build/Blink-Dev.zip
+          if-no-files-found: error
+          retention-days: 14
