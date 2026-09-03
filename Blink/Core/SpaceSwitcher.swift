@@ -73,16 +73,22 @@ private struct CGSSymbols {
 // macOS releases.
 
 private enum GestureField {
+    static let swipeMask = CGEventField(rawValue: 115)!
     static let eventType = CGEventField(rawValue: 55)!
     static let hidType = CGEventField(rawValue: 110)!
+    static let positionX = CGEventField(rawValue: 125)!
+    static let positionY = CGEventField(rawValue: 126)!
     static let scrollY = CGEventField(rawValue: 119)!
     static let swipeMotion = CGEventField(rawValue: 123)!
     static let swipeProgress = CGEventField(rawValue: 124)!
     static let velocityX = CGEventField(rawValue: 129)!
     static let velocityY = CGEventField(rawValue: 130)!
     static let phase = CGEventField(rawValue: 132)!
+    static let phaseAlias = CGEventField(rawValue: 134)!
     static let scrollFlags = CGEventField(rawValue: 135)!
+    static let zoomDeltaY = CGEventField(rawValue: 138)!
     static let zoomDeltaX = CGEventField(rawValue: 139)!
+    static let sourceUnixProcessIDAlias = CGEventField(rawValue: 169)!
 }
 
 // Raw integer values for the private CGS event type and gesture phase enums
@@ -102,6 +108,135 @@ private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
 private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
 
 private let kDefaultInstantGestureVelocity = 999_999.0
+private let kMacOS27ProgressMagnitude = 0.000016
+private let kMacOS27MaximumGestureVelocity = 1_000.0
+private let kMacOS27GesturePhaseDelay: useconds_t = 10_000
+
+private extension Data {
+    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
+        var value = value.littleEndian
+        Swift.withUnsafeBytes(of: &value) { bytes in
+            append(contentsOf: bytes)
+        }
+    }
+}
+
+/// Builds the private IOHID payload macOS 27 requires for synthetic Dock
+/// swipe events. The surrounding CGEvent serialization is big-endian, while
+/// the IOHID records themselves use the host's little-endian layout.
+enum DockEventPayload {
+    private static let fieldID = 4_205
+
+    static func fixedPoint1616(_ value: Double) -> Int32 {
+        guard value.isFinite else { return 0 }
+
+        let scaledValue = value * 65_536
+        guard scaledValue != 0 else {
+            return value == 0 ? 0 : (value.sign == .minus ? -1 : 1)
+        }
+
+        let clampedValue = min(
+            max(scaledValue, Double(Int32.min)),
+            Double(Int32.max)
+        )
+
+        return Int32(clampedValue.rounded(.towardZero))
+    }
+
+    static func makePayload(for event: CGEvent) -> Data {
+        let phase = event.getIntegerValueField(GestureField.phase)
+        let motion = event.getIntegerValueField(GestureField.swipeMotion)
+        let progress = event.getDoubleValueField(GestureField.swipeProgress)
+        let positionX = event.getDoubleValueField(GestureField.positionX)
+        let positionY = event.getDoubleValueField(GestureField.positionY)
+        let velocityX = event.getDoubleValueField(GestureField.velocityX)
+        let velocityY = event.getDoubleValueField(GestureField.velocityY)
+        let swipeMask = event.getIntegerValueField(GestureField.swipeMask)
+
+        let includesVelocity =
+            velocityX != 0 || velocityY != 0 || phase == Phase.ended
+
+        var payload = Data()
+        payload.reserveCapacity(includesVelocity ? 96 : 68)
+
+        payload.appendLittleEndian(
+            event.timestamp == 0 ? mach_absolute_time() : event.timestamp
+        )
+        payload.appendLittleEndian(UInt64(0)) // sender ID
+        payload.appendLittleEndian(UInt32(0)) // options
+        payload.appendLittleEndian(UInt32(0)) // attribute length
+        payload.appendLittleEndian(UInt32(includesVelocity ? 2 : 1))
+
+        // IOHIDFluidTouchGestureData
+        payload.appendLittleEndian(UInt32(40)) // record size
+        payload.appendLittleEndian(UInt32(23)) // kIOHIDEventTypeFluidTouchGesture
+        payload.appendLittleEndian(
+            UInt32(truncatingIfNeeded: (phase & 0xFF) << 24)
+        )
+        payload.append(0) // depth
+        payload.append(contentsOf: [UInt8](repeating: 0, count: 3))
+        payload.appendLittleEndian(fixedPoint1616(positionX))
+        payload.appendLittleEndian(fixedPoint1616(positionY))
+        payload.appendLittleEndian(Int32(0)) // position Z
+        payload.appendLittleEndian(UInt32(truncatingIfNeeded: swipeMask))
+        payload.appendLittleEndian(UInt16(truncatingIfNeeded: motion))
+        payload.appendLittleEndian(UInt16(3)) // Dock primary gesture flavor
+        payload.appendLittleEndian(fixedPoint1616(progress))
+
+        if includesVelocity {
+            // IOHIDVelocityEventData
+            payload.appendLittleEndian(UInt32(28)) // record size
+            payload.appendLittleEndian(UInt32(9)) // kIOHIDEventTypeVelocity
+            payload.appendLittleEndian(UInt32(0)) // options
+            payload.append(1) // depth
+            payload.append(contentsOf: [UInt8](repeating: 0, count: 3))
+            payload.appendLittleEndian(fixedPoint1616(velocityX))
+            payload.appendLittleEndian(fixedPoint1616(velocityY))
+            payload.appendLittleEndian(Int32(0)) // velocity Z
+        }
+
+        return payload
+    }
+
+    static func augmentedData(for event: CGEvent) -> Data? {
+        guard let flattenedData = event.__data(allocator: nil) as Data? else {
+            return nil
+        }
+
+        guard
+            flattenedData.count >= 4,
+            flattenedData[0] == 0,
+            flattenedData[1] == 0,
+            flattenedData[2] == 0,
+            flattenedData[3] == 2
+        else {
+            return nil
+        }
+
+        let payload = makePayload(for: event)
+        guard payload.count <= Int(UInt16.max) else { return nil }
+
+        var augmentedData = flattenedData
+        augmentedData.append(UInt8((payload.count >> 8) & 0xFF))
+        augmentedData.append(UInt8(payload.count & 0xFF))
+        augmentedData.append(UInt8((fieldID >> 8) & 0xFF))
+        augmentedData.append(UInt8(fieldID & 0xFF))
+        augmentedData.append(contentsOf: payload)
+
+        return augmentedData
+    }
+
+    static func augment(_ event: CGEvent) -> CGEvent? {
+        guard let augmentedData = augmentedData(for: event) else {
+            return nil
+        }
+
+        return CGEvent(
+            withDataAllocator: nil,
+            data: augmentedData as CFData
+        )
+    }
+}
 
 // MARK - SpaceInfo
 
@@ -191,6 +326,16 @@ final class SpaceSwitcher {
             1,
             appState?.settingsManager.generalSettingsManager.instantGestureSpeed.velocity
                 ?? kDefaultInstantGestureVelocity)
+    }
+
+    private var requiresMacOS27EventAugmentation: Bool {
+        ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(
+                majorVersion: 27,
+                minorVersion: 0,
+                patchVersion: 0
+            )
+        )
     }
 
     @ObservationIgnored
@@ -979,6 +1124,148 @@ final class SpaceSwitcher {
         return Int64(Int32(bitPattern: flagsProgress.bitPattern))
     }
 
+    private func modernGestureVelocity(
+        _ velocity: Double,
+        direction: Direction
+    ) -> Double {
+        let magnitude = velocity.isFinite
+            ? min(max(abs(velocity), 1), kMacOS27MaximumGestureVelocity)
+            : kMacOS27MaximumGestureVelocity
+
+        return direction == .right ? -magnitude : magnitude
+    }
+
+    private func modernGestureProgress(
+        _ progress: Double?,
+        direction: Direction
+    ) -> Double {
+        let defaultProgress =
+            direction == .right
+            ? kMacOS27ProgressMagnitude
+            : -kMacOS27ProgressMagnitude
+        let appProgress = progress ?? defaultProgress
+        let nonzeroProgress =
+            appProgress == 0 ? defaultProgress : appProgress
+
+        // macOS 27 interprets the serialized swipe direction opposite to the
+        // direction used by the existing public CGEvent fields.
+        return -nonzeroProgress
+    }
+
+    private func makeGestureEvent() -> CGEvent? {
+        guard let event = CGEvent(source: nil) else { return nil }
+
+        event.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.gesture
+        )
+        event.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
+
+        return event
+    }
+
+    private func makeDockSwipeEvent(
+        phase: Int64,
+        direction: Direction,
+        velocity: Double?,
+        progress: Double? = nil
+    ) -> CGEvent? {
+        let requiresAugmentation = requiresMacOS27EventAugmentation
+        let velocityX = velocity.map {
+            direction == .right ? $0 : -$0
+        }
+        let flagBits = dockSwipeFlagBits(for: direction)
+
+        guard let event = CGEvent(source: nil) else { return nil }
+
+        event.setIntegerValueField(
+            GestureField.eventType,
+            value: EventType.dockControl
+        )
+        event.setIntegerValueField(
+            GestureField.hidType,
+            value: kDockSwipeHIDType
+        )
+        event.setIntegerValueField(GestureField.phase, value: phase)
+        event.setIntegerValueField(
+            GestureField.swipeMotion,
+            value: Motion.horizontal
+        )
+        event.setDoubleValueField(GestureField.scrollY, value: 0)
+        event.setIntegerValueField(
+            kSyntheticMarkerField,
+            value: kSyntheticMarkerValue
+        )
+
+        if requiresAugmentation {
+            event.setDoubleValueField(
+                GestureField.swipeProgress,
+                value: modernGestureProgress(progress, direction: direction)
+            )
+            event.setIntegerValueField(
+                GestureField.phaseAlias,
+                value: phase
+            )
+            event.setDoubleValueField(
+                GestureField.positionX,
+                value: 0.1
+            )
+            event.setDoubleValueField(
+                GestureField.zoomDeltaY,
+                value: 3
+            )
+            event.setDoubleValueField(
+                GestureField.sourceUnixProcessIDAlias,
+                value: Double(mach_absolute_time())
+            )
+
+            // The serialized Dock trace only carries velocity on its ending
+            // phase. Keeping the earlier phases velocity-free avoids them
+            // being interpreted as separate swipes on macOS 27.
+            if phase == Phase.ended, let velocity {
+                event.setDoubleValueField(
+                    GestureField.velocityX,
+                    value: modernGestureVelocity(velocity, direction: direction)
+                )
+            }
+
+            return DockEventPayload.augment(event)
+        }
+
+        if let progress {
+            event.setDoubleValueField(
+                GestureField.swipeProgress,
+                value: progress
+            )
+        }
+        event.setIntegerValueField(
+            GestureField.scrollFlags,
+            value: flagBits
+        )
+        event.setDoubleValueField(
+            GestureField.zoomDeltaX,
+            value: kFltTrueMin
+        )
+        if let velocityX {
+            event.setDoubleValueField(
+                GestureField.velocityX,
+                value: velocityX
+            )
+            event.setDoubleValueField(GestureField.velocityY, value: 0)
+        }
+
+        return event
+    }
+
+    private func paceModernGesturePhase() {
+        guard requiresMacOS27EventAugmentation else { return }
+
+        usleep(kMacOS27GesturePhaseDelay)
+    }
+
     /// Synthetic DockSwipe trace for instant switching outside Mission Control.
     @discardableResult
     private func postInstantGesture(
@@ -987,9 +1274,29 @@ final class SpaceSwitcher {
     ) -> Bool {
         let velocity = velocity ?? instantGestureVelocity
 
-        return postDockSwipe(phase: Phase.began, direction: direction, velocity: velocity)
-            && postDockSwipe(phase: Phase.changed, direction: direction, velocity: velocity)
-            && postDockSwipe(phase: Phase.ended, direction: direction, velocity: velocity)
+        guard postDockSwipe(
+            phase: Phase.began,
+            direction: direction,
+            velocity: velocity
+        ) else {
+            return false
+        }
+        paceModernGesturePhase()
+
+        guard postDockSwipe(
+            phase: Phase.changed,
+            direction: direction,
+            velocity: velocity
+        ) else {
+            return false
+        }
+        paceModernGesturePhase()
+
+        return postDockSwipe(
+            phase: Phase.ended,
+            direction: direction,
+            velocity: velocity
+        )
     }
 
     @discardableResult
@@ -998,26 +1305,13 @@ final class SpaceSwitcher {
         direction: Direction,
         velocity: Double
     ) -> Bool {
-        let velocityX = direction == .right ? velocity : -velocity
-        let flagBits = dockSwipeFlagBits(for: direction)
-
-        guard let gestureEvent = CGEvent(source: nil),
-            let dockEvent = CGEvent(source: nil)
+        guard let gestureEvent = makeGestureEvent(),
+            let dockEvent = makeDockSwipeEvent(
+                phase: phase,
+                direction: direction,
+                velocity: velocity
+            )
         else { return false }
-
-        gestureEvent.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        gestureEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        dockEvent.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        dockEvent.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        dockEvent.setIntegerValueField(GestureField.phase, value: phase)
-        dockEvent.setIntegerValueField(GestureField.scrollFlags, value: flagBits)
-        dockEvent.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        dockEvent.setDoubleValueField(GestureField.scrollY, value: 0)
-        dockEvent.setDoubleValueField(GestureField.velocityX, value: velocityX)
-        dockEvent.setDoubleValueField(GestureField.velocityY, value: 0)
-        dockEvent.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        dockEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
 
         dockEvent.post(tap: .cgSessionEventTap)
         gestureEvent.post(tap: .cgSessionEventTap)
@@ -1028,67 +1322,44 @@ final class SpaceSwitcher {
     @discardableResult
     private func postMissionControlGesture(_ direction: Direction) -> Bool {
         let isRight = direction == .right
-        let flagDir = dockSwipeFlagBits(for: direction)
         let progressSteps: [Double] = [0.25, 0.5, 0.75]
         let progress = isRight ? 1.05 : -1.05
-        let velocity = isRight ? 200.0 : -200.0
+        let velocity = 200.0
 
-        guard let beginGesture = CGEvent(source: nil),
-            let beginDock = CGEvent(source: nil)
+        guard let beginGesture = makeGestureEvent(),
+            let beginDock = makeDockSwipeEvent(
+                phase: Phase.began,
+                direction: direction,
+                velocity: nil
+            )
         else { return false }
-
-        beginGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        beginGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        beginDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        beginDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        beginDock.setIntegerValueField(GestureField.phase, value: Phase.began)
-        beginDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        beginDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        beginDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        beginDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        beginDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
 
         beginGesture.post(tap: .cgSessionEventTap)
         beginDock.post(tap: .cgSessionEventTap)
+        paceModernGesturePhase()
 
         for step in progressSteps {
-            guard let changedDock = CGEvent(source: nil) else { return false }
-            changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-            changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-            changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
-            changedDock.setDoubleValueField(
-                GestureField.swipeProgress,
-                value: isRight ? step : -step
-            )
-            changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-            changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-            changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
-            changedDock.setDoubleValueField(GestureField.velocityX, value: velocity)
-            changedDock.setDoubleValueField(GestureField.velocityY, value: 0)
-            changedDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-            changedDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
+            guard let changedDock = makeDockSwipeEvent(
+                phase: Phase.changed,
+                direction: direction,
+                velocity: velocity,
+                progress: isRight ? step : -step
+            ) else {
+                return false
+            }
+
             changedDock.post(tap: .cgSessionEventTap)
+            paceModernGesturePhase()
         }
 
-        guard let endGesture = CGEvent(source: nil),
-            let endDock = CGEvent(source: nil)
+        guard let endGesture = makeGestureEvent(),
+            let endDock = makeDockSwipeEvent(
+                phase: Phase.ended,
+                direction: direction,
+                velocity: velocity,
+                progress: progress
+            )
         else { return false }
-
-        endGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        endGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        endDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        endDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        endDock.setIntegerValueField(GestureField.phase, value: Phase.ended)
-        endDock.setDoubleValueField(GestureField.swipeProgress, value: progress)
-        endDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        endDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        endDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        endDock.setDoubleValueField(GestureField.velocityX, value: velocity)
-        endDock.setDoubleValueField(GestureField.velocityY, value: 0)
-        endDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        endDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
 
         endGesture.post(tap: .cgSessionEventTap)
         endDock.post(tap: .cgSessionEventTap)
