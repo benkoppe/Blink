@@ -45,7 +45,7 @@ platform :mac do
       destination: "platform=macOS",
       derived_data_path: derived_data_path,
       clean: true,
-      xcargs: "CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO"
+      xcargs: "-skipMacroValidation CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO"
     )
   end
 
