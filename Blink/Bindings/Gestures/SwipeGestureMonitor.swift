@@ -9,9 +9,9 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-/// CGEventField rawValue carrying the synthetic-gesture sentinel.
-/// Must match kSyntheticMarkerField in SpaceSwitcher.swift.
-let kSyntheticMarkerField = CGEventField(rawValue: 200)!
+/// Documented source metadata shared by the builder and both interceptors.
+/// The builder restores it after reconstructing a serialized Dock event.
+let kSyntheticMarkerField = CGEventField.eventSourceUserData
 
 /// Sentinel value written by SpaceSwitcher onto every synthetic CGEvent.
 /// ASCII 'SSWIPE' = 0x535357495045.

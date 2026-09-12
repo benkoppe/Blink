@@ -17,6 +17,10 @@ struct DockEventPayloadTests {
     @Test("Fixed-point conversion preserves small and bounded values")
     func fixedPointConversion() {
         #expect(DockEventPayload.fixedPoint1616(0) == 0)
+        #expect(DockEventPayload.fixedPoint1616(0.000001) == 1)
+        #expect(DockEventPayload.fixedPoint1616(-0.000001) == -1)
+        #expect(DockEventPayload.fixedPoint1616(.nan) == 0)
+        #expect(DockEventPayload.fixedPoint1616(.infinity) == 0)
         #expect(DockEventPayload.fixedPoint1616(0.000016) == 1)
         #expect(DockEventPayload.fixedPoint1616(-0.000016) == -1)
         #expect(DockEventPayload.fixedPoint1616(1.5) == 98_304)
@@ -95,6 +99,30 @@ struct DockEventPayloadTests {
         )
         #expect(augmented.getIntegerValueField(phaseField) == 1)
         #expect(augmented.getIntegerValueField(eventTypeField) == 30)
+    }
+
+    @Test("Production macOS 27 builder preserves phases, directions and bypass marker")
+    func productionEvents() throws {
+        for direction in [SpaceSwitchCoordinator.Direction.left, .right] {
+            let sign: Int32 = direction == .right ? -1 : 1
+            for phase: Int64 in [1, 2, 4] {
+                let event = try #require(SpaceSwitcher.makeDockSwipeEvent(
+                    phase: phase, direction: direction, velocity: 9_999,
+                    requiresAugmentation: true
+                ))
+                #expect(event.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue)
+                #expect(event.getIntegerValueField(phaseField) == phase)
+                let payload = DockEventPayload.makePayload(for: event)
+                #expect(payload.count == (phase == 4 ? 96 : 68))
+                #expect(readUInt32(payload, at: 36) == UInt32(phase) << 24)
+                #expect(readInt32(payload, at: 64) == sign * 65_536)
+                if phase == 4 {
+                    #expect(readInt32(payload, at: 84) == sign * 9_999 * 65_536)
+                } else {
+                    #expect(event.getDoubleValueField(velocityXField) == 0)
+                }
+            }
+        }
     }
 
     private func readUInt16(_ data: Data, at offset: Int) -> Int {

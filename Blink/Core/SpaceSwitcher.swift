@@ -108,8 +108,8 @@ private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
 private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
 
 private let kDefaultInstantGestureVelocity = 999_999.0
-private let kMacOS27ProgressMagnitude = 0.000016
-private let kMacOS27MaximumGestureVelocity = 1_000.0
+private let kMacOS27ProgressMagnitude = 1.0
+private let kMacOS27MaximumGestureVelocity = 9_999.0
 private let kMacOS27GesturePhaseDelay: useconds_t = 10_000
 
 private extension Data {
@@ -140,7 +140,8 @@ enum DockEventPayload {
             Double(Int32.max)
         )
 
-        return Int32(clampedValue.rounded(.towardZero))
+        let fixed = Int32(clampedValue.rounded(.towardZero))
+        return fixed == 0 && value != 0 ? (value < 0 ? -1 : 1) : fixed
     }
 
     static func makePayload(for event: CGEvent) -> Data {
@@ -524,7 +525,7 @@ final class SpaceSwitcher {
 
     // MARK: - Space info loading
 
-    private typealias Direction = SpaceSwitchCoordinator.Direction
+    typealias Direction = SpaceSwitchCoordinator.Direction
 
     @discardableResult
     private func refreshSnapshot(
@@ -1115,7 +1116,7 @@ final class SpaceSwitcher {
     //  - Inside Mission Control: an explicit progress trace that remains more
     //    reliable for moving across many spaces in the strip.
 
-    private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
+    private static func dockSwipeFlagBits(for direction: Direction) -> Int64 {
         var flagsProgress = Float.leastNonzeroMagnitude
         if direction == .left {
             flagsProgress.negate()
@@ -1124,7 +1125,7 @@ final class SpaceSwitcher {
         return Int64(Int32(bitPattern: flagsProgress.bitPattern))
     }
 
-    private func modernGestureVelocity(
+    private static func modernGestureVelocity(
         _ velocity: Double,
         direction: Direction
     ) -> Double {
@@ -1135,7 +1136,7 @@ final class SpaceSwitcher {
         return direction == .right ? -magnitude : magnitude
     }
 
-    private func modernGestureProgress(
+    private static func modernGestureProgress(
         _ progress: Double?,
         direction: Direction
     ) -> Double {
@@ -1152,7 +1153,7 @@ final class SpaceSwitcher {
         return -nonzeroProgress
     }
 
-    private func makeGestureEvent() -> CGEvent? {
+    private static func makeGestureEvent() -> CGEvent? {
         guard let event = CGEvent(source: nil) else { return nil }
 
         event.setIntegerValueField(
@@ -1173,11 +1174,26 @@ final class SpaceSwitcher {
         velocity: Double?,
         progress: Double? = nil
     ) -> CGEvent? {
-        let requiresAugmentation = requiresMacOS27EventAugmentation
+        Self.makeDockSwipeEvent(
+            phase: phase,
+            direction: direction,
+            velocity: velocity,
+            progress: progress,
+            requiresAugmentation: requiresMacOS27EventAugmentation
+        )
+    }
+
+    static func makeDockSwipeEvent(
+        phase: Int64,
+        direction: Direction,
+        velocity: Double?,
+        progress: Double? = nil,
+        requiresAugmentation: Bool
+    ) -> CGEvent? {
         let velocityX = velocity.map {
             direction == .right ? $0 : -$0
         }
-        let flagBits = dockSwipeFlagBits(for: direction)
+        let flagBits = Self.dockSwipeFlagBits(for: direction)
 
         guard let event = CGEvent(source: nil) else { return nil }
 
@@ -1232,7 +1248,11 @@ final class SpaceSwitcher {
                 )
             }
 
-            return DockEventPayload.augment(event)
+            guard let augmented = DockEventPayload.augment(event) else { return nil }
+            // CGEvent reconstruction drops source metadata. Restore the marker
+            // on the event that is actually posted, or our taps suppress it.
+            augmented.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
+            return augmented
         }
 
         if let progress {
@@ -1272,6 +1292,26 @@ final class SpaceSwitcher {
         _ direction: Direction,
         velocity: Double? = nil
     ) -> Bool {
+        if requiresMacOS27EventAugmentation {
+            var events: [CGEvent] = []
+            for phase in [Phase.began, Phase.changed, Phase.ended] {
+                guard
+                    let dock = makeDockSwipeEvent(
+                        phase: phase,
+                        direction: direction,
+                        velocity: kMacOS27MaximumGestureVelocity
+                    ),
+                    let companion = Self.makeGestureEvent()
+                else {
+                    Logger.spaceSwitcher.error("macOS 27 gesture construction failed")
+                    return false
+                }
+                events.append(contentsOf: [dock, companion])
+            }
+            Logger.spaceSwitcher.info("Posting macOS 27 gesture: \(String(describing: direction)), OS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+            for event in events { event.post(tap: .cgSessionEventTap) }
+            return true
+        }
         let velocity = velocity ?? instantGestureVelocity
 
         guard postDockSwipe(
@@ -1305,7 +1345,7 @@ final class SpaceSwitcher {
         direction: Direction,
         velocity: Double
     ) -> Bool {
-        guard let gestureEvent = makeGestureEvent(),
+        guard let gestureEvent = Self.makeGestureEvent(),
             let dockEvent = makeDockSwipeEvent(
                 phase: phase,
                 direction: direction,
@@ -1326,11 +1366,13 @@ final class SpaceSwitcher {
         let progress = isRight ? 1.05 : -1.05
         let velocity = 200.0
 
-        guard let beginGesture = makeGestureEvent(),
+        guard let beginGesture = Self.makeGestureEvent(),
             let beginDock = makeDockSwipeEvent(
                 phase: Phase.began,
                 direction: direction,
-                velocity: nil
+                velocity: nil,
+                progress: requiresMacOS27EventAugmentation
+                    ? (isRight ? 0.000016 : -0.000016) : nil
             )
         else { return false }
 
@@ -1352,7 +1394,7 @@ final class SpaceSwitcher {
             paceModernGesturePhase()
         }
 
-        guard let endGesture = makeGestureEvent(),
+        guard let endGesture = Self.makeGestureEvent(),
             let endDock = makeDockSwipeEvent(
                 phase: Phase.ended,
                 direction: direction,
