@@ -77,9 +77,13 @@ final class SpaceSwitchCoordinator {
                 _ velocity: Double
             ) -> Bool
         let sleep: @MainActor (_ duration: Duration) async throws -> Void
+        var confirmationSleep: @MainActor () async throws -> Void = {
+            try await Task.sleep(for: .seconds(3))
+        }
     }
 
     private struct Command {
+        var revision = UUID()
         let originSpaceID: UInt64
         var desiredSpaceID: UInt64
         var projectedSpaceID: UInt64
@@ -114,6 +118,11 @@ final class SpaceSwitchCoordinator {
 
     @ObservationIgnored
     private var workerGeneration: UInt64 = 0
+
+    @ObservationIgnored
+    private var confirmationTasks: [String: Task<Void, Never>] = [:]
+
+    private static let logger = Logger(category: "SpaceSwitchCoordinator")
 
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
@@ -292,6 +301,7 @@ final class SpaceSwitchCoordinator {
         }
 
         acquirePostingLease(for: displayIdentifier)
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
 
         guard var state = matchingState(for: topology) else {
             return false
@@ -301,6 +311,7 @@ final class SpaceSwitchCoordinator {
 
         if let existingCommand = state.command {
             command = existingCommand
+            command.revision = UUID()
             command.desiredSpaceID = targetSpaceID
             command.baseVelocity = max(1, baseVelocity)
         } else {
@@ -332,6 +343,8 @@ final class SpaceSwitchCoordinator {
 
         if command.projectedSpaceID != command.desiredSpaceID {
             startWorker(for: displayIdentifier)
+        } else {
+            scheduleConfirmation(for: displayIdentifier)
         }
 
         return true
@@ -346,6 +359,7 @@ final class SpaceSwitchCoordinator {
         let removedDisplayIdentifiers = Set(displayStates.keys).subtracting(topologies.keys)
 
         for displayIdentifier in removedDisplayIdentifiers {
+            confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
             cancelPostingIfNeeded(for: displayIdentifier)
             displayStates.removeValue(forKey: displayIdentifier)
         }
@@ -364,6 +378,7 @@ final class SpaceSwitchCoordinator {
             let previousConfirmedSpaceID = state.confirmedSpaceID
 
             guard state.spaceIDs == topology.spaceIDs else {
+                confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
                 cancelPostingIfNeeded(for: displayIdentifier)
                 state.command = nil
                 state.spaceIDs = topology.spaceIDs
@@ -382,6 +397,7 @@ final class SpaceSwitchCoordinator {
 
             if let command = state.command {
                 if topology.currentSpaceID == command.desiredSpaceID {
+                    Self.logger.info("Space confirmed: \(topology.currentSpaceID)")
                     cancelPostingIfNeeded(for: displayIdentifier)
                     state.confirmedSpaceID = topology.currentSpaceID
                     settleCommand(in: &state)
@@ -411,12 +427,17 @@ final class SpaceSwitchCoordinator {
             }
 
             pruneHistory(in: &state)
+            if state.command == nil {
+                confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+            }
             displayStates[displayIdentifier] = state
         }
     }
 
     func cancelAll() {
         invalidateWorker()
+        for task in confirmationTasks.values { task.cancel() }
+        confirmationTasks.removeAll()
         displayStates.removeAll()
     }
 
@@ -679,6 +700,7 @@ final class SpaceSwitchCoordinator {
     }
 
     private func cancelCommand(for displayIdentifier: String) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
         cancelPostingIfNeeded(for: displayIdentifier)
 
         guard var state = displayStates[displayIdentifier] else {
@@ -723,6 +745,55 @@ final class SpaceSwitchCoordinator {
 
         worker = nil
         workerDisplayIdentifier = nil
+        scheduleConfirmation(for: displayIdentifier)
+    }
+
+    private func scheduleConfirmation(for displayIdentifier: String) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+        guard
+            let command = displayStates[displayIdentifier]?.command,
+            command.projectedSpaceID == command.desiredSpaceID
+        else { return }
+        let revision = command.revision
+        let sleep = dependencies.confirmationSleep
+        Self.logger.info("Awaiting Space confirmation: origin=\(command.originSpaceID), target=\(command.desiredSpaceID)")
+        confirmationTasks[displayIdentifier] = Task { @MainActor [weak self] in
+            do {
+                try await sleep()
+            } catch {
+                return
+            }
+            guard
+                !Task.isCancelled, let self,
+                var state = self.displayStates[displayIdentifier],
+                let pending = state.command,
+                pending.revision == revision
+            else { return }
+            self.confirmationTasks.removeValue(forKey: displayIdentifier)
+            guard
+                let context = self.dependencies.loadContext(displayIdentifier),
+                context.topology.displayIdentifier == displayIdentifier
+            else {
+                // No fresh observation is available. Drop the prediction rather
+                // than retaining an unconfirmed destination indefinitely.
+                state.command = nil
+                self.displayStates[displayIdentifier] = state
+                Self.logger.info("Space confirmation expired without a fresh context")
+                return
+            }
+            let topology = context.topology
+            state.spaceIDs = topology.spaceIDs
+            state.confirmedSpaceID = topology.currentSpaceID
+            if topology.currentSpaceID == pending.desiredSpaceID {
+                self.settleCommand(in: &state)
+                Self.logger.info("Space confirmed: \(topology.currentSpaceID)")
+            } else {
+                state.command = nil
+                Self.logger.info("Space confirmation expired: target=\(pending.desiredSpaceID), observed=\(topology.currentSpaceID)")
+            }
+            self.pruneHistory(in: &state)
+            self.displayStates[displayIdentifier] = state
+        }
     }
 
     private func abortCommand(
