@@ -137,7 +137,7 @@ final class SpaceSwitcher {
     /// Optimistic presentation only; never substitute this into observed SpaceInfo.
     var menuBarSpaceIndex: Int? {
         guard let info = spaceInfo, let topology = topology(from: info) else { return nil }
-        return indicatorPresentation.displayedSpaceIndex(in: topology)
+        return switchCoordinator.presentation(in: topology).selectedIndex
     }
 
     private let symbols: CGSSymbols?
@@ -163,11 +163,6 @@ final class SpaceSwitcher {
     }
 
     private let gestureTransport = DockSwipeTransport()
-
-    @ObservationIgnored
-    private lazy var indicatorPresentation = SpaceIndicatorPresentation(
-        refreshObservedState: { [weak self] in self?.refreshSpaceInfo() }
-    )
 
     @ObservationIgnored
     private lazy var switchCoordinator = SpaceSwitchCoordinator(
@@ -209,7 +204,6 @@ final class SpaceSwitcher {
     deinit {
         MainActor.assumeIsolated {
             switchCoordinator.cancelAll()
-            indicatorPresentation.cancelAll()
 
             let workspaceNC = NSWorkspace.shared.notificationCenter
             [spaceObserver, appObserver, screensWakeObserver]
@@ -242,13 +236,11 @@ final class SpaceSwitcher {
             return false
         }
 
-        return submitWithIndicatorPrediction(context: context) {
-            switchCoordinator.submitTarget(
-                context.topology.spaceIDs[index],
-                context: context,
-                baseVelocity: instantGestureVelocity
-            )
-        }
+        return switchCoordinator.submitTarget(
+            context.topology.spaceIDs[index],
+            context: context,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     @discardableResult
@@ -261,13 +253,11 @@ final class SpaceSwitcher {
             return false
         }
 
-        return submitWithIndicatorPrediction(context: context) {
-            switchCoordinator.submitTarget(
-                targetSpaceID,
-                context: context,
-                baseVelocity: instantGestureVelocity
-            )
-        }
+        return switchCoordinator.submitTarget(
+            targetSpaceID,
+            context: context,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     func canMoveLeft() -> Bool { canMove(.left) }
@@ -383,9 +373,7 @@ final class SpaceSwitcher {
 
         snapshot = newSnapshot
 
-        let topologies = coordinatorTopologies(in: newSnapshot)
-        indicatorPresentation.discardInvalidPredictions(in: topologies)
-        return topologies
+        return coordinatorTopologies(in: newSnapshot)
     }
 
     private func topology(
@@ -512,26 +500,12 @@ final class SpaceSwitcher {
             return false
         }
 
-        return submitWithIndicatorPrediction(context: context) {
-            switchCoordinator.submitStep(
-                direction,
-                context: context,
-                wrap: wrapSpaces,
-                baseVelocity: instantGestureVelocity
-            )
-        }
-    }
-
-    private func submitWithIndicatorPrediction(
-        context: SpaceSwitchCoordinator.Context,
-        submit: () -> Bool
-    ) -> Bool {
-        guard submit() else { return false }
-        let displayIdentifier = context.topology.displayIdentifier
-        if let targetSpaceID = switchCoordinator.desiredSpaceID(for: displayIdentifier) {
-            indicatorPresentation.predict(spaceID: targetSpaceID, for: displayIdentifier)
-        }
-        return true
+        return switchCoordinator.submitStep(
+            direction,
+            context: context,
+            wrap: wrapSpaces,
+            baseVelocity: instantGestureVelocity
+        )
     }
 
     private enum OverlayMode: String {

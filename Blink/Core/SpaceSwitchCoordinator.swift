@@ -129,6 +129,25 @@ final class SpaceSwitchCoordinator {
 
     // MARK: - Queries
 
+    /// A read-only view of the same transaction used to plan switches. Presentation
+    /// never owns a second prediction or deadline, and cannot outlive a command.
+    struct Presentation: Equatable {
+        let observedSpaceID: UInt64
+        let pendingSpaceID: UInt64?
+        let revision: UUID?
+        let selectedIndex: Int?
+    }
+
+    func presentation(in topology: Topology) -> Presentation {
+        let command = matchingState(for: topology)?.command
+        return Presentation(
+            observedSpaceID: topology.currentSpaceID,
+            pendingSpaceID: command?.desiredSpaceID,
+            revision: command?.revision,
+            selectedIndex: topology.index(of: command?.desiredSpaceID ?? topology.currentSpaceID)
+        )
+    }
+
     func desiredIndex(for topology: Topology) -> Int? {
         guard let state = matchingState(for: topology) else {
             return topology.index(of: topology.currentSpaceID)
@@ -277,15 +296,15 @@ final class SpaceSwitchCoordinator {
             initialState.command?.desiredSpaceID
             ?? initialState.confirmedSpaceID
 
-        guard targetSpaceID != planningSpaceID else {
-            return true
-        }
-
         if let command = initialState.command,
             command.gestureMode != context.gestureMode
         {
             cancelCommand(for: displayIdentifier)
             return false
+        }
+
+        guard targetSpaceID != planningSpaceID else {
+            return true
         }
 
         acquirePostingLease(for: displayIdentifier)
@@ -322,7 +341,7 @@ final class SpaceSwitchCoordinator {
         if command.projectedSpaceID == command.desiredSpaceID,
             state.confirmedSpaceID == command.desiredSpaceID
         {
-            settleCommand(in: &state)
+            finishCommand(in: &state, for: displayIdentifier, outcome: .confirmed)
             displayStates[displayIdentifier] = state
             return true
         }
@@ -368,9 +387,9 @@ final class SpaceSwitchCoordinator {
             guard state.spaceIDs == topology.spaceIDs else {
                 confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
                 cancelPostingIfNeeded(for: displayIdentifier)
-                state.command = nil
                 state.spaceIDs = topology.spaceIDs
                 state.confirmedSpaceID = topology.currentSpaceID
+                finishCommand(in: &state, for: displayIdentifier, outcome: .topologyChanged)
 
                 if previousConfirmedSpaceID != topology.currentSpaceID,
                     topology.spaceIDs.contains(previousConfirmedSpaceID)
@@ -387,7 +406,7 @@ final class SpaceSwitchCoordinator {
                 if topology.currentSpaceID == command.desiredSpaceID {
                     cancelPostingIfNeeded(for: displayIdentifier)
                     state.confirmedSpaceID = topology.currentSpaceID
-                    settleCommand(in: &state)
+                    finishCommand(in: &state, for: displayIdentifier, outcome: .confirmed)
                 } else if command.postedSpaceIDs.contains(topology.currentSpaceID) {
                     // This is either the origin still being reported because CGS
                     // lags, or an intermediate Space posted by this command.
@@ -396,8 +415,8 @@ final class SpaceSwitchCoordinator {
                     // A fresh authoritative observation landed somewhere Blink
                     // did not post. Treat is as external activity.
                     cancelPostingIfNeeded(for: displayIdentifier)
-                    state.command = nil
                     state.confirmedSpaceID = topology.currentSpaceID
+                    finishCommand(in: &state, for: displayIdentifier, outcome: .externalMovement)
 
                     if previousConfirmedSpaceID != topology.currentSpaceID,
                         topology.spaceIDs.contains(previousConfirmedSpaceID)
@@ -565,7 +584,8 @@ final class SpaceSwitchCoordinator {
                 else {
                     abortCommand(
                         for: displayIdentifier,
-                        generation: generation
+                        generation: generation,
+                        outcome: .unavailable
                     )
                     return
                 }
@@ -645,18 +665,34 @@ final class SpaceSwitchCoordinator {
         return state
     }
 
-    private func settleCommand(in state: inout DisplayState) {
+    private enum CommandOutcome: String {
+        case confirmed, interrupted, unavailable, expired, observationUnavailable
+        case externalMovement, topologyChanged
+    }
+
+    private func finishCommand(
+        in state: inout DisplayState,
+        for displayIdentifier: String,
+        outcome: CommandOutcome
+    ) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+        cancelPostingIfNeeded(for: displayIdentifier)
         guard let command = state.command else {
             return
         }
 
-        if command.desiredSpaceID != command.originSpaceID,
+        // Partial completion is real movement too. Never record an unobserved
+        // requested destination as history.
+        if state.confirmedSpaceID != command.originSpaceID,
             state.spaceIDs.contains(command.originSpaceID)
         {
             state.lastSpaceID = command.originSpaceID
         }
 
         state.command = nil
+        Logger.spaceSwitchCoordinator.debug(
+            "Command \(command.revision): \(outcome.rawValue), display=\(displayIdentifier), target=\(command.desiredSpaceID), observed=\(state.confirmedSpaceID), postedDestinations=\(command.postedSpaceIDs.count - 1)"
+        )
     }
 
     private func pruneHistory(in state: inout DisplayState) {
@@ -682,10 +718,7 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        if var activeState = displayStates[activeDisplayIdentifier] {
-            activeState.command = nil
-            displayStates[activeDisplayIdentifier] = activeState
-        }
+        cancelCommand(for: activeDisplayIdentifier)
     }
 
     private func cancelCommand(for displayIdentifier: String) {
@@ -696,8 +729,16 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        state.command = nil
+        finishCommand(in: &state, for: displayIdentifier, outcome: .interrupted)
         displayStates[displayIdentifier] = state
+        refreshAfterInterruption()
+    }
+
+    private func refreshAfterInterruption() {
+        // Cancellation cannot undo already-posted Dock events. Read the system
+        // after releasing the abandoned prediction, without retrying gestures.
+        guard let topologies = dependencies.observeTopologies() else { return }
+        reconcile(topologies: topologies, reason: .activeSpaceChanged)
     }
 
     private func cancelPostingIfNeeded(for displayIdentifier: String) {
@@ -760,9 +801,8 @@ final class SpaceSwitchCoordinator {
             self.confirmationTasks.removeValue(forKey: displayIdentifier)
             guard let topologies = self.dependencies.observeTopologies() else {
                 // Missing observations must not leave an unconfirmed command active.
-                state.command = nil
+                self.finishCommand(in: &state, for: displayIdentifier, outcome: .observationUnavailable)
                 self.displayStates[displayIdentifier] = state
-                Logger.spaceSwitchCoordinator.debug("Space confirmation expired without a fresh observation")
                 return
             }
             self.reconcile(topologies: topologies, reason: .activeSpaceChanged)
@@ -770,17 +810,15 @@ final class SpaceSwitchCoordinator {
                 var remaining = self.displayStates[displayIdentifier],
                 remaining.command?.revision == revision
             else { return }
-            remaining.command = nil
-            Logger.spaceSwitchCoordinator.debug(
-                "Space confirmation expired: target=\(pending.desiredSpaceID), observed=\(remaining.confirmedSpaceID)"
-            )
+            self.finishCommand(in: &remaining, for: displayIdentifier, outcome: .expired)
             self.displayStates[displayIdentifier] = remaining
         }
     }
 
     private func abortCommand(
         for displayIdentifier: String,
-        generation: UInt64
+        generation: UInt64,
+        outcome: CommandOutcome = .interrupted
     ) {
         guard
             workerGeneration == generation,
@@ -795,8 +833,9 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        state.command = nil
+        finishCommand(in: &state, for: displayIdentifier, outcome: outcome)
         displayStates[displayIdentifier] = state
+        refreshAfterInterruption()
     }
 
 }

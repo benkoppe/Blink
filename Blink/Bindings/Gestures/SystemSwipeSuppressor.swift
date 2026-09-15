@@ -23,6 +23,7 @@ final class SystemSwipeSuppressor {
     private var eventTap: EventTap?
     private var suppressingNativeSwipe = false
     private var bypassingNativeSwipe = false
+    private var policySession: NativeSwipePolicy.Session?
 
     var policy = NativeSwipePolicy()
 
@@ -41,6 +42,7 @@ final class SystemSwipeSuppressor {
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     self.policy.reset()
+                    self.policySession = nil
                     self.suppressingNativeSwipe = false
                     self.bypassingNativeSwipe = false
                     proxy.enable()
@@ -64,6 +66,7 @@ final class SystemSwipeSuppressor {
 
     func stopMonitoring() {
         policy.reset()
+        policySession = nil
         eventTap?.disable()
         eventTap = nil
         suppressingNativeSwipe = false
@@ -95,14 +98,17 @@ final class SystemSwipeSuppressor {
 
         switch phase {
         case kGesturePhaseBegan:
-            let shouldBypass = policy.begin(.suppression)
+            let session = policy.begin(.suppression)
+            policySession = session
+            let shouldBypass = session.bypass
             bypassingNativeSwipe = shouldBypass
             suppressingNativeSwipe = !shouldBypass
             return shouldBypass ? event : nil
 
         case kGesturePhaseEnded, kGesturePhaseCancelled:
             let wasSuppressing = suppressingNativeSwipe
-            policy.end(.suppression)
+            policy.end(.suppression, session: policySession)
+            policySession = nil
             bypassingNativeSwipe = false
             suppressingNativeSwipe = false
             return wasSuppressing ? nil : event

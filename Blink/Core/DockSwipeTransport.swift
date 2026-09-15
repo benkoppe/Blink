@@ -14,6 +14,14 @@ enum GestureSubmission {
 }
 
 @MainActor
+protocol DockSwipeSessionConnection: AnyObject {
+    var isEnabled: Bool { get }
+    func enable()
+}
+
+extension EventTap: DockSwipeSessionConnection {}
+
+@MainActor
 final class DockSwipeTransport {
     nonisolated enum Backend: Sendable {
         case legacy
@@ -46,10 +54,25 @@ final class DockSwipeTransport {
     private static let serializedProgress = 0.000016
 
     private let backend: Backend
-    private var sessionTap: EventTap?
+    private var sessionTap: (any DockSwipeSessionConnection)?
+    private let makeSessionConnection: @MainActor () -> any DockSwipeSessionConnection
+    private let postGesture: @MainActor (PreparedGesture) -> Void
 
-    init(backend: Backend = .current) {
+    init(
+        backend: Backend = .current,
+        makeSessionConnection: (@MainActor () -> any DockSwipeSessionConnection)? = nil,
+        postGesture: (@MainActor (PreparedGesture) -> Void)? = nil
+    ) {
         self.backend = backend
+        self.makeSessionConnection = makeSessionConnection ?? {
+            EventTap(
+                label: "DockSwipeTransport", options: .listenOnly,
+                location: .sessionEventTap, place: .tailAppendEventTap,
+                types: [CGEventType(rawValue: UInt32(EventType.dockControl))!],
+                callback: { _, _, event in event }
+            )
+        }
+        self.postGesture = postGesture ?? { $0.post() }
     }
 
     // MARK: - Submission
@@ -65,7 +88,7 @@ final class DockSwipeTransport {
             return .unavailable
         }
 
-        gesture.post()
+        postGesture(gesture)
         return .submitted
     }
 
@@ -75,16 +98,16 @@ final class DockSwipeTransport {
 
         // macOS 27 requires a resident event connection even when trackpad
         // monitoring is disabled. This tap never modifies or suppresses input.
-        let tap = EventTap(
-            label: "DockSwipeTransport",
-            options: .listenOnly,
-            location: .sessionEventTap,
-            place: .tailAppendEventTap,
-            types: [CGEventType(rawValue: UInt32(EventType.dockControl))!],
-            callback: { _, _, event in event }
-        )
+        if let sessionTap {
+            sessionTap.enable()
+            if sessionTap.isEnabled { return true }
+        }
+        let tap = makeSessionConnection()
         tap.enable()
         sessionTap = tap.isEnabled ? tap : nil
+        if sessionTap == nil {
+            Logger.dockSwipeTransport.error("Resident Dock event connection unavailable")
+        }
         return sessionTap != nil
     }
 

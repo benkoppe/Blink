@@ -103,7 +103,7 @@ struct DockEventPayloadTests {
 
     @Test(
         "Final macOS 27 events contain horizontal motion, ordered phases and bounded velocity",
-        arguments: [1.0, 80.0, 2_000.0, 999_999.0]
+        arguments: [0.0, 1.0, 80.25, -80.25, 2_000.0, 999_999.0, .infinity, .nan]
     )
     func productionEvents(velocity: Double) throws {
         let transport = DockSwipeTransport(backend: .serialized)
@@ -125,9 +125,10 @@ struct DockEventPayloadTests {
                     #expect(readUInt32(payload, at: 24) == (phase == 4 ? 2 : 1))
                     #expect(readUInt32(payload, at: 36) == UInt32(phase) << 24)
                     #expect(readUInt32(payload, at: 60) == 0x0003_0001)  // flavor 3, horizontal 1
-                    #expect(readInt32(payload, at: 64) == sign)
+                    #expect(readInt32(payload, at: 64) == sign)  // 0.000016 in 16.16, truncated
                     if phase == 4 {
-                        #expect(readInt32(payload, at: 84) == sign * Int32(min(velocity, 2_000)) * 65_536)
+                        let speed = velocity.isFinite ? min(max(abs(velocity), 1), 2_000) : 2_000
+                        #expect(readInt32(payload, at: 84) == sign * Int32(speed * 65_536))
                     }
                 }
             }
@@ -151,6 +152,65 @@ struct DockEventPayloadTests {
         #expect(types == [30, 29, 30, 29, 30, 29])
     }
 
+    @Test("Legacy Mission Control preserves phases, velocity and companion order", arguments: [true, false])
+    func legacyMissionControl(right: Bool) throws {
+        let transport = DockSwipeTransport(backend: .legacy)
+        let gesture = try #require(transport.prepare(mode: .missionControl, direction: right ? .right : .left, velocity: 999_999))
+        let events = try gesture.serializedEvents.map {
+            try #require(CGEvent(withDataAllocator: nil, data: $0 as CFData))
+        }
+        #expect(events.map { $0.getIntegerValueField(eventTypeField) } == [29, 30, 30, 30, 30, 29, 30])
+        let dock = events.filter { $0.getIntegerValueField(eventTypeField) == 30 }
+        #expect(dock.map { $0.getIntegerValueField(phaseField) } == [1, 2, 2, 2, 4])
+        let sign = right ? 1.0 : -1.0
+        // Private progress/scroll-flag aliases have different readback semantics
+        // on macOS 27. Preserve the pre-27 write sequence; don't rewrite it to
+        // make the modern OS's legacy-field getters report a different value.
+        for event in dock.dropFirst() {
+            #expect(event.getDoubleValueField(velocityXField) == sign * 200)
+            #expect(event.getIntegerValueField(motionField) == 1)
+            #expect(NativeSwipePolicy.isAppPosted(event))
+        }
+        #expect(gesture.serializedEvents.allSatisfy { SerializedGestureData.payload(from: $0) == nil })
+    }
+
+    @Test("Legacy instant fields retain their direction encoding", arguments: [true, false])
+    func legacyInstantFields(right: Bool) throws {
+        let transport = DockSwipeTransport(backend: .legacy)
+        let gesture = try #require(transport.prepare(mode: .instant, direction: right ? .right : .left, velocity: 123.5))
+        for data in gesture.serializedEvents {
+            let event = try #require(CGEvent(withDataAllocator: nil, data: data as CFData))
+            #expect(NativeSwipePolicy.isAppPosted(event))
+            guard event.getIntegerValueField(eventTypeField) == 30 else { continue }
+            #expect(event.getDoubleValueField(velocityXField) == (right ? 123.5 : -123.5))
+            #expect(event.getIntegerValueField(motionField) == 1)
+            let expectedFlags = (right ? Float.leastNonzeroMagnitude : -Float.leastNonzeroMagnitude).bitPattern
+            let flags = UInt32(truncatingIfNeeded: event.getIntegerValueField(CGEventField(rawValue: 135)!))
+            #expect(flags == expectedFlags)
+        }
+    }
+
+    @Test("An unavailable connection never posts and a later request can recover")
+    func connectionRecovery() {
+        let failed = SessionConnection(canEnable: false)
+        let working = SessionConnection(canEnable: true)
+        var attempts = 0
+        var posts = 0
+        let transport = DockSwipeTransport(backend: .serialized, makeSessionConnection: {
+            attempts += 1
+            return attempts == 1 ? failed : working
+        }, postGesture: { _ in posts += 1 })
+        #expect(transport.submit(mode: .instant, direction: .right, velocity: 100) == .unavailable)
+        #expect(posts == 0)
+        #expect(transport.submit(mode: .instant, direction: .right, velocity: 100) == .submitted)
+        #expect(posts == 1)
+        working.isEnabled = false
+        #expect(transport.submit(mode: .instant, direction: .left, velocity: 100) == .submitted)
+        #expect(attempts == 2)
+        #expect(working.enableCount == 2)
+        #expect(posts == 2)
+    }
+
     private func readUInt16(_ data: Data, at offset: Int) -> Int {
         Int(data[offset]) << 8 | Int(data[offset + 1])
     }
@@ -163,6 +223,19 @@ struct DockEventPayloadTests {
 
     private func readInt32(_ data: Data, at offset: Int) -> Int32 {
         Int32(bitPattern: readUInt32(data, at: offset))
+    }
+}
+
+@MainActor
+private final class SessionConnection: DockSwipeSessionConnection {
+    var isEnabled = false
+    var enableCount = 0
+    let canEnable: Bool
+
+    init(canEnable: Bool) { self.canEnable = canEnable }
+    func enable() {
+        enableCount += 1
+        isEnabled = canEnable
     }
 }
 

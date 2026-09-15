@@ -33,12 +33,14 @@ final class SwipeGestureMonitor {
 
     var policy = NativeSwipePolicy()
     private var monitoringGeneration: UInt64 = 0
+    private var ignoreUntilGestureEnds = false
 
     private var eventTap: EventTap?
 
     private struct GestureState {
         var isActive = false
         var shouldIgnoreCurrentGesture = false
+        var policySession: NativeSwipePolicy.Session?
         var lastFiredDirection: SwipeDirection?
         /// Accumulates delta in the same direction after a swipe fires, used to
         /// gate same-direction repeats. Reset to 0 each time a swipe fires.
@@ -50,6 +52,7 @@ final class SwipeGestureMonitor {
         mutating func reset() {
             isActive = false
             shouldIgnoreCurrentGesture = false
+            policySession = nil
             lastFiredDirection = nil
             postFireAccumulator = 0
             accumulatedDeltaX = 0
@@ -78,6 +81,7 @@ final class SwipeGestureMonitor {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     self.state.reset()
                     self.policy.reset()
+                    self.ignoreUntilGestureEnds = true
                     self.monitoringGeneration &+= 1
                     proxy.enable()
                     return cgEvent
@@ -104,6 +108,7 @@ final class SwipeGestureMonitor {
         eventTap?.disable()
         eventTap = nil
         state.reset()
+        ignoreUntilGestureEnds = false
     }
 
     // MARK: - Event handling
@@ -111,22 +116,35 @@ final class SwipeGestureMonitor {
     private func handleEvent(_ event: NSEvent) {
         let touches = event.allTouches()
         guard !touches.isEmpty else {
+            policy.end(.recognition, session: state.policySession)
             state.reset()
-            policy.end(.recognition)
+            ignoreUntilGestureEnds = false
             return
         }
 
         let activeFingerCount =
             touches.allSatisfy { $0.phase == .ended || $0.phase == .cancelled } ? 0 : touches.count
         if activeFingerCount == 0 {
+            policy.end(.recognition, session: state.policySession)
             state.reset()
-            policy.end(.recognition)
+            ignoreUntilGestureEnds = false
             return
+        }
+
+        if ignoreUntilGestureEnds {
+            guard touches.allSatisfy({ $0.phase == .began }) else { return }
+            ignoreUntilGestureEnds = false
         }
 
         if !state.isActive {
             state.isActive = true
-            state.shouldIgnoreCurrentGesture = policy.begin(.recognition)
+            let session = policy.begin(.recognition)
+            state.policySession = session
+            state.shouldIgnoreCurrentGesture = session.bypass
+        } else if state.policySession?.generation != policy.generation {
+            // The other tap reset or began a new session. Never fire again from
+            // the remaining touches of the interrupted gesture.
+            state.shouldIgnoreCurrentGesture = true
         }
 
         if state.shouldIgnoreCurrentGesture {
@@ -177,10 +195,12 @@ final class SwipeGestureMonitor {
 
         // Defer the action so the event-tap callback can return immediately.
         let generation = monitoringGeneration
+        let policyGeneration = policy.generation
         DispatchQueue.main.async { [weak self] in
             guard
                 let self,
                 self.monitoringGeneration == generation,
+                self.policy.generation == policyGeneration,
                 self.eventTap != nil
             else { return }
             self.onSwipe?(direction, activeFingerCount)
