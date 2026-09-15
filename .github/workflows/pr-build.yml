@@ -6,6 +6,7 @@ on:
       - opened
       - synchronize
       - reopened
+      - ready_for_review
 
 permissions:
   contents: read
@@ -21,10 +22,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout PR tip
+      # Validate what will actually merge, and package that exact revision.
+      - name: Checkout proposed merge
         uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          xcodebuild -version
+          echo "fingerprint=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -36,16 +42,31 @@ jobs:
         uses: irgaly/xcode-cache@v1
         with:
           deriveddata-directory: build/DerivedData
-          key: xcode-cache-deriveddata-${{ github.workflow }}-${{ github.event.pull_request.head.sha }}
-          restore-keys: xcode-cache-deriveddata-${{ github.workflow }}-
+          key: xcode-pr-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('**/Package.resolved', 'flake.lock', 'Blink.xcodeproj/project.pbxproj') }}-${{ github.sha }}
+          restore-keys: xcode-pr-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('**/Package.resolved', 'flake.lock', 'Blink.xcodeproj/project.pbxproj') }}-
 
       - name: Test and package Blink Dev
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: nix develop . --command fastlane pr_build
+
+      - name: Upload test results and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blink-Tests-PR-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: |
+            build/TestResults
+            build/Logs
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload Blink Dev
         uses: actions/upload-artifact@v4
         with:
-          name: Blink-Dev-PR-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-          path: build/Blink-Dev.zip
+          name: Blink-Dev-PR-${{ github.event.pull_request.number }}-merge-${{ github.sha }}
+          path: |
+            build/Blink-Dev.zip
+            build/REVISION.txt
           if-no-files-found: error
           retention-days: 14

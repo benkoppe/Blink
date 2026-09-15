@@ -43,7 +43,12 @@ platform :mac do
       configuration: "Debug",
       destination: "platform=macOS",
       derived_data_path: File.join(project_root, "build", "DerivedData"),
-      clean: true,
+      # Set CI_CLEAN_BUILD=1 for an explicit clean verification. Normal PR runs
+      # reuse DerivedData restored for the same toolchain and dependencies.
+      clean: ENV["CI_CLEAN_BUILD"] == "1",
+      output_directory: File.join(project_root, "build", "TestResults"),
+      buildlog_path: File.join(project_root, "build", "Logs"),
+      result_bundle: true,
       xcargs: "-skipMacroValidation CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO"
     )
   end
@@ -57,6 +62,10 @@ platform :mac do
     artifact_path = File.join(project_root, "build", "Blink-Dev.zip")
     UI.user_error!("Blink Dev.app was not produced at #{app_path}") unless File.directory?(app_path)
 
+    revision = sh("git -C #{Shellwords.escape(project_root)} rev-parse HEAD", log: false).strip
+    File.write(File.join(project_root, "build", "REVISION.txt"),
+      "Built revision: #{revision}\nPR head: #{ENV.fetch('PR_HEAD_SHA', revision)}\n" \
+      "CI validates and packages the proposed merge revision.\n")
     sh("ditto -c -k --sequesterRsrc --keepParent #{Shellwords.escape(app_path)} #{Shellwords.escape(artifact_path)}")
     UI.success("Created #{artifact_path}")
   end
