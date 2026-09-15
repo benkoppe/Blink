@@ -1,125 +1,111 @@
-//
-//  BlinkMenu.swift
-//  Blink
-//
-//  Created by Ben on 3/24/26.
-//
-
+import AppKit
 import SwiftUI
 
-struct BlinkMenu: View {
-    @Environment(AppState.self) private var appState
-    private var switcher: SpaceSwitcher { appState.spaceSwitcher }
-
-    var body: some View {
-        switchSection
-
-        jumpToSpaceSection
-
-        Divider()
-
-        appInfoSection
+/// The status item's native menu. Items retain their identity while tracking;
+/// state updates don't rebuild the menu underneath the keyboard or pointer.
+@MainActor
+final class BlinkMenu: NSObject, NSMenuDelegate {
+    enum Command {
+        case bound(BoundAction)
+        case index(Int)
+        case settings, toggleBindings, quit
     }
 
-    private func hotkey(for action: BoundAction) -> KeyCombination? {
-        appState.settingsManager.hotkeySettingsManager.hotkey(withAction: action)?.keyCombination
+    let menu = NSMenu()
+    private let appState: AppState
+    private let jumpMenu = NSMenu(title: "Jump to...")
+    private var actionItems: [BoundAction: NSMenuItem] = [:]
+    private var indexedItems: [NSMenuItem] = []
+    private var toggleItem: NSMenuItem!
+    private var isTracking = false
+
+    init(appState: AppState) {
+        self.appState = appState
+        super.init()
+        menu.autoenablesItems = false
+        jumpMenu.autoenablesItems = false
+        menu.delegate = self
+        actionItems[.left] = add("Switch left", command: .bound(.left), symbol: "arrow.left")
+        actionItems[.right] = add("Switch right", command: .bound(.right), symbol: "arrow.right")
+        menu.addItem(.separator())
+        let jump = NSMenuItem(title: "Jump to...", action: nil, keyEquivalent: "")
+        jump.image = NSImage(systemSymbolName: "square.and.line.vertical.and.square", accessibilityDescription: nil)
+        jump.submenu = jumpMenu
+        menu.addItem(jump)
+        actionItems[.lastSpace] = add("Last Space", command: .bound(.lastSpace), to: jumpMenu)
+        jumpMenu.addItem(.separator())
+        menu.addItem(.separator())
+        let version = NSMenuItem(title: "\(Constants.appName) \(Constants.versionString)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+        add("Settings...", command: .settings, symbol: "gearshape").keyEquivalent = ","
+        toggleItem = add("Disable", command: .toggleBindings)
+        toggleItem.keyEquivalent = "e"
+        add("Quit", command: .quit).keyEquivalent = "q"
+        update()
     }
 
-    private var switchSection: some View {
-        VStack {
-            Button("Switch left", systemImage: "arrow.left") {
-                BoundAction.left.execute(appState: appState)
-            }
-            .keyboardShortcut(from: hotkey(for: .left))
-            .disabled(!switcher.canMoveLeft())
+    @discardableResult
+    private func add(_ title: String, command: Command, symbol: String? = nil, to parent: NSMenu? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(performCommand(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = command
+        if let symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        (parent ?? menu).addItem(item)
+        return item
+    }
 
-            Button("Switch right", systemImage: "arrow.right") {
-                BoundAction.right.execute(appState: appState)
-            }
-            .keyboardShortcut(from: hotkey(for: .right))
-            .disabled(!switcher.canMoveRight())
+    func update() {
+        let switcher = appState.spaceSwitcher
+        actionItems[.left]?.isEnabled = switcher.canMoveLeft()
+        actionItems[.right]?.isEnabled = switcher.canMoveRight()
+        actionItems[.lastSpace]?.isEnabled = switcher.canSwitchToLastSpace()
+        for (action, item) in actionItems { updateShortcut(item, action: action) }
+
+        let count = switcher.spaceInfo?.spaceCount ?? 0
+        // Defer structural edits until tracking ends, but disable obsolete rows
+        // immediately so a removed Space cannot be selected.
+        if !isTracking && indexedItems.count != count {
+            for item in indexedItems { jumpMenu.removeItem(item) }
+            indexedItems = (0..<count).map { add("Space \($0 + 1)", command: .index($0), to: jumpMenu) }
         }
-    }
-
-    enum JumpSelection: Hashable {
-        case lastSpace
-        case index(_ index: Int)
-    }
-
-    private var jumpSelection: Binding<JumpSelection?> {
-        Binding(
-            get: {
-                guard let index = switcher.spaceInfo?.currentIndex else { return nil }
-                return .index(index)
-            },
-            set: { newValue in
-                guard let selection = newValue else { return }
-                switch selection {
-                case .lastSpace: switcher.switchToLastSpace()
-                case .index(let index): switcher.switchToIndex(index)
-                }
-            }
-        )
-    }
-
-    private var jumpToSpaceSection: some View {
-        Group {
-            if let info = switcher.spaceInfo, info.spaceCount > 0 {
-                Divider()
-                Picker(
-                    "Jump to...", systemImage: "square.and.line.vertical.and.square",
-                    selection: jumpSelection
-                ) {
-                    Text("Last Space")
-                        .selectionDisabled(!switcher.canSwitchToLastSpace())
-                        .keyboardShortcut(from: hotkey(for: BoundAction.lastSpace))
-                        .tag(Optional(JumpSelection.lastSpace))
-
-                    Divider()
-
-                    ForEach(0..<info.spaceCount, id: \.self) { index in
-                        Text("Space \(index + 1)")
-                            .keyboardShortcut(
-                                from: BoundAction.indexedSpaceActions.indices.contains(index)
-                                    ? hotkey(for: BoundAction.indexedSpaceActions[index])
-                                    : nil
-                            )
-                            .tag(Optional(JumpSelection.index(index)))
-                    }
-                }
-            }
+        for (index, item) in indexedItems.enumerated() {
+            item.isEnabled = index < count
+            item.state = index == switcher.spaceInfo?.currentIndex ? .on : .off
+            updateShortcut(item, action: BoundAction.indexedSpaceActions.indices.contains(index)
+                           ? BoundAction.indexedSpaceActions[index] : nil)
         }
+        toggleItem.title = appState.settingsManager.generalSettingsManager.bindingsEnabled ? "Disable" : "Enable"
     }
 
-    private var isEnabled: Binding<Bool> {
-        Binding(
-            get: { appState.settingsManager.generalSettingsManager.bindingsEnabled },
-            set: { newValue in
-                appState.settingsManager.generalSettingsManager.bindingsEnabled = newValue
-            }
-        )
+    private func updateShortcut(_ item: NSMenuItem, action: BoundAction?) {
+        let combination = action.flatMap { appState.settingsManager.hotkeySettingsManager.hotkey(withAction: $0)?.keyCombination }
+        item.keyEquivalent = combination?.key.swiftUIKeyEquivalent.map { String($0.character) } ?? ""
+        item.keyEquivalentModifierMask = combination?.modifiers.nsEventFlags ?? []
     }
 
-    private var appInfoSection: some View {
-        VStack {
-            Text("\(Constants.appName) \(Constants.versionString)")
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        appState.spaceSwitcher.refreshSpaceInfo()
+        update()
+    }
 
-            Button("Settings...", systemImage: "gearshape") {
-                appState.appDelegate?.openSettingsWindow()
-            }
-            .keyboardShortcut(",")
+    func menuWillOpen(_ menu: NSMenu) {
+        isTracking = true
+    }
 
-            Button(
-                isEnabled.wrappedValue ? "Disable" : "Enable"
-            ) {
-                isEnabled.wrappedValue.toggle()
-            }
-            .keyboardShortcut("e")
+    func menuDidClose(_ menu: NSMenu) {
+        isTracking = false
+        update()
+    }
 
-            Button("Quit") {
-                quit()
-            }
-            .keyboardShortcut("q")
+    @objc private func performCommand(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? Command else { return }
+        switch command {
+        case .bound(let action): action.execute(appState: appState)
+        case .index(let index): appState.spaceSwitcher.switchToIndex(index)
+        case .settings: appState.appDelegate?.openSettingsWindow()
+        case .toggleBindings: appState.settingsManager.generalSettingsManager.bindingsEnabled.toggle()
+        case .quit: NSApp.terminate(nil)
         }
     }
 }

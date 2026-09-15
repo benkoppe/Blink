@@ -11,9 +11,6 @@ import SwiftUI
 
 @Observable @MainActor
 final class AppState {
-    /// Whether the live surface replaces the native status item's image.
-    var usesLiveSpaceIndicator = false
-
     @ObservationIgnored
     private(set) lazy var spaceSwitcher = SpaceSwitcher(appState: self)
 

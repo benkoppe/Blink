@@ -10,7 +10,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
-    private(set) var liveSpaceIndicator: LiveSpaceIndicator?
+    private(set) var menuBarController: MenuBarController?
 
     // MARK: NSApplicationDelegate Methods
 
@@ -19,8 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if #available(macOS 27, *), !appState.isPreview {
-            liveSpaceIndicator = LiveSpaceIndicator(appState: appState)
+        if !appState.isPreview {
+            menuBarController = MenuBarController(appState: appState)
         }
         // Dismiss the windows
         appState.dismissSettingsWindow()
@@ -50,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Deactivate and set the policy to accessory when all windows are closed.
         appState.deactivate(withPolicy: .accessory)
         return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        menuBarController?.stop()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
