@@ -1,8 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// The status item's native menu. Items retain their identity while tracking;
-/// state updates don't rebuild the menu underneath the keyboard or pointer.
 @MainActor
 final class BlinkMenu: NSObject, NSMenuDelegate {
     enum Command {
@@ -63,8 +61,7 @@ final class BlinkMenu: NSObject, NSMenuDelegate {
         for (action, item) in actionItems { updateShortcut(item, action: action) }
 
         let count = switcher.spaceInfo?.spaceCount ?? 0
-        // Defer structural edits until tracking ends, but disable obsolete rows
-        // immediately so a removed Space cannot be selected.
+        // Keep item identities stable while the menu is tracking.
         if !isTracking && indexedItems.count != count {
             for item in indexedItems { jumpMenu.removeItem(item) }
             indexedItems = (0..<count).map { add("Space \($0 + 1)", command: .index($0), to: jumpMenu) }

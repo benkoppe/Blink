@@ -25,8 +25,7 @@ final class NativeSwipePolicy {
     private var session: Session?
 
     func begin(_ consumer: Consumer) -> Session {
-        // A consumer beginning again denotes a new physical gesture, even if
-        // the other stream lost its terminal event. Don't reuse its old bypass.
+        // A repeated consumer starts a new gesture, even after a lost end.
         if consumers.contains(consumer) || completedConsumers.contains(consumer) {
             reset()
         }
@@ -43,7 +42,7 @@ final class NativeSwipePolicy {
     }
 
     func end(_ consumer: Consumer, session endingSession: Session?) {
-        // A late end from the old stream must not release a newer gesture.
+        // Ignore terminal events from older sessions.
         guard let endingSession, session == endingSession else { return }
         consumers.remove(consumer)
         completedConsumers.insert(consumer)
@@ -61,7 +60,7 @@ final class NativeSwipePolicy {
     }
 
     static func isAppPosted(_ event: CGEvent) -> Bool {
-        // Native gestures originate from HID (PID 0); no synthetic tag is needed.
+        // HID gestures have source PID 0.
         event.getIntegerValueField(.eventSourceUnixProcessID) != 0
     }
 }

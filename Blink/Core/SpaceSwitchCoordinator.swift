@@ -109,8 +109,7 @@ final class SpaceSwitchCoordinator {
 
     private var displayStates: [String: DisplayState] = [:]
 
-    // Synthetic Dock gestures are global and not display-addressed. Only one
-    // display may therefore own the posting worker at a time.
+    // Global Dock gestures require a single posting worker.
     @ObservationIgnored
     private var worker: Task<Void, Never>?
 
@@ -129,8 +128,7 @@ final class SpaceSwitchCoordinator {
 
     // MARK: - Queries
 
-    /// A read-only view of the same transaction used to plan switches. Presentation
-    /// never owns a second prediction or deadline, and cannot outlive a command.
+    /// Indicator state derived from the active command.
     struct Presentation: Equatable {
         let observedSpaceID: UInt64
         let pendingSpaceID: UInt64?
@@ -408,12 +406,10 @@ final class SpaceSwitchCoordinator {
                     state.confirmedSpaceID = topology.currentSpaceID
                     finishCommand(in: &state, for: displayIdentifier, outcome: .confirmed)
                 } else if command.postedSpaceIDs.contains(topology.currentSpaceID) {
-                    // This is either the origin still being reported because CGS
-                    // lags, or an intermediate Space posted by this command.
+                    // Allow delayed or intermediate observations.
                     state.confirmedSpaceID = topology.currentSpaceID
                 } else if reason.resolvesConflicts {
-                    // A fresh authoritative observation landed somewhere Blink
-                    // did not post. Treat is as external activity.
+                    // Unexpected movement supersedes the command.
                     cancelPostingIfNeeded(for: displayIdentifier)
                     state.confirmedSpaceID = topology.currentSpaceID
                     finishCommand(in: &state, for: displayIdentifier, outcome: .externalMovement)
@@ -681,8 +677,7 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        // Partial completion is real movement too. Never record an unobserved
-        // requested destination as history.
+        // Only observed movement belongs in history.
         if state.confirmedSpaceID != command.originSpaceID,
             state.spaceIDs.contains(command.originSpaceID)
         {
@@ -735,8 +730,7 @@ final class SpaceSwitchCoordinator {
     }
 
     private func refreshAfterInterruption() {
-        // Cancellation cannot undo already-posted Dock events. Read the system
-        // after releasing the abandoned prediction, without retrying gestures.
+        // Posted gestures may complete after cancellation.
         guard let topologies = dependencies.observeTopologies() else { return }
         reconcile(topologies: topologies, reason: .activeSpaceChanged)
     }
@@ -800,7 +794,6 @@ final class SpaceSwitchCoordinator {
             else { return }
             self.confirmationTasks.removeValue(forKey: displayIdentifier)
             guard let topologies = self.dependencies.observeTopologies() else {
-                // Missing observations must not leave an unconfirmed command active.
                 self.finishCommand(in: &state, for: displayIdentifier, outcome: .observationUnavailable)
                 self.displayStates[displayIdentifier] = state
                 return

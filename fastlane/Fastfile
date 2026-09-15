@@ -43,8 +43,7 @@ platform :mac do
       configuration: "Debug",
       destination: "platform=macOS",
       derived_data_path: File.join(project_root, "build", "DerivedData"),
-      # Set CI_CLEAN_BUILD=1 for an explicit clean verification. Normal PR runs
-      # reuse DerivedData restored for the same toolchain and dependencies.
+      # Reuse cached builds unless CI_CLEAN_BUILD=1.
       clean: ENV["CI_CLEAN_BUILD"] == "1",
       output_directory: File.join(project_root, "build", "TestResults"),
       buildlog_path: File.join(project_root, "build", "Logs"),

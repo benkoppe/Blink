@@ -271,8 +271,7 @@ private nonisolated func handleEvent(
     }
     let eventTap = Unmanaged<EventTap>.fromOpaque(refcon).takeUnretainedValue()
 
-    // This callback runs synchronously on the main runloop. Re-enable before
-    // returning and let the client reset its gesture state below.
+    // Re-enable synchronously before returning.
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let port = eventTap.tapMachPort {
             os_log(

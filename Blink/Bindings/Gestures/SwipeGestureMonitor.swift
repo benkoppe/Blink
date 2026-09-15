@@ -142,8 +142,7 @@ final class SwipeGestureMonitor {
             state.policySession = session
             state.shouldIgnoreCurrentGesture = session.bypass
         } else if state.policySession?.generation != policy.generation {
-            // The other tap reset or began a new session. Never fire again from
-            // the remaining touches of the interrupted gesture.
+            // Discard remaining touches after a shared session reset.
             state.shouldIgnoreCurrentGesture = true
         }
 

@@ -297,7 +297,7 @@ struct SpaceSwitchCoordinatorTests {
     @Test("Late confirmation settles and an old deadline cannot cancel a new request")
     func confirmationRevisionIsolation() async throws {
         let harness = CoordinatorHarness()
-        // Deliberately simulate a dependency which completes despite cancellation.
+        // Simulate completion after cancellation.
         let clock = ControlledSleeper(ignoresCancellation: true)
         harness.confirmationSleeper = clock
         try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
@@ -361,7 +361,7 @@ struct SpaceSwitchCoordinatorTests {
             currentSpaceID: 2,
             reconcileImmediately: false
         )
-        // Confirmation must observe display-a even after the pointer leaves it.
+        // Confirmation must not depend on pointer location.
         harness.cursorDisplayIdentifier = "display-b"
         await clock.resumeAll()
         try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }

@@ -163,9 +163,7 @@ struct DockEventPayloadTests {
         let dock = events.filter { $0.getIntegerValueField(eventTypeField) == 30 }
         #expect(dock.map { $0.getIntegerValueField(phaseField) } == [1, 2, 2, 2, 4])
         let sign = right ? 1.0 : -1.0
-        // Private progress/scroll-flag aliases have different readback semantics
-        // on macOS 27. Preserve the pre-27 write sequence; don't rewrite it to
-        // make the modern OS's legacy-field getters report a different value.
+        // macOS 27 aliases legacy progress and scroll flags.
         for event in dock.dropFirst() {
             #expect(event.getDoubleValueField(velocityXField) == sign * 200)
             #expect(event.getIntegerValueField(motionField) == 1)
@@ -239,7 +237,7 @@ private final class SessionConnection: DockSwipeSessionConnection {
     }
 }
 
-/// Inspect the final serialized event independently of the production encoder.
+/// Decodes independently of the production encoder.
 private enum SerializedGestureData {
     static func payload(from data: Data) -> Data? {
         guard data.starts(with: [0, 0, 0, 2]) else { return nil }

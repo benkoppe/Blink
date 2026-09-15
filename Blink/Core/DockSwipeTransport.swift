@@ -96,8 +96,7 @@ final class DockSwipeTransport {
         guard backend == .serialized else { return true }
         if sessionTap?.isEnabled == true { return true }
 
-        // macOS 27 requires a resident event connection even when trackpad
-        // monitoring is disabled. This tap never modifies or suppresses input.
+        // macOS 27 requires a resident event connection.
         if let sessionTap {
             sessionTap.enable()
             if sessionTap.isEnabled { return true }
@@ -130,9 +129,8 @@ final class DockSwipeTransport {
         direction: SpaceSwitchCoordinator.Direction,
         velocity: Double
     ) -> PreparedGesture? {
-        // ISS bf32cf9: three Dock events, with velocity only on the ending event.
-        // Do not write legacy scroll fields: field 119 clears horizontal motion
-        // on macOS 27. Do not modify events after reconstruction.
+        // Based on ISS bf32cf9. Field 119 clears horizontal motion on macOS 27.
+        // Reconstructed events must remain immutable.
         let sign = direction == .right ? -1.0 : 1.0
         let speed = velocity.isFinite
             ? min(max(abs(velocity), 1), Self.serializedVelocityCeiling)

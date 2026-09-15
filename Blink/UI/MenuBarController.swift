@@ -1,8 +1,6 @@
 import AppKit
 import Observation
 
-/// Renders exclusively through the native status button's image. AppKit owns
-/// layout, appearance and display replication; SwiftUI handles settings/previews.
 @MainActor
 final class MenuBarController {
     private let appState: AppState

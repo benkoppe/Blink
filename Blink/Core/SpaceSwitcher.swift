@@ -134,7 +134,7 @@ final class SpaceSwitcher {
         snapshot?.menuBarSpaceInfo
     }
 
-    /// Optimistic presentation only; never substitute this into observed SpaceInfo.
+    /// Optimistic menu-bar index; SpaceInfo remains observed.
     var menuBarSpaceIndex: Int? {
         guard let info = spaceInfo, let topology = topology(from: info) else { return nil }
         return switchCoordinator.presentation(in: topology).selectedIndex
@@ -366,8 +366,7 @@ final class SpaceSwitcher {
     /// Updates the authoritative snapshot independently of cursor position.
     private func observeSpaceTopologies() -> [String: SpaceSwitchCoordinator.Topology]? {
         guard let newSnapshot = loadSpaceSnapshot() else {
-            // Preserve the previous snapshot for menu presentation, but never
-            // return stale topology to a command submission.
+            // Retain the displayed snapshot, but reject stale commands.
             return nil
         }
 
