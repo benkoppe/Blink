@@ -34,16 +34,15 @@ platform :mac do
   end
 
   desc "Run the macOS test suite without signing"
-  lane :ci_tests do |options|
+  lane :ci_tests do
     project_root = File.expand_path("..", __dir__)
-    derived_data_path = options[:derived_data_path] || File.join(project_root, "build", "DerivedData")
 
     scan(
       project: File.join(project_root, "Blink.xcodeproj"),
       scheme: "Blink",
       configuration: "Debug",
       destination: "platform=macOS",
-      derived_data_path: derived_data_path,
+      derived_data_path: File.join(project_root, "build", "DerivedData"),
       clean: true,
       xcargs: "-skipMacroValidation CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO"
     )
