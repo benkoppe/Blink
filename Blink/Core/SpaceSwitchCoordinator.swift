@@ -70,12 +70,13 @@ final class SpaceSwitchCoordinator {
 
     struct Dependencies {
         let loadContext: @MainActor (_ displayIdentifier: String) -> Context?
+        let observeTopologies: @MainActor () -> [String: Topology]?
         let postStep:
             @MainActor (
                 _ gestureMode: GestureMode,
                 _ direction: Direction,
                 _ velocity: Double
-            ) -> Bool
+            ) -> GestureSubmission
         let sleep: @MainActor (_ duration: Duration) async throws -> Void
         var confirmationSleep: @MainActor () async throws -> Void = {
             try await Task.sleep(for: .seconds(3))
@@ -122,24 +123,11 @@ final class SpaceSwitchCoordinator {
     @ObservationIgnored
     private var confirmationTasks: [String: Task<Void, Never>] = [:]
 
-    private static let logger = Logger(category: "SpaceSwitchCoordinator")
-
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
     }
 
     // MARK: - Queries
-
-    func projectedIndex(for topology: Topology) -> Int? {
-        guard
-            let state = matchingState(for: topology),
-            let projectedSpaceID = state.command?.projectedSpaceID
-        else {
-            return topology.index(of: topology.currentSpaceID)
-        }
-
-        return topology.index(of: projectedSpaceID)
-    }
 
     func desiredIndex(for topology: Topology) -> Int? {
         guard let state = matchingState(for: topology) else {
@@ -397,7 +385,6 @@ final class SpaceSwitchCoordinator {
 
             if let command = state.command {
                 if topology.currentSpaceID == command.desiredSpaceID {
-                    Self.logger.info("Space confirmed: \(topology.currentSpaceID)")
                     cancelPostingIfNeeded(for: displayIdentifier)
                     state.confirmedSpaceID = topology.currentSpaceID
                     settleCommand(in: &state)
@@ -436,7 +423,9 @@ final class SpaceSwitchCoordinator {
 
     func cancelAll() {
         invalidateWorker()
-        for task in confirmationTasks.values { task.cancel() }
+        for task in confirmationTasks.values {
+            task.cancel()
+        }
         confirmationTasks.removeAll()
         displayStates.removeAll()
     }
@@ -567,7 +556,7 @@ final class SpaceSwitchCoordinator {
                     return
                 }
 
-                guard
+                guard case .submitted =
                     dependencies.postStep(
                         latestCommand.gestureMode,
                         currentDirection,
@@ -756,7 +745,6 @@ final class SpaceSwitchCoordinator {
         else { return }
         let revision = command.revision
         let sleep = dependencies.confirmationSleep
-        Self.logger.info("Awaiting Space confirmation: origin=\(command.originSpaceID), target=\(command.desiredSpaceID)")
         confirmationTasks[displayIdentifier] = Task { @MainActor [weak self] in
             do {
                 try await sleep()
@@ -770,29 +758,23 @@ final class SpaceSwitchCoordinator {
                 pending.revision == revision
             else { return }
             self.confirmationTasks.removeValue(forKey: displayIdentifier)
-            guard
-                let context = self.dependencies.loadContext(displayIdentifier),
-                context.topology.displayIdentifier == displayIdentifier
-            else {
-                // No fresh observation is available. Drop the prediction rather
-                // than retaining an unconfirmed destination indefinitely.
+            guard let topologies = self.dependencies.observeTopologies() else {
+                // Missing observations must not leave an unconfirmed command active.
                 state.command = nil
                 self.displayStates[displayIdentifier] = state
-                Self.logger.info("Space confirmation expired without a fresh context")
+                Logger.spaceSwitchCoordinator.debug("Space confirmation expired without a fresh observation")
                 return
             }
-            let topology = context.topology
-            state.spaceIDs = topology.spaceIDs
-            state.confirmedSpaceID = topology.currentSpaceID
-            if topology.currentSpaceID == pending.desiredSpaceID {
-                self.settleCommand(in: &state)
-                Self.logger.info("Space confirmed: \(topology.currentSpaceID)")
-            } else {
-                state.command = nil
-                Self.logger.info("Space confirmation expired: target=\(pending.desiredSpaceID), observed=\(topology.currentSpaceID)")
-            }
-            self.pruneHistory(in: &state)
-            self.displayStates[displayIdentifier] = state
+            self.reconcile(topologies: topologies, reason: .activeSpaceChanged)
+            guard
+                var remaining = self.displayStates[displayIdentifier],
+                remaining.command?.revision == revision
+            else { return }
+            remaining.command = nil
+            Logger.spaceSwitchCoordinator.debug(
+                "Space confirmation expired: target=\(pending.desiredSpaceID), observed=\(remaining.confirmedSpaceID)"
+            )
+            self.displayStates[displayIdentifier] = remaining
         }
     }
 
@@ -817,4 +799,10 @@ final class SpaceSwitchCoordinator {
         displayStates[displayIdentifier] = state
     }
 
+}
+
+// MARK: - Logger
+
+extension Logger {
+    fileprivate static let spaceSwitchCoordinator = Logger(category: "SpaceSwitchCoordinator")
 }

@@ -10,6 +10,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
+    private(set) var liveSpaceIndicator: LiveSpaceIndicator?
 
     // MARK: NSApplicationDelegate Methods
 
@@ -18,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if #available(macOS 27, *), !appState.isPreview {
+            liveSpaceIndicator = LiveSpaceIndicator(appState: appState)
+        }
         // Dismiss the windows
         appState.dismissSettingsWindow()
         appState.dismissPermissionsWindow()

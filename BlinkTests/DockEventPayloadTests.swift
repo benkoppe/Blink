@@ -101,28 +101,54 @@ struct DockEventPayloadTests {
         #expect(augmented.getIntegerValueField(eventTypeField) == 30)
     }
 
-    @Test("Production macOS 27 builder preserves phases, directions and bypass marker")
-    func productionEvents() throws {
+    @Test(
+        "Final macOS 27 events contain horizontal motion, ordered phases and bounded velocity",
+        arguments: [1.0, 80.0, 2_000.0, 999_999.0]
+    )
+    func productionEvents(velocity: Double) throws {
+        let transport = DockSwipeTransport(backend: .serialized)
         for direction in [SpaceSwitchCoordinator.Direction.left, .right] {
             let sign: Int32 = direction == .right ? -1 : 1
-            for phase: Int64 in [1, 2, 4] {
-                let event = try #require(SpaceSwitcher.makeDockSwipeEvent(
-                    phase: phase, direction: direction, velocity: 9_999,
-                    requiresAugmentation: true
-                ))
-                #expect(event.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue)
-                #expect(event.getIntegerValueField(phaseField) == phase)
-                let payload = DockEventPayload.makePayload(for: event)
-                #expect(payload.count == (phase == 4 ? 96 : 68))
-                #expect(readUInt32(payload, at: 36) == UInt32(phase) << 24)
-                #expect(readInt32(payload, at: 64) == sign * 65_536)
-                if phase == 4 {
-                    #expect(readInt32(payload, at: 84) == sign * 9_999 * 65_536)
-                } else {
-                    #expect(event.getDoubleValueField(velocityXField) == 0)
+            for mode in [SpaceSwitchCoordinator.GestureMode.instant, .missionControl] {
+                let gesture = try #require(
+                    transport.prepare(mode: mode, direction: direction, velocity: velocity)
+                )
+                let serialized = gesture.serializedEvents
+                try #require(serialized.count == 3)
+                for (index, data) in serialized.enumerated() {
+                    let phase = [1, 2, 4][index]
+                    let event = try #require(CGEvent(withDataAllocator: nil, data: data as CFData))
+                    #expect(NativeSwipePolicy.isAppPosted(event))
+                    #expect(event.getIntegerValueField(eventTypeField) == 30)
+                    let payload = try #require(SerializedGestureData.payload(from: data))
+                    #expect(payload.count == (phase == 4 ? 96 : 68))
+                    #expect(readUInt32(payload, at: 24) == (phase == 4 ? 2 : 1))
+                    #expect(readUInt32(payload, at: 36) == UInt32(phase) << 24)
+                    #expect(readUInt32(payload, at: 60) == 0x0003_0001)  // flavor 3, horizontal 1
+                    #expect(readInt32(payload, at: 64) == sign)
+                    if phase == 4 {
+                        #expect(readInt32(payload, at: 84) == sign * Int32(min(velocity, 2_000)) * 65_536)
+                    }
                 }
             }
         }
+    }
+
+    @Test("Serialized payload parser rejects malformed data")
+    func malformedPayload() {
+        #expect(SerializedGestureData.payload(from: Data()) == nil)
+        #expect(SerializedGestureData.payload(from: Data([0, 0, 0, 1])) == nil)
+        #expect(SerializedGestureData.payload(from: Data([0, 0, 0, 2, 0, 68, 0x10, 0x6d])) == nil)
+    }
+
+    @Test("Legacy gestures remain separate from serialized gestures")
+    func legacySequence() throws {
+        let transport = DockSwipeTransport(backend: .legacy)
+        let gesture = try #require(transport.prepare(mode: .instant, direction: .right, velocity: 100))
+        let types = try gesture.serializedEvents.map { data in
+            try #require(CGEvent(withDataAllocator: nil, data: data as CFData)).getIntegerValueField(eventTypeField)
+        }
+        #expect(types == [30, 29, 30, 29, 30, 29])
     }
 
     private func readUInt16(_ data: Data, at offset: Int) -> Int {
@@ -137,5 +163,32 @@ struct DockEventPayloadTests {
 
     private func readInt32(_ data: Data, at offset: Int) -> Int32 {
         Int32(bitPattern: readUInt32(data, at: offset))
+    }
+}
+
+/// Inspect the final serialized event independently of the production encoder.
+private enum SerializedGestureData {
+    static func payload(from data: Data) -> Data? {
+        guard data.starts(with: [0, 0, 0, 2]) else { return nil }
+        var offset = 4
+
+        while offset + 4 <= data.count {
+            let words = Int(data[offset]) << 8 | Int(data[offset + 1])
+            let tag = Int(data[offset + 2]) << 8 | Int(data[offset + 3])
+            let type = tag >> 14
+            guard words > 0, type != 2 else { return nil }
+
+            let size = type == 0 ? (words == 1 ? 8 : (words + 3) & ~3) : words * 4
+            offset += 4
+            guard size <= data.count - offset else { return nil }
+
+            if tag & 0x3FFF == 4_205 {
+                guard type == 0, words > 1 else { return nil }
+                return data.subdata(in: offset..<offset + words)
+            }
+            offset += size
+        }
+
+        return nil
     }
 }

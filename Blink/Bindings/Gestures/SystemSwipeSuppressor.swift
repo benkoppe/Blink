@@ -24,8 +24,7 @@ final class SystemSwipeSuppressor {
     private var suppressingNativeSwipe = false
     private var bypassingNativeSwipe = false
 
-    /// Return true to let the current native swipe reach macOS unchanged.
-    var shouldBypassSwipeSuppression: (() -> Bool)?
+    var policy = NativeSwipePolicy()
 
     func startMonitoring() {
         guard eventTap == nil else { return }
@@ -41,6 +40,7 @@ final class SystemSwipeSuppressor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
+                    self.policy.reset()
                     self.suppressingNativeSwipe = false
                     self.bypassingNativeSwipe = false
                     proxy.enable()
@@ -63,6 +63,7 @@ final class SystemSwipeSuppressor {
     }
 
     func stopMonitoring() {
+        policy.reset()
         eventTap?.disable()
         eventTap = nil
         suppressingNativeSwipe = false
@@ -70,7 +71,7 @@ final class SystemSwipeSuppressor {
     }
 
     private func handleGestureEvent(_ event: CGEvent) -> CGEvent? {
-        guard !isSyntheticOrAppPosted(event) else {
+        guard !NativeSwipePolicy.isAppPosted(event) else {
             return event
         }
 
@@ -82,7 +83,7 @@ final class SystemSwipeSuppressor {
     }
 
     private func handleDockControlEvent(_ event: CGEvent) -> CGEvent? {
-        guard !isSyntheticOrAppPosted(event) else {
+        guard !NativeSwipePolicy.isAppPosted(event) else {
             return event
         }
 
@@ -94,16 +95,17 @@ final class SystemSwipeSuppressor {
 
         switch phase {
         case kGesturePhaseBegan:
-            let shouldBypass = shouldBypassSwipeSuppression?() ?? false
+            let shouldBypass = policy.begin(.suppression)
             bypassingNativeSwipe = shouldBypass
             suppressingNativeSwipe = !shouldBypass
             return shouldBypass ? event : nil
 
         case kGesturePhaseEnded, kGesturePhaseCancelled:
-            let isBypassing = bypassingNativeSwipe
+            let wasSuppressing = suppressingNativeSwipe
+            policy.end(.suppression)
             bypassingNativeSwipe = false
             suppressingNativeSwipe = false
-            return isBypassing ? event : nil
+            return wasSuppressing ? nil : event
 
         default:
             if bypassingNativeSwipe {
@@ -119,13 +121,5 @@ final class SystemSwipeSuppressor {
         }
 
         return event.getIntegerValueField(kGestureSwipeMotionField) == kHorizontalGestureMotion
-    }
-
-    private func isSyntheticOrAppPosted(_ event: CGEvent) -> Bool {
-        if event.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue {
-            return true
-        }
-        let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
-        return sourcePID != 0
     }
 }

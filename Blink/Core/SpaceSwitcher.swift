@@ -66,178 +66,7 @@ private struct CGSSymbols {
     }
 }
 
-// MARK: - Gesture event field constants
-//
-// These are private CGEventField indices observed via reverse-engineering
-// of the synthetic Dock swipe trace. The values are stable across many
-// macOS releases.
-
-private enum GestureField {
-    static let swipeMask = CGEventField(rawValue: 115)!
-    static let eventType = CGEventField(rawValue: 55)!
-    static let hidType = CGEventField(rawValue: 110)!
-    static let positionX = CGEventField(rawValue: 125)!
-    static let positionY = CGEventField(rawValue: 126)!
-    static let scrollY = CGEventField(rawValue: 119)!
-    static let swipeMotion = CGEventField(rawValue: 123)!
-    static let swipeProgress = CGEventField(rawValue: 124)!
-    static let velocityX = CGEventField(rawValue: 129)!
-    static let velocityY = CGEventField(rawValue: 130)!
-    static let phase = CGEventField(rawValue: 132)!
-    static let phaseAlias = CGEventField(rawValue: 134)!
-    static let scrollFlags = CGEventField(rawValue: 135)!
-    static let zoomDeltaY = CGEventField(rawValue: 138)!
-    static let zoomDeltaX = CGEventField(rawValue: 139)!
-    static let sourceUnixProcessIDAlias = CGEventField(rawValue: 169)!
-}
-
-// Raw integer values for the private CGS event type and gesture phase enums
-private enum EventType {
-    static let gesture: Int64 = 29
-    static let dockControl: Int64 = 30
-}
-private enum Phase {
-    static let began: Int64 = 1
-    static let changed: Int64 = 2
-    static let ended: Int64 = 4
-}
-private enum Motion { static let horizontal: Int64 = 1 }
-private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
-
-// For an unknown reason, this must be used as zoomDeltaX
-private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
-
 private let kDefaultInstantGestureVelocity = 999_999.0
-private let kMacOS27ProgressMagnitude = 1.0
-private let kMacOS27MaximumGestureVelocity = 9_999.0
-private let kMacOS27GesturePhaseDelay: useconds_t = 10_000
-
-private extension Data {
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var value = value.littleEndian
-        Swift.withUnsafeBytes(of: &value) { bytes in
-            append(contentsOf: bytes)
-        }
-    }
-}
-
-/// Builds the private IOHID payload macOS 27 requires for synthetic Dock
-/// swipe events. The surrounding CGEvent serialization is big-endian, while
-/// the IOHID records themselves use the host's little-endian layout.
-enum DockEventPayload {
-    private static let fieldID = 4_205
-
-    static func fixedPoint1616(_ value: Double) -> Int32 {
-        guard value.isFinite else { return 0 }
-
-        let scaledValue = value * 65_536
-        guard scaledValue != 0 else {
-            return value == 0 ? 0 : (value.sign == .minus ? -1 : 1)
-        }
-
-        let clampedValue = min(
-            max(scaledValue, Double(Int32.min)),
-            Double(Int32.max)
-        )
-
-        let fixed = Int32(clampedValue.rounded(.towardZero))
-        return fixed == 0 && value != 0 ? (value < 0 ? -1 : 1) : fixed
-    }
-
-    static func makePayload(for event: CGEvent) -> Data {
-        let phase = event.getIntegerValueField(GestureField.phase)
-        let motion = event.getIntegerValueField(GestureField.swipeMotion)
-        let progress = event.getDoubleValueField(GestureField.swipeProgress)
-        let positionX = event.getDoubleValueField(GestureField.positionX)
-        let positionY = event.getDoubleValueField(GestureField.positionY)
-        let velocityX = event.getDoubleValueField(GestureField.velocityX)
-        let velocityY = event.getDoubleValueField(GestureField.velocityY)
-        let swipeMask = event.getIntegerValueField(GestureField.swipeMask)
-
-        let includesVelocity =
-            velocityX != 0 || velocityY != 0 || phase == Phase.ended
-
-        var payload = Data()
-        payload.reserveCapacity(includesVelocity ? 96 : 68)
-
-        payload.appendLittleEndian(
-            event.timestamp == 0 ? mach_absolute_time() : event.timestamp
-        )
-        payload.appendLittleEndian(UInt64(0)) // sender ID
-        payload.appendLittleEndian(UInt32(0)) // options
-        payload.appendLittleEndian(UInt32(0)) // attribute length
-        payload.appendLittleEndian(UInt32(includesVelocity ? 2 : 1))
-
-        // IOHIDFluidTouchGestureData
-        payload.appendLittleEndian(UInt32(40)) // record size
-        payload.appendLittleEndian(UInt32(23)) // kIOHIDEventTypeFluidTouchGesture
-        payload.appendLittleEndian(
-            UInt32(truncatingIfNeeded: (phase & 0xFF) << 24)
-        )
-        payload.append(0) // depth
-        payload.append(contentsOf: [UInt8](repeating: 0, count: 3))
-        payload.appendLittleEndian(fixedPoint1616(positionX))
-        payload.appendLittleEndian(fixedPoint1616(positionY))
-        payload.appendLittleEndian(Int32(0)) // position Z
-        payload.appendLittleEndian(UInt32(truncatingIfNeeded: swipeMask))
-        payload.appendLittleEndian(UInt16(truncatingIfNeeded: motion))
-        payload.appendLittleEndian(UInt16(3)) // Dock primary gesture flavor
-        payload.appendLittleEndian(fixedPoint1616(progress))
-
-        if includesVelocity {
-            // IOHIDVelocityEventData
-            payload.appendLittleEndian(UInt32(28)) // record size
-            payload.appendLittleEndian(UInt32(9)) // kIOHIDEventTypeVelocity
-            payload.appendLittleEndian(UInt32(0)) // options
-            payload.append(1) // depth
-            payload.append(contentsOf: [UInt8](repeating: 0, count: 3))
-            payload.appendLittleEndian(fixedPoint1616(velocityX))
-            payload.appendLittleEndian(fixedPoint1616(velocityY))
-            payload.appendLittleEndian(Int32(0)) // velocity Z
-        }
-
-        return payload
-    }
-
-    static func augmentedData(for event: CGEvent) -> Data? {
-        guard let flattenedData = event.__data(allocator: nil) as Data? else {
-            return nil
-        }
-
-        guard
-            flattenedData.count >= 4,
-            flattenedData[0] == 0,
-            flattenedData[1] == 0,
-            flattenedData[2] == 0,
-            flattenedData[3] == 2
-        else {
-            return nil
-        }
-
-        let payload = makePayload(for: event)
-        guard payload.count <= Int(UInt16.max) else { return nil }
-
-        var augmentedData = flattenedData
-        augmentedData.append(UInt8((payload.count >> 8) & 0xFF))
-        augmentedData.append(UInt8(payload.count & 0xFF))
-        augmentedData.append(UInt8((fieldID >> 8) & 0xFF))
-        augmentedData.append(UInt8(fieldID & 0xFF))
-        augmentedData.append(contentsOf: payload)
-
-        return augmentedData
-    }
-
-    static func augment(_ event: CGEvent) -> CGEvent? {
-        guard let augmentedData = augmentedData(for: event) else {
-            return nil
-        }
-
-        return CGEvent(
-            withDataAllocator: nil,
-            data: augmentedData as CFData
-        )
-    }
-}
 
 // MARK - SpaceInfo
 
@@ -302,9 +131,13 @@ final class SpaceSwitcher {
     private(set) weak var appState: AppState?
 
     var spaceInfo: SpaceInfo? {
-        guard let snapshot else { return nil }
+        snapshot?.menuBarSpaceInfo
+    }
 
-        return applyingProjectedIndex(to: snapshot.menuBarSpaceInfo)
+    /// Optimistic presentation only; never substitute this into observed SpaceInfo.
+    var menuBarSpaceIndex: Int? {
+        guard let info = spaceInfo, let topology = topology(from: info) else { return nil }
+        return indicatorPresentation.displayedSpaceIndex(in: topology)
     }
 
     private let symbols: CGSSymbols?
@@ -329,15 +162,12 @@ final class SpaceSwitcher {
                 ?? kDefaultInstantGestureVelocity)
     }
 
-    private var requiresMacOS27EventAugmentation: Bool {
-        ProcessInfo.processInfo.isOperatingSystemAtLeast(
-            OperatingSystemVersion(
-                majorVersion: 27,
-                minorVersion: 0,
-                patchVersion: 0
-            )
-        )
-    }
+    private let gestureTransport = DockSwipeTransport()
+
+    @ObservationIgnored
+    private lazy var indicatorPresentation = SpaceIndicatorPresentation(
+        refreshObservedState: { [weak self] in self?.refreshSpaceInfo() }
+    )
 
     @ObservationIgnored
     private lazy var switchCoordinator = SpaceSwitchCoordinator(
@@ -345,18 +175,20 @@ final class SpaceSwitcher {
             loadContext: { [weak self] displayIdentifier in
                 self?.freshSwitchContext(for: displayIdentifier)
             },
+            observeTopologies: { [weak self] in
+                self?.observeSpaceTopologies()
+            },
             postStep: { [weak self] gestureMode, direction, velocity in
                 guard let self else {
-                    return false
+                    return .unavailable
                 }
 
-                switch gestureMode {
-                case .instant:
-                    return autoreleasepool {
-                        self.postInstantGesture(direction, velocity: velocity)
-                    }
-                case .missionControl:
-                    return self.postMissionControlGesture(direction)
+                return autoreleasepool {
+                    self.gestureTransport.submit(
+                        mode: gestureMode,
+                        direction: direction,
+                        velocity: velocity
+                    )
                 }
             },
             sleep: { duration in
@@ -377,6 +209,7 @@ final class SpaceSwitcher {
     deinit {
         MainActor.assumeIsolated {
             switchCoordinator.cancelAll()
+            indicatorPresentation.cancelAll()
 
             let workspaceNC = NSWorkspace.shared.notificationCenter
             [spaceObserver, appObserver, screensWakeObserver]
@@ -409,11 +242,13 @@ final class SpaceSwitcher {
             return false
         }
 
-        return switchCoordinator.submitTarget(
-            context.topology.spaceIDs[index],
-            context: context,
-            baseVelocity: instantGestureVelocity
-        )
+        return submitWithIndicatorPrediction(context: context) {
+            switchCoordinator.submitTarget(
+                context.topology.spaceIDs[index],
+                context: context,
+                baseVelocity: instantGestureVelocity
+            )
+        }
     }
 
     @discardableResult
@@ -426,11 +261,13 @@ final class SpaceSwitcher {
             return false
         }
 
-        return switchCoordinator.submitTarget(
-            targetSpaceID,
-            context: context,
-            baseVelocity: instantGestureVelocity
-        )
+        return submitWithIndicatorPrediction(context: context) {
+            switchCoordinator.submitTarget(
+                targetSpaceID,
+                context: context,
+                baseVelocity: instantGestureVelocity
+            )
+        }
     }
 
     func canMoveLeft() -> Bool { canMove(.left) }
@@ -525,12 +362,19 @@ final class SpaceSwitcher {
 
     // MARK: - Space info loading
 
-    typealias Direction = SpaceSwitchCoordinator.Direction
+    private typealias Direction = SpaceSwitchCoordinator.Direction
 
     @discardableResult
     private func refreshSnapshot(
         reason: SpaceSwitchCoordinator.ReconciliationReason = .passiveRefresh
     ) -> SpaceSnapshot? {
+        guard let topologies = observeSpaceTopologies() else { return nil }
+        switchCoordinator.reconcile(topologies: topologies, reason: reason)
+        return snapshot
+    }
+
+    /// Updates the authoritative snapshot independently of cursor position.
+    private func observeSpaceTopologies() -> [String: SpaceSwitchCoordinator.Topology]? {
         guard let newSnapshot = loadSpaceSnapshot() else {
             // Preserve the previous snapshot for menu presentation, but never
             // return stale topology to a command submission.
@@ -539,12 +383,9 @@ final class SpaceSwitcher {
 
         snapshot = newSnapshot
 
-        switchCoordinator.reconcile(
-            topologies: coordinatorTopologies(in: newSnapshot),
-            reason: reason
-        )
-
-        return newSnapshot
+        let topologies = coordinatorTopologies(in: newSnapshot)
+        indicatorPresentation.discardInvalidPredictions(in: topologies)
+        return topologies
     }
 
     private func topology(
@@ -650,29 +491,6 @@ final class SpaceSwitcher {
         )
     }
 
-    private func applyingProjectedIndex(
-        to info: SpaceInfo
-    ) -> SpaceInfo {
-        guard
-            let topology = topology(from: info),
-            let projectedIndex = switchCoordinator.projectedIndex(for: topology),
-            info.spaceIDs.indices.contains(projectedIndex),
-            projectedIndex != info.currentIndex
-        else {
-            return info
-        }
-
-        return SpaceInfo(
-            currentIndex: projectedIndex,
-            spaceCount: info.spaceCount,
-            spaceIDs: info.spaceIDs,
-            currentSpaceID: info.currentSpaceID,
-            currentSpaceType: info.currentSpaceType,
-            displayIdentifier: info.displayIdentifier,
-            frontmostBundleID: info.frontmostBundleID
-        )
-    }
-
     private func canMove(_ direction: Direction) -> Bool {
         guard
             let snapshot,
@@ -694,12 +512,26 @@ final class SpaceSwitcher {
             return false
         }
 
-        return switchCoordinator.submitStep(
-            direction,
-            context: context,
-            wrap: wrapSpaces,
-            baseVelocity: instantGestureVelocity
-        )
+        return submitWithIndicatorPrediction(context: context) {
+            switchCoordinator.submitStep(
+                direction,
+                context: context,
+                wrap: wrapSpaces,
+                baseVelocity: instantGestureVelocity
+            )
+        }
+    }
+
+    private func submitWithIndicatorPrediction(
+        context: SpaceSwitchCoordinator.Context,
+        submit: () -> Bool
+    ) -> Bool {
+        guard submit() else { return false }
+        let displayIdentifier = context.topology.displayIdentifier
+        if let targetSpaceID = switchCoordinator.desiredSpaceID(for: displayIdentifier) {
+            indicatorPresentation.predict(spaceID: targetSpaceID, for: displayIdentifier)
+        }
+        return true
     }
 
     private enum OverlayMode: String {
@@ -1102,313 +934,6 @@ final class SpaceSwitcher {
 
         return CFUUIDCreateString(nil, uuid) as String?
     }
-
-    // MARK: - Gesture posting
-    //
-    // Synthesizes a CGEvent sequence to switch spaces.
-    // This allows for an instant space switch :)
-    // Much appreciation to the people that figured out this method.
-    // (See the README)
-    //
-    // Two different sequences are used:
-    //  - Outside Mission Control: a high-velocity began+changed+ended DockSwipe
-    //    trace that Dock treats as an instant desktop-space commit.
-    //  - Inside Mission Control: an explicit progress trace that remains more
-    //    reliable for moving across many spaces in the strip.
-
-    private static func dockSwipeFlagBits(for direction: Direction) -> Int64 {
-        var flagsProgress = Float.leastNonzeroMagnitude
-        if direction == .left {
-            flagsProgress.negate()
-        }
-
-        return Int64(Int32(bitPattern: flagsProgress.bitPattern))
-    }
-
-    private static func modernGestureVelocity(
-        _ velocity: Double,
-        direction: Direction
-    ) -> Double {
-        let magnitude = velocity.isFinite
-            ? min(max(abs(velocity), 1), kMacOS27MaximumGestureVelocity)
-            : kMacOS27MaximumGestureVelocity
-
-        return direction == .right ? -magnitude : magnitude
-    }
-
-    private static func modernGestureProgress(
-        _ progress: Double?,
-        direction: Direction
-    ) -> Double {
-        let defaultProgress =
-            direction == .right
-            ? kMacOS27ProgressMagnitude
-            : -kMacOS27ProgressMagnitude
-        let appProgress = progress ?? defaultProgress
-        let nonzeroProgress =
-            appProgress == 0 ? defaultProgress : appProgress
-
-        // macOS 27 interprets the serialized swipe direction opposite to the
-        // direction used by the existing public CGEvent fields.
-        return -nonzeroProgress
-    }
-
-    private static func makeGestureEvent() -> CGEvent? {
-        guard let event = CGEvent(source: nil) else { return nil }
-
-        event.setIntegerValueField(
-            GestureField.eventType,
-            value: EventType.gesture
-        )
-        event.setIntegerValueField(
-            kSyntheticMarkerField,
-            value: kSyntheticMarkerValue
-        )
-
-        return event
-    }
-
-    private func makeDockSwipeEvent(
-        phase: Int64,
-        direction: Direction,
-        velocity: Double?,
-        progress: Double? = nil
-    ) -> CGEvent? {
-        Self.makeDockSwipeEvent(
-            phase: phase,
-            direction: direction,
-            velocity: velocity,
-            progress: progress,
-            requiresAugmentation: requiresMacOS27EventAugmentation
-        )
-    }
-
-    static func makeDockSwipeEvent(
-        phase: Int64,
-        direction: Direction,
-        velocity: Double?,
-        progress: Double? = nil,
-        requiresAugmentation: Bool
-    ) -> CGEvent? {
-        let velocityX = velocity.map {
-            direction == .right ? $0 : -$0
-        }
-        let flagBits = Self.dockSwipeFlagBits(for: direction)
-
-        guard let event = CGEvent(source: nil) else { return nil }
-
-        event.setIntegerValueField(
-            GestureField.eventType,
-            value: EventType.dockControl
-        )
-        event.setIntegerValueField(
-            GestureField.hidType,
-            value: kDockSwipeHIDType
-        )
-        event.setIntegerValueField(GestureField.phase, value: phase)
-        event.setIntegerValueField(
-            GestureField.swipeMotion,
-            value: Motion.horizontal
-        )
-        event.setDoubleValueField(GestureField.scrollY, value: 0)
-        event.setIntegerValueField(
-            kSyntheticMarkerField,
-            value: kSyntheticMarkerValue
-        )
-
-        if requiresAugmentation {
-            event.setDoubleValueField(
-                GestureField.swipeProgress,
-                value: modernGestureProgress(progress, direction: direction)
-            )
-            event.setIntegerValueField(
-                GestureField.phaseAlias,
-                value: phase
-            )
-            event.setDoubleValueField(
-                GestureField.positionX,
-                value: 0.1
-            )
-            event.setDoubleValueField(
-                GestureField.zoomDeltaY,
-                value: 3
-            )
-            event.setDoubleValueField(
-                GestureField.sourceUnixProcessIDAlias,
-                value: Double(mach_absolute_time())
-            )
-
-            // The serialized Dock trace only carries velocity on its ending
-            // phase. Keeping the earlier phases velocity-free avoids them
-            // being interpreted as separate swipes on macOS 27.
-            if phase == Phase.ended, let velocity {
-                event.setDoubleValueField(
-                    GestureField.velocityX,
-                    value: modernGestureVelocity(velocity, direction: direction)
-                )
-            }
-
-            guard let augmented = DockEventPayload.augment(event) else { return nil }
-            // CGEvent reconstruction drops source metadata. Restore the marker
-            // on the event that is actually posted, or our taps suppress it.
-            augmented.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-            return augmented
-        }
-
-        if let progress {
-            event.setDoubleValueField(
-                GestureField.swipeProgress,
-                value: progress
-            )
-        }
-        event.setIntegerValueField(
-            GestureField.scrollFlags,
-            value: flagBits
-        )
-        event.setDoubleValueField(
-            GestureField.zoomDeltaX,
-            value: kFltTrueMin
-        )
-        if let velocityX {
-            event.setDoubleValueField(
-                GestureField.velocityX,
-                value: velocityX
-            )
-            event.setDoubleValueField(GestureField.velocityY, value: 0)
-        }
-
-        return event
-    }
-
-    private func paceModernGesturePhase() {
-        guard requiresMacOS27EventAugmentation else { return }
-
-        usleep(kMacOS27GesturePhaseDelay)
-    }
-
-    /// Synthetic DockSwipe trace for instant switching outside Mission Control.
-    @discardableResult
-    private func postInstantGesture(
-        _ direction: Direction,
-        velocity: Double? = nil
-    ) -> Bool {
-        if requiresMacOS27EventAugmentation {
-            var events: [CGEvent] = []
-            for phase in [Phase.began, Phase.changed, Phase.ended] {
-                guard
-                    let dock = makeDockSwipeEvent(
-                        phase: phase,
-                        direction: direction,
-                        velocity: kMacOS27MaximumGestureVelocity
-                    ),
-                    let companion = Self.makeGestureEvent()
-                else {
-                    Logger.spaceSwitcher.error("macOS 27 gesture construction failed")
-                    return false
-                }
-                events.append(contentsOf: [dock, companion])
-            }
-            Logger.spaceSwitcher.info("Posting macOS 27 gesture: \(String(describing: direction)), OS \(ProcessInfo.processInfo.operatingSystemVersionString)")
-            for event in events { event.post(tap: .cgSessionEventTap) }
-            return true
-        }
-        let velocity = velocity ?? instantGestureVelocity
-
-        guard postDockSwipe(
-            phase: Phase.began,
-            direction: direction,
-            velocity: velocity
-        ) else {
-            return false
-        }
-        paceModernGesturePhase()
-
-        guard postDockSwipe(
-            phase: Phase.changed,
-            direction: direction,
-            velocity: velocity
-        ) else {
-            return false
-        }
-        paceModernGesturePhase()
-
-        return postDockSwipe(
-            phase: Phase.ended,
-            direction: direction,
-            velocity: velocity
-        )
-    }
-
-    @discardableResult
-    private func postDockSwipe(
-        phase: Int64,
-        direction: Direction,
-        velocity: Double
-    ) -> Bool {
-        guard let gestureEvent = Self.makeGestureEvent(),
-            let dockEvent = makeDockSwipeEvent(
-                phase: phase,
-                direction: direction,
-                velocity: velocity
-            )
-        else { return false }
-
-        dockEvent.post(tap: .cgSessionEventTap)
-        gestureEvent.post(tap: .cgSessionEventTap)
-
-        return true
-    }
-
-    @discardableResult
-    private func postMissionControlGesture(_ direction: Direction) -> Bool {
-        let isRight = direction == .right
-        let progressSteps: [Double] = [0.25, 0.5, 0.75]
-        let progress = isRight ? 1.05 : -1.05
-        let velocity = 200.0
-
-        guard let beginGesture = Self.makeGestureEvent(),
-            let beginDock = makeDockSwipeEvent(
-                phase: Phase.began,
-                direction: direction,
-                velocity: nil,
-                progress: requiresMacOS27EventAugmentation
-                    ? (isRight ? 0.000016 : -0.000016) : nil
-            )
-        else { return false }
-
-        beginGesture.post(tap: .cgSessionEventTap)
-        beginDock.post(tap: .cgSessionEventTap)
-        paceModernGesturePhase()
-
-        for step in progressSteps {
-            guard let changedDock = makeDockSwipeEvent(
-                phase: Phase.changed,
-                direction: direction,
-                velocity: velocity,
-                progress: isRight ? step : -step
-            ) else {
-                return false
-            }
-
-            changedDock.post(tap: .cgSessionEventTap)
-            paceModernGesturePhase()
-        }
-
-        guard let endGesture = Self.makeGestureEvent(),
-            let endDock = makeDockSwipeEvent(
-                phase: Phase.ended,
-                direction: direction,
-                velocity: velocity,
-                progress: progress
-            )
-        else { return false }
-
-        endGesture.post(tap: .cgSessionEventTap)
-        endDock.post(tap: .cgSessionEventTap)
-
-        return true
-    }
-
 }
 
 // MARK: - Logger

@@ -60,6 +60,7 @@ private final class CoordinatorHarness {
 
     let sleeper = ControlledSleeper()
     var confirmationSleeper: ControlledSleeper?
+    var observationUnavailable = false
 
     var cursorDisplayIdentifier = "display-a"
 
@@ -82,18 +83,22 @@ private final class CoordinatorHarness {
 
                 return self.contexts[displayIdentifier]
             },
+            observeTopologies: { [weak self] in
+                guard let self else { return nil }
+                return self.observationUnavailable ? nil : self.contexts.mapValues(\.topology)
+            },
             postStep: {
                 [weak self]
                 gestureMode,
                 direction,
                 velocity in
 
-                guard let self else { return false }
+                guard let self else { return .unavailable }
 
                 self.postAttempts += 1
 
                 if self.postAttempts == self.failingPostAttempt {
-                    return false
+                    return .unavailable
                 }
 
                 self.posts.append(
@@ -106,7 +111,7 @@ private final class CoordinatorHarness {
                     )
                 )
 
-                return true
+                return .submitted
             },
             sleep: { [weak self] duration in
                 guard let self else {
@@ -152,7 +157,9 @@ private final class CoordinatorHarness {
                 gestureMode: gestureMode
             )
 
-        if reconcileImmediately { reconcile(reason: reason) }
+        if reconcileImmediately {
+            reconcile(reason: reason)
+        }
     }
 
     func context(
@@ -248,16 +255,23 @@ struct SpaceSwitchCoordinatorTests {
     }
 
     @Test("Unconfirmed posting clears prediction without retrying", arguments: [false, true])
-    func unconfirmedPostingExpires(contextUnavailable: Bool) async throws {
+    func unconfirmedPostingExpires(observationUnavailable: Bool) async throws {
         let harness = CoordinatorHarness()
         let clock = ControlledSleeper()
         harness.confirmationSleeper = clock
         try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
         let coordinator = harness.coordinator
-        #expect(coordinator.submitStep(.right, context: try harness.context(for: "display-a"), wrap: false, baseVelocity: 100))
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
         try await waitForSleeper(clock, count: 1)
         #expect(coordinator.projectedSpaceID(for: "display-a") == 2)
-        if contextUnavailable { harness.makeContextUnavailable(for: "display-a") }
+        harness.observationUnavailable = observationUnavailable
         await clock.resumeAll()
         try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
         #expect(coordinator.projectedSpaceID(for: "display-a") == 1)
@@ -272,16 +286,36 @@ struct SpaceSwitchCoordinatorTests {
         harness.confirmationSleeper = clock
         try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
         let coordinator = harness.coordinator
-        #expect(coordinator.submitStep(.right, context: try harness.context(for: "display-a"), wrap: false, baseVelocity: 100))
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
         try await waitForSleeper(clock, count: 1)
-        #expect(coordinator.submitStep(.right, context: try harness.context(for: "display-a"), wrap: false, baseVelocity: 100))
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
         try await waitForSleeper(clock, count: 2)
         await clock.resumeFirst()
-        for _ in 0..<20 { await Task.yield() }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
         #expect(coordinator.hasActiveCommand(for: "display-a"))
         #expect(coordinator.desiredSpaceID(for: "display-a") == 3)
-        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 3,
-                                     reason: .activeSpaceChanged)
+        try harness.configureDisplay(
+            "display-a",
+            spaceIDs: [1, 2, 3],
+            currentSpaceID: 3,
+            reason: .activeSpaceChanged
+        )
         await clock.resumeAll()
         #expect(!coordinator.hasActiveCommand(for: "display-a"))
         #expect(coordinator.projectedSpaceID(for: "display-a") == 3)
@@ -296,10 +330,23 @@ struct SpaceSwitchCoordinatorTests {
         harness.confirmationSleeper = clock
         try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
         let coordinator = harness.coordinator
-        #expect(coordinator.submitStep(.right, context: try harness.context(for: "display-a"), wrap: false, baseVelocity: 100))
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
         try await waitForSleeper(clock, count: 1)
-        try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 2,
-                                     reconcileImmediately: false)
+        try harness.configureDisplay(
+            "display-a",
+            spaceIDs: [1, 2],
+            currentSpaceID: 2,
+            reconcileImmediately: false
+        )
+        // Confirmation must observe display-a even after the pointer leaves it.
+        harness.cursorDisplayIdentifier = "display-b"
         await clock.resumeAll()
         try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
         #expect(coordinator.projectedSpaceID(for: "display-a") == 2)
@@ -315,11 +362,20 @@ struct SpaceSwitchCoordinatorTests {
         harness.confirmationSleeper = clock
         try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
         let coordinator = harness.coordinator
-        #expect(coordinator.submitStep(.right, context: try harness.context(for: "display-a"), wrap: false, baseVelocity: 100))
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
         try await waitForSleeper(clock, count: 1)
         try harness.configureDisplay("display-a", spaceIDs: [10, 11], currentSpaceID: 10)
         await clock.resumeAll()
-        for _ in 0..<20 { await Task.yield() }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
         #expect(coordinator.projectedSpaceID(for: "display-a") == 10)
         #expect(!coordinator.hasActiveCommand(for: "display-a"))
         coordinator.cancelAll()
