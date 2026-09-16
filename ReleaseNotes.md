@@ -1,3 +1,11 @@
+# Blink 0.0.13
+
+## What's New
+- macOS 27 support
+
+## Known Issues
+- macOS 27 may delay menu bar icon updates
+
 # Blink 0.0.12
 
 ## What's New
