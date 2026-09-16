@@ -9,17 +9,6 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-/// CGEventField rawValue carrying the synthetic-gesture sentinel.
-/// Must match kSyntheticMarkerField in SpaceSwitcher.swift.
-let kSyntheticMarkerField = CGEventField(rawValue: 200)!
-
-/// Sentinel value written by SpaceSwitcher onto every synthetic CGEvent.
-/// ASCII 'SSWIPE' = 0x535357495045.
-let kSyntheticMarkerValue: Int64 = 0x5353_5749_5045
-
-/// Private CGEventField carrying the number of touches active in a gesture event.
-private let kTouchCountField = CGEventField(rawValue: 134)!
-
 /// Minimum accumulated horizontal delta (points) required to fire a swipe.
 private let kSwipeDeltaThreshold: Double = 0.06
 
@@ -42,15 +31,16 @@ final class SwipeGestureMonitor {
     /// first swipe, higher = harder to repeat).
     var sameDirectionRepeatSensitivity: Double = 0.06
 
-    /// When true for the first active frame of a gesture, Blink ignores that gesture
-    /// and lets macOS handle it normally.
-    var shouldIgnoreSwipe: (() -> Bool)?
+    var policy = NativeSwipePolicy()
+    private var monitoringGeneration: UInt64 = 0
+    private var ignoreUntilGestureEnds = false
 
     private var eventTap: EventTap?
 
     private struct GestureState {
         var isActive = false
         var shouldIgnoreCurrentGesture = false
+        var policySession: NativeSwipePolicy.Session?
         var lastFiredDirection: SwipeDirection?
         /// Accumulates delta in the same direction after a swipe fires, used to
         /// gate same-direction repeats. Reset to 0 each time a swipe fires.
@@ -60,9 +50,9 @@ final class SwipeGestureMonitor {
         var previousPositions: [String: CGPoint] = [:]
 
         mutating func reset() {
-            // print("reset state")
             isActive = false
             shouldIgnoreCurrentGesture = false
+            policySession = nil
             lastFiredDirection = nil
             postFireAccumulator = 0
             accumulatedDeltaX = 0
@@ -90,10 +80,14 @@ final class SwipeGestureMonitor {
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
                     self.state.reset()
+                    self.policy.reset()
+                    self.ignoreUntilGestureEnds = true
+                    self.monitoringGeneration &+= 1
                     proxy.enable()
                     return cgEvent
 
                 case .gesture:
+                    guard !NativeSwipePolicy.isAppPosted(cgEvent) else { return cgEvent }
                     if let nsEvent = NSEvent(cgEvent: cgEvent) {
                         self.handleEvent(nsEvent)
                     }
@@ -109,40 +103,47 @@ final class SwipeGestureMonitor {
     }
 
     func stopMonitoring() {
+        monitoringGeneration &+= 1
+        policy.reset()
         eventTap?.disable()
         eventTap = nil
         state.reset()
+        ignoreUntilGestureEnds = false
     }
 
     // MARK: - Event handling
 
     private func handleEvent(_ event: NSEvent) {
-        // Ignore synthetic events posted by SpaceSwitcher
-        guard let cgEvent = event.cgEvent else { return }
-
-        // Ignore synthetic events posted by SpaceSwitcher
-        if cgEvent.getIntegerValueField(kSyntheticMarkerField) == kSyntheticMarkerValue {
-            return
-        }
-
         let touches = event.allTouches()
         guard !touches.isEmpty else {
-            // print("touches empty")
+            policy.end(.recognition, session: state.policySession)
             state.reset()
+            ignoreUntilGestureEnds = false
             return
         }
 
         let activeFingerCount =
             touches.allSatisfy { $0.phase == .ended || $0.phase == .cancelled } ? 0 : touches.count
         if activeFingerCount == 0 {
-            // print("fingerCount 0")
+            policy.end(.recognition, session: state.policySession)
             state.reset()
+            ignoreUntilGestureEnds = false
             return
+        }
+
+        if ignoreUntilGestureEnds {
+            guard touches.allSatisfy({ $0.phase == .began }) else { return }
+            ignoreUntilGestureEnds = false
         }
 
         if !state.isActive {
             state.isActive = true
-            state.shouldIgnoreCurrentGesture = shouldIgnoreSwipe?() ?? false
+            let session = policy.begin(.recognition)
+            state.policySession = session
+            state.shouldIgnoreCurrentGesture = session.bypass
+        } else if state.policySession?.generation != policy.generation {
+            // Discard remaining touches after a shared session reset.
+            state.shouldIgnoreCurrentGesture = true
         }
 
         if state.shouldIgnoreCurrentGesture {
@@ -151,7 +152,7 @@ final class SwipeGestureMonitor {
 
         var dx: CGFloat = 0
         var dy: CGFloat = 0
-        for touch in event.allTouches() {
+        for touch in touches {
             let key = String(describing: touch.identity)
             let current = touch.normalizedPosition
 
@@ -192,9 +193,16 @@ final class SwipeGestureMonitor {
         state.accumulatedDeltaX = 0
 
         // Defer the action so the event-tap callback can return immediately.
-        let onSwipe = onSwipe
-        DispatchQueue.main.async {
-            onSwipe?(direction, activeFingerCount)
+        let generation = monitoringGeneration
+        let policyGeneration = policy.generation
+        DispatchQueue.main.async { [weak self] in
+            guard
+                let self,
+                self.monitoringGeneration == generation,
+                self.policy.generation == policyGeneration,
+                self.eventTap != nil
+            else { return }
+            self.onSwipe?(direction, activeFingerCount)
         }
     }
 }

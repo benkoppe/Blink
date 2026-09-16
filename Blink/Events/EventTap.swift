@@ -85,7 +85,7 @@ final class EventTap {
         }
     }
 
-    private let runLoop = CFRunLoopGetCurrent()
+    private let runLoop = CFRunLoopGetMain()
     private let mode: CFRunLoopMode = .commonModes
     private nonisolated let callback:
         (EventTap, CGEventTapProxy, CGEventType, CGEvent) -> Unmanaged<CGEvent>?
@@ -239,7 +239,11 @@ final class EventTap {
     func enable(timeout: Duration, onTimeout: @escaping () -> Void) {
         enable()
         Task { [weak self] in
-            try await Task.sleep(for: timeout)
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
             if self?.isEnabled == true {
                 onTimeout()
             }
@@ -267,12 +271,7 @@ private nonisolated func handleEvent(
     }
     let eventTap = Unmanaged<EventTap>.fromOpaque(refcon).takeUnretainedValue()
 
-    // When macOS disables the tap due to a timeout or user-input event, we must
-    // re-enable it *synchronously* here in the C callback before returning.
-    // Relying solely on the @MainActor callback to call proxy.enable() is unsafe:
-    // the actor hop is asynchronous, and by the time the main actor runs the
-    // closure the kernel's re-enable window has already closed, leaving the tap
-    // permanently dead until the next explicit enable() call (which never comes).
+    // Re-enable synchronously before returning.
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let port = eventTap.tapMachPort {
             os_log(
@@ -284,7 +283,6 @@ private nonisolated func handleEvent(
             )
             CGEvent.tapEnable(tap: port, enable: true)
         }
-        // Still dispatch to the @MainActor callback so callers can reset state.
     }
 
     return EventTap.performCallback(for: eventTap, proxy: proxy, type: type, event: event)

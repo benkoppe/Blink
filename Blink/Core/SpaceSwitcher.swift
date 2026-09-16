@@ -66,41 +66,6 @@ private struct CGSSymbols {
     }
 }
 
-// MARK: - Gesture event field constants
-//
-// These are private CGEventField indices observed via reverse-engineering
-// of the synthetic Dock swipe trace. The values are stable across many
-// macOS releases.
-
-private enum GestureField {
-    static let eventType = CGEventField(rawValue: 55)!
-    static let hidType = CGEventField(rawValue: 110)!
-    static let scrollY = CGEventField(rawValue: 119)!
-    static let swipeMotion = CGEventField(rawValue: 123)!
-    static let swipeProgress = CGEventField(rawValue: 124)!
-    static let velocityX = CGEventField(rawValue: 129)!
-    static let velocityY = CGEventField(rawValue: 130)!
-    static let phase = CGEventField(rawValue: 132)!
-    static let scrollFlags = CGEventField(rawValue: 135)!
-    static let zoomDeltaX = CGEventField(rawValue: 139)!
-}
-
-// Raw integer values for the private CGS event type and gesture phase enums
-private enum EventType {
-    static let gesture: Int64 = 29
-    static let dockControl: Int64 = 30
-}
-private enum Phase {
-    static let began: Int64 = 1
-    static let changed: Int64 = 2
-    static let ended: Int64 = 4
-}
-private enum Motion { static let horizontal: Int64 = 1 }
-private let kDockSwipeHIDType: Int64 = 23  // kIOHIDEventTypeDockSwipe
-
-// For an unknown reason, this must be used as zoomDeltaX
-private let kFltTrueMin = Double(Float.leastNonzeroMagnitude)
-
 private let kDefaultInstantGestureVelocity = 999_999.0
 
 // MARK - SpaceInfo
@@ -166,9 +131,13 @@ final class SpaceSwitcher {
     private(set) weak var appState: AppState?
 
     var spaceInfo: SpaceInfo? {
-        guard let snapshot else { return nil }
+        snapshot?.menuBarSpaceInfo
+    }
 
-        return applyingProjectedIndex(to: snapshot.menuBarSpaceInfo)
+    /// Optimistic menu-bar index; SpaceInfo remains observed.
+    var menuBarSpaceIndex: Int? {
+        guard let info = spaceInfo, let topology = topology(from: info) else { return nil }
+        return switchCoordinator.presentation(in: topology).selectedIndex
     }
 
     private let symbols: CGSSymbols?
@@ -193,24 +162,28 @@ final class SpaceSwitcher {
                 ?? kDefaultInstantGestureVelocity)
     }
 
+    private let gestureTransport = DockSwipeTransport()
+
     @ObservationIgnored
     private lazy var switchCoordinator = SpaceSwitchCoordinator(
         dependencies: .init(
             loadContext: { [weak self] displayIdentifier in
                 self?.freshSwitchContext(for: displayIdentifier)
             },
+            observeTopologies: { [weak self] in
+                self?.observeSpaceTopologies()
+            },
             postStep: { [weak self] gestureMode, direction, velocity in
                 guard let self else {
-                    return false
+                    return .unavailable
                 }
 
-                switch gestureMode {
-                case .instant:
-                    return autoreleasepool {
-                        self.postInstantGesture(direction, velocity: velocity)
-                    }
-                case .missionControl:
-                    return self.postMissionControlGesture(direction)
+                return autoreleasepool {
+                    self.gestureTransport.submit(
+                        mode: gestureMode,
+                        direction: direction,
+                        velocity: velocity
+                    )
                 }
             },
             sleep: { duration in
@@ -385,20 +358,21 @@ final class SpaceSwitcher {
     private func refreshSnapshot(
         reason: SpaceSwitchCoordinator.ReconciliationReason = .passiveRefresh
     ) -> SpaceSnapshot? {
+        guard let topologies = observeSpaceTopologies() else { return nil }
+        switchCoordinator.reconcile(topologies: topologies, reason: reason)
+        return snapshot
+    }
+
+    /// Updates the authoritative snapshot independently of cursor position.
+    private func observeSpaceTopologies() -> [String: SpaceSwitchCoordinator.Topology]? {
         guard let newSnapshot = loadSpaceSnapshot() else {
-            // Preserve the previous snapshot for menu presentation, but never
-            // return stale topology to a command submission.
+            // Retain the displayed snapshot, but reject stale commands.
             return nil
         }
 
         snapshot = newSnapshot
 
-        switchCoordinator.reconcile(
-            topologies: coordinatorTopologies(in: newSnapshot),
-            reason: reason
-        )
-
-        return newSnapshot
+        return coordinatorTopologies(in: newSnapshot)
     }
 
     private func topology(
@@ -501,29 +475,6 @@ final class SpaceSwitcher {
         return SpaceSwitchCoordinator.Context(
             topology: topology,
             gestureMode: gestureMode
-        )
-    }
-
-    private func applyingProjectedIndex(
-        to info: SpaceInfo
-    ) -> SpaceInfo {
-        guard
-            let topology = topology(from: info),
-            let projectedIndex = switchCoordinator.projectedIndex(for: topology),
-            info.spaceIDs.indices.contains(projectedIndex),
-            projectedIndex != info.currentIndex
-        else {
-            return info
-        }
-
-        return SpaceInfo(
-            currentIndex: projectedIndex,
-            spaceCount: info.spaceCount,
-            spaceIDs: info.spaceIDs,
-            currentSpaceID: info.currentSpaceID,
-            currentSpaceType: info.currentSpaceType,
-            displayIdentifier: info.displayIdentifier,
-            frontmostBundleID: info.frontmostBundleID
         )
     }
 
@@ -956,146 +907,6 @@ final class SpaceSwitcher {
 
         return CFUUIDCreateString(nil, uuid) as String?
     }
-
-    // MARK: - Gesture posting
-    //
-    // Synthesizes a CGEvent sequence to switch spaces.
-    // This allows for an instant space switch :)
-    // Much appreciation to the people that figured out this method.
-    // (See the README)
-    //
-    // Two different sequences are used:
-    //  - Outside Mission Control: a high-velocity began+changed+ended DockSwipe
-    //    trace that Dock treats as an instant desktop-space commit.
-    //  - Inside Mission Control: an explicit progress trace that remains more
-    //    reliable for moving across many spaces in the strip.
-
-    private func dockSwipeFlagBits(for direction: Direction) -> Int64 {
-        var flagsProgress = Float.leastNonzeroMagnitude
-        if direction == .left {
-            flagsProgress.negate()
-        }
-
-        return Int64(Int32(bitPattern: flagsProgress.bitPattern))
-    }
-
-    /// Synthetic DockSwipe trace for instant switching outside Mission Control.
-    @discardableResult
-    private func postInstantGesture(
-        _ direction: Direction,
-        velocity: Double? = nil
-    ) -> Bool {
-        let velocity = velocity ?? instantGestureVelocity
-
-        return postDockSwipe(phase: Phase.began, direction: direction, velocity: velocity)
-            && postDockSwipe(phase: Phase.changed, direction: direction, velocity: velocity)
-            && postDockSwipe(phase: Phase.ended, direction: direction, velocity: velocity)
-    }
-
-    @discardableResult
-    private func postDockSwipe(
-        phase: Int64,
-        direction: Direction,
-        velocity: Double
-    ) -> Bool {
-        let velocityX = direction == .right ? velocity : -velocity
-        let flagBits = dockSwipeFlagBits(for: direction)
-
-        guard let gestureEvent = CGEvent(source: nil),
-            let dockEvent = CGEvent(source: nil)
-        else { return false }
-
-        gestureEvent.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        gestureEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        dockEvent.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        dockEvent.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        dockEvent.setIntegerValueField(GestureField.phase, value: phase)
-        dockEvent.setIntegerValueField(GestureField.scrollFlags, value: flagBits)
-        dockEvent.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        dockEvent.setDoubleValueField(GestureField.scrollY, value: 0)
-        dockEvent.setDoubleValueField(GestureField.velocityX, value: velocityX)
-        dockEvent.setDoubleValueField(GestureField.velocityY, value: 0)
-        dockEvent.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        dockEvent.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        dockEvent.post(tap: .cgSessionEventTap)
-        gestureEvent.post(tap: .cgSessionEventTap)
-
-        return true
-    }
-
-    @discardableResult
-    private func postMissionControlGesture(_ direction: Direction) -> Bool {
-        let isRight = direction == .right
-        let flagDir = dockSwipeFlagBits(for: direction)
-        let progressSteps: [Double] = [0.25, 0.5, 0.75]
-        let progress = isRight ? 1.05 : -1.05
-        let velocity = isRight ? 200.0 : -200.0
-
-        guard let beginGesture = CGEvent(source: nil),
-            let beginDock = CGEvent(source: nil)
-        else { return false }
-
-        beginGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        beginGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        beginDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        beginDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        beginDock.setIntegerValueField(GestureField.phase, value: Phase.began)
-        beginDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        beginDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        beginDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        beginDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        beginDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        beginGesture.post(tap: .cgSessionEventTap)
-        beginDock.post(tap: .cgSessionEventTap)
-
-        for step in progressSteps {
-            guard let changedDock = CGEvent(source: nil) else { return false }
-            changedDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-            changedDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-            changedDock.setIntegerValueField(GestureField.phase, value: Phase.changed)
-            changedDock.setDoubleValueField(
-                GestureField.swipeProgress,
-                value: isRight ? step : -step
-            )
-            changedDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-            changedDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-            changedDock.setDoubleValueField(GestureField.scrollY, value: 0)
-            changedDock.setDoubleValueField(GestureField.velocityX, value: velocity)
-            changedDock.setDoubleValueField(GestureField.velocityY, value: 0)
-            changedDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-            changedDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-            changedDock.post(tap: .cgSessionEventTap)
-        }
-
-        guard let endGesture = CGEvent(source: nil),
-            let endDock = CGEvent(source: nil)
-        else { return false }
-
-        endGesture.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
-        endGesture.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        endDock.setIntegerValueField(GestureField.eventType, value: EventType.dockControl)
-        endDock.setIntegerValueField(GestureField.hidType, value: kDockSwipeHIDType)
-        endDock.setIntegerValueField(GestureField.phase, value: Phase.ended)
-        endDock.setDoubleValueField(GestureField.swipeProgress, value: progress)
-        endDock.setIntegerValueField(GestureField.scrollFlags, value: flagDir)
-        endDock.setIntegerValueField(GestureField.swipeMotion, value: Motion.horizontal)
-        endDock.setDoubleValueField(GestureField.scrollY, value: 0)
-        endDock.setDoubleValueField(GestureField.velocityX, value: velocity)
-        endDock.setDoubleValueField(GestureField.velocityY, value: 0)
-        endDock.setDoubleValueField(GestureField.zoomDeltaX, value: kFltTrueMin)
-        endDock.setIntegerValueField(kSyntheticMarkerField, value: kSyntheticMarkerValue)
-
-        endGesture.post(tap: .cgSessionEventTap)
-        endDock.post(tap: .cgSessionEventTap)
-
-        return true
-    }
-
 }
 
 // MARK: - Logger

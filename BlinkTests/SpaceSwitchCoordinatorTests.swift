@@ -4,7 +4,12 @@ import Testing
 @testable import Blink
 
 private actor ControlledSleeper {
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(UUID, CheckedContinuation<Void, Error>)] = []
+    private let ignoresCancellation: Bool
+
+    init(ignoresCancellation: Bool = false) {
+        self.ignoresCancellation = ignoresCancellation
+    }
 
     var waitingCount: Int {
         waiters.count
@@ -15,10 +20,13 @@ private actor ControlledSleeper {
 
         try Task.checkCancellation()
 
-        await withCheckedContinuation {
-            (continuation: CheckedContinuation<Void, Never>) in
-
-            waiters.append(continuation)
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append((id, continuation))
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
         }
 
         try Task.checkCancellation()
@@ -29,14 +37,19 @@ private actor ControlledSleeper {
             return
         }
 
-        waiters.removeFirst().resume()
+        waiters.removeFirst().1.resume()
+    }
+
+    private func cancel(_ id: UUID) {
+        guard !ignoresCancellation, let index = waiters.firstIndex(where: { $0.0 == id }) else { return }
+        waiters.remove(at: index).1.resume(throwing: CancellationError())
     }
 
     func resumeAll() {
         let currentWaiters = waiters
         waiters.removeAll()
 
-        for continuation in currentWaiters {
+        for (_, continuation) in currentWaiters {
             continuation.resume()
         }
     }
@@ -59,6 +72,8 @@ private final class CoordinatorHarness {
     }
 
     let sleeper = ControlledSleeper()
+    var confirmationSleeper: ControlledSleeper?
+    var observationUnavailable = false
 
     var cursorDisplayIdentifier = "display-a"
 
@@ -81,18 +96,22 @@ private final class CoordinatorHarness {
 
                 return self.contexts[displayIdentifier]
             },
+            observeTopologies: { [weak self] in
+                guard let self else { return nil }
+                return self.observationUnavailable ? nil : self.contexts.mapValues(\.topology)
+            },
             postStep: {
                 [weak self]
                 gestureMode,
                 direction,
                 velocity in
 
-                guard let self else { return false }
+                guard let self else { return .unavailable }
 
                 self.postAttempts += 1
 
                 if self.postAttempts == self.failingPostAttempt {
-                    return false
+                    return .unavailable
                 }
 
                 self.posts.append(
@@ -105,7 +124,7 @@ private final class CoordinatorHarness {
                     )
                 )
 
-                return true
+                return .submitted
             },
             sleep: { [weak self] duration in
                 guard let self else {
@@ -113,6 +132,13 @@ private final class CoordinatorHarness {
                 }
 
                 try await self.sleeper.sleep(duration)
+            },
+            confirmationSleep: { [weak self] in
+                if let sleeper = self?.confirmationSleeper {
+                    try await sleeper.sleep(.seconds(3))
+                } else {
+                    try await Task.sleep(for: .seconds(3))
+                }
             }
         )
     )
@@ -124,7 +150,8 @@ private final class CoordinatorHarness {
         gestureMode:
             SpaceSwitchCoordinator.GestureMode = .instant,
         reason:
-            SpaceSwitchCoordinator.ReconciliationReason = .passiveRefresh
+            SpaceSwitchCoordinator.ReconciliationReason = .passiveRefresh,
+        reconcileImmediately: Bool = true
     ) throws {
         guard
             let topology =
@@ -143,7 +170,9 @@ private final class CoordinatorHarness {
                 gestureMode: gestureMode
             )
 
-        reconcile(reason: reason)
+        if reconcileImmediately {
+            reconcile(reason: reason)
+        }
     }
 
     func context(
@@ -212,12 +241,13 @@ struct SpaceSwitchCoordinatorTests {
     private func waitUntil(
         _ condition: @escaping @MainActor () -> Bool
     ) async throws {
-        for _ in 0..<2_000 {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
             if condition() {
                 return
             }
 
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(1))
         }
 
         throw HarnessError.conditionTimedOut
@@ -227,15 +257,224 @@ struct SpaceSwitchCoordinatorTests {
         _ sleeper: ControlledSleeper,
         count: Int
     ) async throws {
-        for _ in 0..<2_000 {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
             if await sleeper.waitingCount == count {
                 return
             }
 
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(1))
         }
 
         throw HarnessError.sleeperTimedOut
+    }
+
+    @Test("Unconfirmed posting clears prediction without retrying", arguments: [false, true])
+    func unconfirmedPostingExpires(observationUnavailable: Bool) async throws {
+        let harness = CoordinatorHarness()
+        let clock = ControlledSleeper()
+        harness.confirmationSleeper = clock
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
+        try await waitForSleeper(clock, count: 1)
+        #expect(coordinator.projectedSpaceID(for: "display-a") == 2)
+        harness.observationUnavailable = observationUnavailable
+        await clock.resumeAll()
+        try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
+        #expect(coordinator.projectedSpaceID(for: "display-a") == 1)
+        #expect(harness.posts.count == 1)
+        coordinator.cancelAll()
+    }
+
+    @Test("Late confirmation settles and an old deadline cannot cancel a new request")
+    func confirmationRevisionIsolation() async throws {
+        let harness = CoordinatorHarness()
+        // Simulate completion after cancellation.
+        let clock = ControlledSleeper(ignoresCancellation: true)
+        harness.confirmationSleeper = clock
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
+        try await waitForSleeper(clock, count: 1)
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
+        try await waitForSleeper(clock, count: 2)
+        await clock.resumeFirst()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(coordinator.hasActiveCommand(for: "display-a"))
+        #expect(coordinator.desiredSpaceID(for: "display-a") == 3)
+        try harness.configureDisplay(
+            "display-a",
+            spaceIDs: [1, 2, 3],
+            currentSpaceID: 3,
+            reason: .activeSpaceChanged
+        )
+        await clock.resumeAll()
+        #expect(!coordinator.hasActiveCommand(for: "display-a"))
+        #expect(coordinator.projectedSpaceID(for: "display-a") == 3)
+        #expect(coordinator.lastSpaceID(for: try harness.topology(for: "display-a")) == 1)
+        coordinator.cancelAll()
+    }
+
+    @Test("Deadline accepts a fresh success even without a Space notification")
+    func deadlineObservesLateSuccess() async throws {
+        let harness = CoordinatorHarness()
+        let clock = ControlledSleeper()
+        harness.confirmationSleeper = clock
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
+        try await waitForSleeper(clock, count: 1)
+        try harness.configureDisplay(
+            "display-a",
+            spaceIDs: [1, 2],
+            currentSpaceID: 2,
+            reconcileImmediately: false
+        )
+        // Confirmation must not depend on pointer location.
+        harness.cursorDisplayIdentifier = "display-b"
+        await clock.resumeAll()
+        try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
+        #expect(coordinator.projectedSpaceID(for: "display-a") == 2)
+        #expect(coordinator.lastSpaceID(for: try harness.topology(for: "display-a")) == 1)
+        #expect(harness.posts.count == 1)
+        coordinator.cancelAll()
+    }
+
+    @Test("Topology replacement invalidates pending confirmation")
+    func confirmationTopologyReplacement() async throws {
+        let harness = CoordinatorHarness()
+        let clock = ControlledSleeper()
+        harness.confirmationSleeper = clock
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        #expect(
+            coordinator.submitStep(
+                .right,
+                context: try harness.context(for: "display-a"),
+                wrap: false,
+                baseVelocity: 100
+            )
+        )
+        try await waitForSleeper(clock, count: 1)
+        try harness.configureDisplay("display-a", spaceIDs: [10, 11], currentSpaceID: 10)
+        await clock.resumeAll()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(coordinator.projectedSpaceID(for: "display-a") == 10)
+        #expect(!coordinator.hasActiveCommand(for: "display-a"))
+        coordinator.cancelAll()
+    }
+
+    @Test("Confirmed requests release presentation before subsequent external movement")
+    func presentationFollowsExternalMovement() async throws {
+        let harness = CoordinatorHarness()
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        defer { coordinator.cancelAll() }
+        #expect(coordinator.submitTarget(2, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        let pending = coordinator.presentation(in: try harness.topology(for: "display-a"))
+        #expect(pending.selectedIndex == 1)
+        #expect(pending.pendingSpaceID == 2)
+        #expect(pending.observedSpaceID == 1)
+        #expect(pending.revision != nil)
+
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 2, reason: .activeSpaceChanged)
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).pendingSpaceID == nil)
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 3, reason: .activeSpaceChanged)
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).selectedIndex == 2)
+    }
+
+    @Test("A rejected post immediately releases the accepted indicator destination")
+    func presentationFollowsFailure() async throws {
+        let harness = CoordinatorHarness()
+        harness.failingPostAttempt = 1
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        defer { coordinator.cancelAll() }
+        #expect(coordinator.submitTarget(3, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).selectedIndex == 2)
+        try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).selectedIndex == 0)
+    }
+
+    @Test("Partial posting cancellation releases presentation and observes late movement")
+    func presentationAfterPartialCancellation() async throws {
+        let harness = CoordinatorHarness()
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3, 4, 5, 6], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        defer { coordinator.cancelAll() }
+        #expect(coordinator.submitTarget(6, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        try await waitForSleeper(harness.sleeper, count: 1)
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3, 4, 5, 6], currentSpaceID: 3, reconcileImmediately: false)
+        harness.cursorDisplayIdentifier = "display-b"
+        await harness.sleeper.resumeFirst()
+        try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
+        #expect(harness.posts.count == 4)
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).selectedIndex == 2)
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2, 3, 4, 5, 6], currentSpaceID: 5, reason: .activeSpaceChanged)
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).selectedIndex == 4)
+    }
+
+    @Test("Repeating a destination preserves its original confirmation deadline")
+    func noOpDoesNotExtendDeadline() async throws {
+        let harness = CoordinatorHarness()
+        let clock = ControlledSleeper()
+        harness.confirmationSleeper = clock
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        defer { coordinator.cancelAll() }
+        #expect(coordinator.submitTarget(2, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        try await waitForSleeper(clock, count: 1)
+        let revision = coordinator.presentation(in: try harness.topology(for: "display-a")).revision
+        #expect(coordinator.submitTarget(2, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).revision == revision)
+        await clock.resumeFirst()
+        try await waitUntil { !coordinator.hasActiveCommand(for: "display-a") }
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).pendingSpaceID == nil)
+    }
+
+    @Test("An identical destination still cancels incompatible gesture mode work")
+    func identicalTargetAfterModeChange() async throws {
+        let harness = CoordinatorHarness()
+        try harness.configureDisplay("display-a", spaceIDs: [1, 2], currentSpaceID: 1)
+        let coordinator = harness.coordinator
+        defer { coordinator.cancelAll() }
+        #expect(coordinator.submitTarget(2, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        try harness.changeModeWithoutReconciliation(for: "display-a", to: .missionControl)
+        #expect(!coordinator.submitTarget(2, context: try harness.context(for: "display-a"), baseVelocity: 100))
+        #expect(coordinator.presentation(in: try harness.topology(for: "display-a")).pendingSpaceID == nil)
     }
 
     @Test("Topology rejects invalid values")
@@ -690,6 +929,8 @@ struct SpaceSwitchCoordinatorTests {
         harness.makeContextUnavailable(
             for: "display-a"
         )
+        // Failure to read differs from an authoritative display removal.
+        harness.observationUnavailable = true
 
         await harness.sleeper.resumeFirst()
 

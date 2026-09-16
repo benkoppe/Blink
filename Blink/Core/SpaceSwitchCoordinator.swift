@@ -70,16 +70,21 @@ final class SpaceSwitchCoordinator {
 
     struct Dependencies {
         let loadContext: @MainActor (_ displayIdentifier: String) -> Context?
+        let observeTopologies: @MainActor () -> [String: Topology]?
         let postStep:
             @MainActor (
                 _ gestureMode: GestureMode,
                 _ direction: Direction,
                 _ velocity: Double
-            ) -> Bool
+            ) -> GestureSubmission
         let sleep: @MainActor (_ duration: Duration) async throws -> Void
+        var confirmationSleep: @MainActor () async throws -> Void = {
+            try await Task.sleep(for: .seconds(3))
+        }
     }
 
     private struct Command {
+        var revision = UUID()
         let originSpaceID: UInt64
         var desiredSpaceID: UInt64
         var projectedSpaceID: UInt64
@@ -104,8 +109,7 @@ final class SpaceSwitchCoordinator {
 
     private var displayStates: [String: DisplayState] = [:]
 
-    // Synthetic Dock gestures are global and not display-addressed. Only one
-    // display may therefore own the posting worker at a time.
+    // Global Dock gestures require a single posting worker.
     @ObservationIgnored
     private var worker: Task<Void, Never>?
 
@@ -115,21 +119,31 @@ final class SpaceSwitchCoordinator {
     @ObservationIgnored
     private var workerGeneration: UInt64 = 0
 
+    @ObservationIgnored
+    private var confirmationTasks: [String: Task<Void, Never>] = [:]
+
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
     }
 
     // MARK: - Queries
 
-    func projectedIndex(for topology: Topology) -> Int? {
-        guard
-            let state = matchingState(for: topology),
-            let projectedSpaceID = state.command?.projectedSpaceID
-        else {
-            return topology.index(of: topology.currentSpaceID)
-        }
+    /// Indicator state derived from the active command.
+    struct Presentation: Equatable {
+        let observedSpaceID: UInt64
+        let pendingSpaceID: UInt64?
+        let revision: UUID?
+        let selectedIndex: Int?
+    }
 
-        return topology.index(of: projectedSpaceID)
+    func presentation(in topology: Topology) -> Presentation {
+        let command = matchingState(for: topology)?.command
+        return Presentation(
+            observedSpaceID: topology.currentSpaceID,
+            pendingSpaceID: command?.desiredSpaceID,
+            revision: command?.revision,
+            selectedIndex: topology.index(of: command?.desiredSpaceID ?? topology.currentSpaceID)
+        )
     }
 
     func desiredIndex(for topology: Topology) -> Int? {
@@ -280,10 +294,6 @@ final class SpaceSwitchCoordinator {
             initialState.command?.desiredSpaceID
             ?? initialState.confirmedSpaceID
 
-        guard targetSpaceID != planningSpaceID else {
-            return true
-        }
-
         if let command = initialState.command,
             command.gestureMode != context.gestureMode
         {
@@ -291,7 +301,12 @@ final class SpaceSwitchCoordinator {
             return false
         }
 
+        guard targetSpaceID != planningSpaceID else {
+            return true
+        }
+
         acquirePostingLease(for: displayIdentifier)
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
 
         guard var state = matchingState(for: topology) else {
             return false
@@ -301,6 +316,7 @@ final class SpaceSwitchCoordinator {
 
         if let existingCommand = state.command {
             command = existingCommand
+            command.revision = UUID()
             command.desiredSpaceID = targetSpaceID
             command.baseVelocity = max(1, baseVelocity)
         } else {
@@ -323,7 +339,7 @@ final class SpaceSwitchCoordinator {
         if command.projectedSpaceID == command.desiredSpaceID,
             state.confirmedSpaceID == command.desiredSpaceID
         {
-            settleCommand(in: &state)
+            finishCommand(in: &state, for: displayIdentifier, outcome: .confirmed)
             displayStates[displayIdentifier] = state
             return true
         }
@@ -332,6 +348,8 @@ final class SpaceSwitchCoordinator {
 
         if command.projectedSpaceID != command.desiredSpaceID {
             startWorker(for: displayIdentifier)
+        } else {
+            scheduleConfirmation(for: displayIdentifier)
         }
 
         return true
@@ -346,6 +364,7 @@ final class SpaceSwitchCoordinator {
         let removedDisplayIdentifiers = Set(displayStates.keys).subtracting(topologies.keys)
 
         for displayIdentifier in removedDisplayIdentifiers {
+            confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
             cancelPostingIfNeeded(for: displayIdentifier)
             displayStates.removeValue(forKey: displayIdentifier)
         }
@@ -364,10 +383,11 @@ final class SpaceSwitchCoordinator {
             let previousConfirmedSpaceID = state.confirmedSpaceID
 
             guard state.spaceIDs == topology.spaceIDs else {
+                confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
                 cancelPostingIfNeeded(for: displayIdentifier)
-                state.command = nil
                 state.spaceIDs = topology.spaceIDs
                 state.confirmedSpaceID = topology.currentSpaceID
+                finishCommand(in: &state, for: displayIdentifier, outcome: .topologyChanged)
 
                 if previousConfirmedSpaceID != topology.currentSpaceID,
                     topology.spaceIDs.contains(previousConfirmedSpaceID)
@@ -384,17 +404,15 @@ final class SpaceSwitchCoordinator {
                 if topology.currentSpaceID == command.desiredSpaceID {
                     cancelPostingIfNeeded(for: displayIdentifier)
                     state.confirmedSpaceID = topology.currentSpaceID
-                    settleCommand(in: &state)
+                    finishCommand(in: &state, for: displayIdentifier, outcome: .confirmed)
                 } else if command.postedSpaceIDs.contains(topology.currentSpaceID) {
-                    // This is either the origin still being reported because CGS
-                    // lags, or an intermediate Space posted by this command.
+                    // Allow delayed or intermediate observations.
                     state.confirmedSpaceID = topology.currentSpaceID
                 } else if reason.resolvesConflicts {
-                    // A fresh authoritative observation landed somewhere Blink
-                    // did not post. Treat is as external activity.
+                    // Unexpected movement supersedes the command.
                     cancelPostingIfNeeded(for: displayIdentifier)
-                    state.command = nil
                     state.confirmedSpaceID = topology.currentSpaceID
+                    finishCommand(in: &state, for: displayIdentifier, outcome: .externalMovement)
 
                     if previousConfirmedSpaceID != topology.currentSpaceID,
                         topology.spaceIDs.contains(previousConfirmedSpaceID)
@@ -411,12 +429,19 @@ final class SpaceSwitchCoordinator {
             }
 
             pruneHistory(in: &state)
+            if state.command == nil {
+                confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+            }
             displayStates[displayIdentifier] = state
         }
     }
 
     func cancelAll() {
         invalidateWorker()
+        for task in confirmationTasks.values {
+            task.cancel()
+        }
+        confirmationTasks.removeAll()
         displayStates.removeAll()
     }
 
@@ -546,7 +571,7 @@ final class SpaceSwitchCoordinator {
                     return
                 }
 
-                guard
+                guard case .submitted =
                     dependencies.postStep(
                         latestCommand.gestureMode,
                         currentDirection,
@@ -555,7 +580,8 @@ final class SpaceSwitchCoordinator {
                 else {
                     abortCommand(
                         for: displayIdentifier,
-                        generation: generation
+                        generation: generation,
+                        outcome: .unavailable
                     )
                     return
                 }
@@ -635,18 +661,33 @@ final class SpaceSwitchCoordinator {
         return state
     }
 
-    private func settleCommand(in state: inout DisplayState) {
+    private enum CommandOutcome: String {
+        case confirmed, interrupted, unavailable, expired, observationUnavailable
+        case externalMovement, topologyChanged
+    }
+
+    private func finishCommand(
+        in state: inout DisplayState,
+        for displayIdentifier: String,
+        outcome: CommandOutcome
+    ) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+        cancelPostingIfNeeded(for: displayIdentifier)
         guard let command = state.command else {
             return
         }
 
-        if command.desiredSpaceID != command.originSpaceID,
+        // Only observed movement belongs in history.
+        if state.confirmedSpaceID != command.originSpaceID,
             state.spaceIDs.contains(command.originSpaceID)
         {
             state.lastSpaceID = command.originSpaceID
         }
 
         state.command = nil
+        Logger.spaceSwitchCoordinator.debug(
+            "Command \(command.revision): \(outcome.rawValue), display=\(displayIdentifier), target=\(command.desiredSpaceID), observed=\(state.confirmedSpaceID), postedDestinations=\(command.postedSpaceIDs.count - 1)"
+        )
     }
 
     private func pruneHistory(in state: inout DisplayState) {
@@ -672,21 +713,26 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        if var activeState = displayStates[activeDisplayIdentifier] {
-            activeState.command = nil
-            displayStates[activeDisplayIdentifier] = activeState
-        }
+        cancelCommand(for: activeDisplayIdentifier)
     }
 
     private func cancelCommand(for displayIdentifier: String) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
         cancelPostingIfNeeded(for: displayIdentifier)
 
         guard var state = displayStates[displayIdentifier] else {
             return
         }
 
-        state.command = nil
+        finishCommand(in: &state, for: displayIdentifier, outcome: .interrupted)
         displayStates[displayIdentifier] = state
+        refreshAfterInterruption()
+    }
+
+    private func refreshAfterInterruption() {
+        // Posted gestures may complete after cancellation.
+        guard let topologies = dependencies.observeTopologies() else { return }
+        reconcile(topologies: topologies, reason: .activeSpaceChanged)
     }
 
     private func cancelPostingIfNeeded(for displayIdentifier: String) {
@@ -723,11 +769,49 @@ final class SpaceSwitchCoordinator {
 
         worker = nil
         workerDisplayIdentifier = nil
+        scheduleConfirmation(for: displayIdentifier)
+    }
+
+    private func scheduleConfirmation(for displayIdentifier: String) {
+        confirmationTasks.removeValue(forKey: displayIdentifier)?.cancel()
+        guard
+            let command = displayStates[displayIdentifier]?.command,
+            command.projectedSpaceID == command.desiredSpaceID
+        else { return }
+        let revision = command.revision
+        let sleep = dependencies.confirmationSleep
+        confirmationTasks[displayIdentifier] = Task { @MainActor [weak self] in
+            do {
+                try await sleep()
+            } catch {
+                return
+            }
+            guard
+                !Task.isCancelled, let self,
+                var state = self.displayStates[displayIdentifier],
+                let pending = state.command,
+                pending.revision == revision
+            else { return }
+            self.confirmationTasks.removeValue(forKey: displayIdentifier)
+            guard let topologies = self.dependencies.observeTopologies() else {
+                self.finishCommand(in: &state, for: displayIdentifier, outcome: .observationUnavailable)
+                self.displayStates[displayIdentifier] = state
+                return
+            }
+            self.reconcile(topologies: topologies, reason: .activeSpaceChanged)
+            guard
+                var remaining = self.displayStates[displayIdentifier],
+                remaining.command?.revision == revision
+            else { return }
+            self.finishCommand(in: &remaining, for: displayIdentifier, outcome: .expired)
+            self.displayStates[displayIdentifier] = remaining
+        }
     }
 
     private func abortCommand(
         for displayIdentifier: String,
-        generation: UInt64
+        generation: UInt64,
+        outcome: CommandOutcome = .interrupted
     ) {
         guard
             workerGeneration == generation,
@@ -742,8 +826,15 @@ final class SpaceSwitchCoordinator {
             return
         }
 
-        state.command = nil
+        finishCommand(in: &state, for: displayIdentifier, outcome: outcome)
         displayStates[displayIdentifier] = state
+        refreshAfterInterruption()
     }
 
+}
+
+// MARK: - Logger
+
+extension Logger {
+    fileprivate static let spaceSwitchCoordinator = Logger(category: "SpaceSwitchCoordinator")
 }

@@ -16,13 +16,6 @@ struct BlinkApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            BlinkMenu()
-                .environment(appState)
-        } label: {
-            SpaceIconLabel(appState: appState)
-        }
-
         Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
             SettingsView()
                 .readWindow { window in

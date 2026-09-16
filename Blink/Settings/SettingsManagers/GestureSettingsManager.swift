@@ -20,6 +20,7 @@ final class GestureSettingsManager {
     @Ignore private(set) weak var appState: AppState?
     @Ignore private let monitor = SwipeGestureMonitor()
     @Ignore private let systemSwipeSuppressor = SystemSwipeSuppressor()
+    @Ignore private let swipePolicy = NativeSwipePolicy()
 
     @DefaultsKey(userDefaultsKey: "settings.disableSystemSwipeGestures")
     var disableSystemSwipeGestures: Bool = true
@@ -37,10 +38,9 @@ final class GestureSettingsManager {
         self.appState = appState
 
         let spaceSwitcher = appState.spaceSwitcher
-        monitor.shouldIgnoreSwipe = { [weak spaceSwitcher] in
-            spaceSwitcher?.isAppExposeActive() ?? false
-        }
-        systemSwipeSuppressor.shouldBypassSwipeSuppression = { [weak spaceSwitcher] in
+        monitor.policy = swipePolicy
+        systemSwipeSuppressor.policy = swipePolicy
+        swipePolicy.shouldBypass = { [weak spaceSwitcher] in
             spaceSwitcher?.isAppExposeActive() ?? false
         }
 
@@ -125,7 +125,8 @@ final class GestureSettingsManager {
     // MARK - Swipe handling
 
     private func handleSwipe(direction: SwipeDirection, fingerCount: Int) {
-        guard let appState else { return }
+        guard let appState,
+              appState.settingsManager.generalSettingsManager.bindingsEnabled else { return }
         let id = SwipeGestureID(direction: direction, fingerCount: fingerCount)
         guard let gesture = gesture(withID: id), let action = gesture.action else { return }
         action.execute(appState: appState)

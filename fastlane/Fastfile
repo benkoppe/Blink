@@ -10,6 +10,8 @@
 #     https://docs.fastlane.tools/plugins/available-plugins
 #
 
+require "shellwords"
+
 # Uncomment the line if you want fastlane to automatically update itself
 # update_fastlane
 
@@ -29,6 +31,42 @@ platform :mac do
 
     xcode_select("/Applications/Xcode_26.3.app")
     gym()
+  end
+
+  desc "Run the macOS test suite without signing"
+  lane :ci_tests do
+    project_root = File.expand_path("..", __dir__)
+
+    scan(
+      project: File.join(project_root, "Blink.xcodeproj"),
+      scheme: "Blink",
+      configuration: "Debug",
+      destination: "platform=macOS",
+      derived_data_path: File.join(project_root, "build", "DerivedData"),
+      # Reuse cached builds unless CI_CLEAN_BUILD=1.
+      clean: ENV["CI_CLEAN_BUILD"] == "1",
+      output_directory: File.join(project_root, "build", "TestResults"),
+      buildlog_path: File.join(project_root, "build", "Logs"),
+      result_bundle: true,
+      xcargs: "-skipMacroValidation CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO"
+    )
+  end
+
+  desc "Build an unsigned Blink Dev artifact for pull requests"
+  lane :pr_build do
+    ci_tests
+
+    project_root = File.expand_path("..", __dir__)
+    app_path = File.join(project_root, "build", "DerivedData", "Build", "Products", "Debug", "Blink Dev.app")
+    artifact_path = File.join(project_root, "build", "Blink-Dev.zip")
+    UI.user_error!("Blink Dev.app was not produced at #{app_path}") unless File.directory?(app_path)
+
+    revision = sh("git -C #{Shellwords.escape(project_root)} rev-parse HEAD", log: false).strip
+    File.write(File.join(project_root, "build", "REVISION.txt"),
+      "Built revision: #{revision}\nPR head: #{ENV.fetch('PR_HEAD_SHA', revision)}\n" \
+      "CI validates and packages the proposed merge revision.\n")
+    sh("ditto -c -k --sequesterRsrc --keepParent #{Shellwords.escape(app_path)} #{Shellwords.escape(artifact_path)}")
+    UI.success("Created #{artifact_path}")
   end
 
   desc "Create a keychain and import the certificate for code signing"

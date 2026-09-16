@@ -1,0 +1,71 @@
+name: Build PR
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr_build:
+    name: Test and package PR
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout proposed merge
+        uses: actions/checkout@v6
+
+      - name: Identify toolchain
+        id: toolchain
+        run: |
+          xcodebuild -version
+          echo "fingerprint=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Magic Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Xcode Cache
+        uses: irgaly/xcode-cache@v1
+        with:
+          deriveddata-directory: build/DerivedData
+          key: xcode-pr-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('**/Package.resolved', 'flake.lock', 'Blink.xcodeproj/project.pbxproj') }}-${{ github.sha }}
+          restore-keys: xcode-pr-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('**/Package.resolved', 'flake.lock', 'Blink.xcodeproj/project.pbxproj') }}-
+
+      - name: Test and package Blink Dev
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: nix develop . --command fastlane pr_build
+
+      - name: Upload test results and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blink-Tests-PR-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: |
+            build/TestResults
+            build/Logs
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Blink Dev
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blink-Dev-PR-${{ github.event.pull_request.number }}-merge-${{ github.sha }}
+          path: |
+            build/Blink-Dev.zip
+            build/REVISION.txt
+          if-no-files-found: error
+          retention-days: 14
