@@ -8,6 +8,10 @@ import CoreGraphics
 /// Shares one bypass decision across the touch and Dock event streams.
 @MainActor
 final class NativeSwipePolicy {
+    // Marker used by the legacy Dock event sequence on macOS before 27.
+    static let syntheticMarkerField = CGEventField.eventSourceUserData
+    static let syntheticMarkerValue: Int64 = 0x5353_5749_5045
+
     enum Consumer: Hashable {
         case recognition
         case suppression
@@ -60,7 +64,7 @@ final class NativeSwipePolicy {
     }
 
     static func isAppPosted(_ event: CGEvent) -> Bool {
-        // HID gestures have source PID 0.
-        event.getIntegerValueField(.eventSourceUnixProcessID) != 0
+        event.getIntegerValueField(syntheticMarkerField) == syntheticMarkerValue
+            || event.getIntegerValueField(.eventSourceUnixProcessID) != 0
     }
 }

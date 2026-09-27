@@ -15,6 +15,33 @@ private let kSwipeDeltaThreshold: Double = 0.06
 /// Dominance of x-axis over y-axis for trigger
 private let kSwipeDeltaXDominance: Double = 1.35
 
+/// A recognized swipe remains actionable after the physical touches end. The
+/// Dock stream can start a new policy session before this main-queue action runs.
+@MainActor
+final class SwipeActionDelivery {
+    private var generation: UInt64 = 0
+    private let schedule: (@escaping @MainActor () -> Void) -> Void
+
+    init(schedule: @escaping (@escaping @MainActor () -> Void) -> Void = { action in
+        DispatchQueue.main.async { action() }
+    }) {
+        self.schedule = schedule
+    }
+
+    func enqueue(_ action: @escaping @MainActor () -> Void) {
+        let generation = generation
+        schedule { [weak self] in
+            guard self?.generation == generation else { return }
+            action()
+        }
+    }
+
+    func invalidate() {
+        generation &+= 1
+    }
+}
+
+@MainActor
 final class SwipeGestureMonitor {
     /// Parameters: (direction, fingerCount)
     var onSwipe: ((SwipeDirection, Int) -> Void)?
@@ -32,7 +59,7 @@ final class SwipeGestureMonitor {
     var sameDirectionRepeatSensitivity: Double = 0.06
 
     var policy = NativeSwipePolicy()
-    private var monitoringGeneration: UInt64 = 0
+    private let actionDelivery = SwipeActionDelivery()
     private var ignoreUntilGestureEnds = false
 
     private var eventTap: EventTap?
@@ -82,7 +109,7 @@ final class SwipeGestureMonitor {
                     self.state.reset()
                     self.policy.reset()
                     self.ignoreUntilGestureEnds = true
-                    self.monitoringGeneration &+= 1
+                    self.actionDelivery.invalidate()
                     proxy.enable()
                     return cgEvent
 
@@ -103,7 +130,7 @@ final class SwipeGestureMonitor {
     }
 
     func stopMonitoring() {
-        monitoringGeneration &+= 1
+        actionDelivery.invalidate()
         policy.reset()
         eventTap?.disable()
         eventTap = nil
@@ -193,15 +220,8 @@ final class SwipeGestureMonitor {
         state.accumulatedDeltaX = 0
 
         // Defer the action so the event-tap callback can return immediately.
-        let generation = monitoringGeneration
-        let policyGeneration = policy.generation
-        DispatchQueue.main.async { [weak self] in
-            guard
-                let self,
-                self.monitoringGeneration == generation,
-                self.policy.generation == policyGeneration,
-                self.eventTap != nil
-            else { return }
+        actionDelivery.enqueue { [weak self] in
+            guard let self, self.eventTap != nil else { return }
             self.onSwipe?(direction, activeFingerCount)
         }
     }

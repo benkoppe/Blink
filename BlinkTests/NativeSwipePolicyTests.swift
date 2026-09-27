@@ -75,12 +75,57 @@ struct NativeSwipePolicyTests {
         #expect(policy.begin(.recognition) == third)
     }
 
-    @Test("Source PID distinguishes native from app-posted input")
+    @Test("Source PID or a legacy marker distinguishes native from app-posted input")
     func sourceClassification() throws {
         let event = try #require(CGEvent(source: nil))
         event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
         #expect(!NativeSwipePolicy.isAppPosted(event))
         event.setIntegerValueField(.eventSourceUnixProcessID, value: 123)
         #expect(NativeSwipePolicy.isAppPosted(event))
+        event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+        event.setIntegerValueField(
+            NativeSwipePolicy.syntheticMarkerField,
+            value: NativeSwipePolicy.syntheticMarkerValue
+        )
+        #expect(NativeSwipePolicy.isAppPosted(event))
+    }
+
+    @Test("A late Dock beginning cannot discard a recognized swipe", arguments: [true, false])
+    func queuedSwipeSurvivesDockSession(recognitionFirst: Bool) {
+        var pending: [@MainActor () -> Void] = []
+        let delivery = SwipeActionDelivery(schedule: { pending.append($0) })
+        let policy = NativeSwipePolicy()
+
+        let recognition: NativeSwipePolicy.Session
+        if recognitionFirst {
+            recognition = policy.begin(.recognition)
+        } else {
+            let suppression = policy.begin(.suppression)
+            recognition = policy.begin(.recognition)
+            policy.end(.suppression, session: suppression)
+        }
+        var delivered = 0
+        delivery.enqueue { delivered += 1 }
+        policy.end(.recognition, session: recognition)
+
+        _ = policy.begin(.suppression)
+        #expect(policy.generation != recognition.generation)
+        pending.removeFirst()()
+        #expect(delivered == 1)
+    }
+
+    @Test("Stopping recognition invalidates queued swipes")
+    func queuedSwipeInvalidation() {
+        var pending: [@MainActor () -> Void] = []
+        let delivery = SwipeActionDelivery(schedule: { pending.append($0) })
+        var delivered = 0
+        delivery.enqueue { delivered += 1 }
+        delivery.invalidate()
+        pending.removeFirst()()
+        #expect(delivered == 0)
+
+        delivery.enqueue { delivered += 1 }
+        pending.removeFirst()()
+        #expect(delivered == 1)
     }
 }

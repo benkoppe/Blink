@@ -152,6 +152,18 @@ struct DockEventPayloadTests {
         #expect(types == [30, 29, 30, 29, 30, 29])
     }
 
+    @Test("Legacy synthetic events remain identifiable with a zero source PID", arguments: [SpaceSwitchCoordinator.GestureMode.instant, .missionControl])
+    func legacyMarker(mode: SpaceSwitchCoordinator.GestureMode) throws {
+        let transport = DockSwipeTransport(backend: .legacy)
+        let gesture = try #require(transport.prepare(mode: mode, direction: .right, velocity: 100))
+        for event in gesture.events {
+            #expect(event.getIntegerValueField(NativeSwipePolicy.syntheticMarkerField)
+                == NativeSwipePolicy.syntheticMarkerValue)
+            event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+            #expect(NativeSwipePolicy.isAppPosted(event))
+        }
+    }
+
     @Test("Legacy Mission Control preserves phases, velocity and companion order", arguments: [true, false])
     func legacyMissionControl(right: Bool) throws {
         let transport = DockSwipeTransport(backend: .legacy)
