@@ -37,7 +37,7 @@ final class DockSwipeTransport {
 
     /// Keeps reconstructed events immutable until they are posted.
     struct PreparedGesture {
-        fileprivate let events: [CGEvent]
+        let events: [CGEvent]
 
         var serializedEvents: [Data] {
             events.compactMap { $0.__data(allocator: nil) as Data? }
@@ -217,6 +217,10 @@ final class DockSwipeTransport {
     private func makeCompanionEvent() -> CGEvent? {
         guard let event = CGEvent(source: nil) else { return nil }
         event.setIntegerValueField(GestureField.eventType, value: EventType.gesture)
+        event.setIntegerValueField(
+            NativeSwipePolicy.syntheticMarkerField,
+            value: NativeSwipePolicy.syntheticMarkerValue
+        )
         return event
     }
 
@@ -232,6 +236,10 @@ final class DockSwipeTransport {
         event.setIntegerValueField(GestureField.phase, value: phase.rawValue)
         event.setIntegerValueField(GestureField.swipeMotion, value: kHorizontalGestureMotion)
         event.setDoubleValueField(GestureField.scrollY, value: 0)
+        event.setIntegerValueField(
+            NativeSwipePolicy.syntheticMarkerField,
+            value: NativeSwipePolicy.syntheticMarkerValue
+        )
 
         if let progress {
             event.setDoubleValueField(GestureField.swipeProgress, value: progress)
