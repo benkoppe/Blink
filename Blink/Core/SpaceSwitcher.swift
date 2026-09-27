@@ -446,13 +446,17 @@ final class SpaceSwitcher {
     }
 
     private func freshActionContext() -> SpaceSwitchCoordinator.Context? {
-        guard
-            let snapshot = refreshSnapshot(reason: .commandSubmission)
-        else {
+        guard let snapshot = refreshSnapshot(reason: .commandSubmission) else {
+            Logger.spaceSwitcher.error("Cannot switch Spaces: no valid space snapshot")
             return nil
         }
 
-        return actionContext(in: snapshot)
+        guard let context = actionContext(in: snapshot) else {
+            Logger.spaceSwitcher.error("Cannot switch Spaces: cursor display missing from space snapshot")
+            return nil
+        }
+
+        return context
     }
 
     private func freshSwitchContext(
