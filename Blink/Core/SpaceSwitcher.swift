@@ -96,32 +96,6 @@ struct SpaceInfo: Equatable {
     }
 }
 
-private struct SpaceSnapshot {
-    let spaceInfoByDisplay: [String: SpaceInfo]
-    let fallbackSpaceInfo: SpaceInfo
-    let menuBarDisplayIdentifier: String?
-
-    var menuBarSpaceInfo: SpaceInfo {
-        if let menuBarDisplayIdentifier,
-            let info = spaceInfoByDisplay[menuBarDisplayIdentifier]
-        {
-            return info
-        }
-
-        return fallbackSpaceInfo
-    }
-
-    func spaceInfo(for displayIdentifier: String?) -> SpaceInfo {
-        if let displayIdentifier,
-            let info = spaceInfoByDisplay[displayIdentifier]
-        {
-            return info
-        }
-
-        return menuBarSpaceInfo
-    }
-}
-
 // MARK: - SpaceSwitcher
 
 @MainActor
@@ -416,8 +390,8 @@ final class SpaceSwitcher {
         in snapshot: SpaceSnapshot
     ) -> SpaceSwitchCoordinator.Topology? {
         guard
-            let displayIdentifier = cursorDisplayIdentifier(),
-            let info = snapshot.spaceInfoByDisplay[displayIdentifier]
+            let cursorDisplay = cursorDisplayIdentifier(),
+            let info = snapshot.spaceInfo(containingDisplay: cursorDisplay)
         else {
             return nil
         }
@@ -463,9 +437,10 @@ final class SpaceSwitcher {
         for displayIdentifier: String
     ) -> SpaceSwitchCoordinator.Context? {
         guard
-            cursorDisplayIdentifier() == displayIdentifier,
+            let cursorDisplay = cursorDisplayIdentifier(),
             let snapshot = loadSpaceSnapshot(),
-            let info = snapshot.spaceInfoByDisplay[displayIdentifier],
+            let info = snapshot.spaceInfo(containingDisplay: cursorDisplay),
+            info.displayIdentifier == displayIdentifier,
             let topology = topology(from: info)
         else {
             return nil
@@ -802,99 +777,11 @@ final class SpaceSwitcher {
 
         let menuBarDisplayIdentifier =
             cgs.copyMenuBarDisplayID?(connection)?.takeRetainedValue() as String?
-        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-
-        var spaceInfoByDisplay: [String: SpaceInfo] = [:]
-        var fallbackSpaceInfo: SpaceInfo?
-
-        for item in rawDisplays as NSArray {
-            guard let displayDict = item as? NSDictionary,
-                let info = extractSpaceInfo(
-                    from: displayDict,
-                    globalActiveSpaceID: activeSpaceID,
-                    frontmostBundleID: frontmostBundleID
-                )
-            else { continue }
-
-            if fallbackSpaceInfo == nil {
-                fallbackSpaceInfo = info
-            }
-
-            if let displayIdentifier = info.displayIdentifier {
-                spaceInfoByDisplay[displayIdentifier] = info
-            }
-        }
-
-        guard let fallbackSpaceInfo else { return nil }
-
-        return SpaceSnapshot(
-            spaceInfoByDisplay: spaceInfoByDisplay,
-            fallbackSpaceInfo: fallbackSpaceInfo,
-            menuBarDisplayIdentifier: menuBarDisplayIdentifier
-        )
-    }
-
-    private func extractSpaceInfo(
-        from displayDict: NSDictionary,
-        globalActiveSpaceID: UInt64,
-        frontmostBundleID: String?
-    )
-        -> SpaceInfo?
-    {
-        guard
-            let displayIdentifier =
-                displayDict["Display Identifier"] as? String,
-            !displayIdentifier.isEmpty,
-            let spacesArray = displayDict["Spaces"] as? NSArray
-        else {
-            return nil
-        }
-
-        let currentSpaceDict =
-            displayDict["Current Space"] as? NSDictionary
-
-        let perDisplayActiveSpaceID =
-            (currentSpaceDict?["id64"] as? NSNumber)?
-            .uint64Value
-
-        let currentSpaceType =
-            (currentSpaceDict?["type"] as? NSNumber)?
-            .intValue
-
-        let activeSpaceID =
-            perDisplayActiveSpaceID
-            ?? globalActiveSpaceID
-
-        var spaceIDs: [UInt64] = []
-
-        for item in spacesArray {
-            guard
-                let spaceDict = item as? NSDictionary,
-                let spaceID = (spaceDict["id64"] as? NSNumber)?.uint64Value,
-                spaceID != 0
-            else {
-                continue
-            }
-
-            spaceIDs.append(spaceID)
-        }
-
-        guard
-            !spaceIDs.isEmpty,
-            Set(spaceIDs).count == spaceIDs.count,
-            let activeIndex = spaceIDs.firstIndex(of: activeSpaceID)
-        else {
-            return nil
-        }
-
-        return SpaceInfo(
-            currentIndex: activeIndex,
-            spaceCount: spaceIDs.count,
-            spaceIDs: spaceIDs,
-            currentSpaceID: activeSpaceID,
-            currentSpaceType: currentSpaceType,
-            displayIdentifier: displayIdentifier,
-            frontmostBundleID: frontmostBundleID
+        return SpaceSnapshot.parse(
+            rawDisplays: rawDisplays as NSArray,
+            globalActiveSpaceID: activeSpaceID,
+            menuBarDisplayIdentifier: menuBarDisplayIdentifier,
+            frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         )
     }
 
