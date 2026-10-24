@@ -344,6 +344,9 @@ final class SpaceSwitcher {
             return nil
         }
 
+        if snapshot?.layoutDescription != newSnapshot.layoutDescription {
+            Logger.spaceSwitcher.info("Space layout: \(newSnapshot.layoutDescription)")
+        }
         snapshot = newSnapshot
 
         return coordinatorTopologies(in: newSnapshot)
@@ -370,53 +373,45 @@ final class SpaceSwitcher {
         in snapshot: SpaceSnapshot
     ) -> [String: SpaceSwitchCoordinator.Topology] {
         Dictionary(
-            uniqueKeysWithValues:
-                snapshot.spaceInfoByDisplay.compactMap {
-                    displayIdentifier, info in
-
-                    guard
-                        info.displayIdentifier == displayIdentifier,
-                        let topology = topology(from: info)
-                    else {
-                        return nil
-                    }
-
-                    return (displayIdentifier, topology)
-                }
+            uniqueKeysWithValues: snapshot.spaceInfos.compactMap(topology(from:)).map {
+                ($0.displayIdentifier, $0)
+            }
         )
     }
 
     private func actionTopology(
         in snapshot: SpaceSnapshot
     ) -> SpaceSwitchCoordinator.Topology? {
-        guard
-            let cursorDisplay = cursorDisplayIdentifier(),
-            let info = snapshot.spaceInfo(containingDisplay: cursorDisplay)
-        else {
-            return nil
-        }
+        cursorDisplayIdentifier().flatMap { actionTopology(in: snapshot, cursorDisplay: $0) }
+    }
 
-        return topology(from: info)
+    private func actionTopology(
+        in snapshot: SpaceSnapshot,
+        cursorDisplay: String
+    ) -> SpaceSwitchCoordinator.Topology? {
+        snapshot.spaceInfo(containingDisplay: cursorDisplay).flatMap(topology(from:))
     }
 
     private func actionContext(
         in snapshot: SpaceSnapshot
     ) -> SpaceSwitchCoordinator.Context? {
-        guard let topology = actionTopology(in: snapshot) else {
+        guard
+            let cursorDisplay = cursorDisplayIdentifier(),
+            let topology = actionTopology(in: snapshot, cursorDisplay: cursorDisplay)
+        else {
             return nil
         }
 
-        let gestureMode: SpaceSwitchCoordinator.GestureMode =
-            isMissionControlActive(
-                on: topology.displayIdentifier
-            )
-            ? .missionControl
-            : .instant
-
         return SpaceSwitchCoordinator.Context(
             topology: topology,
-            gestureMode: gestureMode
+            gestureMode: gestureMode(onPhysicalDisplay: cursorDisplay)
         )
+    }
+
+    private func gestureMode(
+        onPhysicalDisplay physicalDisplay: String
+    ) -> SpaceSwitchCoordinator.GestureMode {
+        isMissionControlActive(on: physicalDisplay) ? .missionControl : .instant
     }
 
     private func freshActionContext() -> SpaceSwitchCoordinator.Context? {
@@ -439,21 +434,15 @@ final class SpaceSwitcher {
         guard
             let cursorDisplay = cursorDisplayIdentifier(),
             let snapshot = loadSpaceSnapshot(),
-            let info = snapshot.spaceInfo(containingDisplay: cursorDisplay),
-            info.displayIdentifier == displayIdentifier,
-            let topology = topology(from: info)
+            let topology = actionTopology(in: snapshot, cursorDisplay: cursorDisplay),
+            topology.displayIdentifier == displayIdentifier
         else {
             return nil
         }
 
-        let gestureMode: SpaceSwitchCoordinator.GestureMode =
-            isMissionControlActive(on: displayIdentifier)
-            ? .missionControl
-            : .instant
-
         return SpaceSwitchCoordinator.Context(
             topology: topology,
-            gestureMode: gestureMode
+            gestureMode: gestureMode(onPhysicalDisplay: cursorDisplay)
         )
     }
 
@@ -689,7 +678,7 @@ final class SpaceSwitcher {
         displayBounds: CGRect?,
         debugDescription: String
     ) {
-        overlayModeReport(for: spaceInfo?.displayIdentifier)
+        overlayModeReport(for: cursorDisplayIdentifier())
     }
 
     private func overlayModeReport(

@@ -6,23 +6,53 @@
 import Foundation
 
 struct SpaceSnapshot {
-    let spaceInfoByDisplay: [String: SpaceInfo]
-    let fallbackSpaceInfo: SpaceInfo
+    /// How macOS assigns Spaces to displays ("Displays have separate Spaces").
+    enum Layout: Equatable {
+        /// One set of Spaces spans every display. macOS keys it "Main".
+        case shared(SpaceInfo)
+        /// Each display has its own Spaces, keyed by display UUID.
+        case perDisplay([String: SpaceInfo], fallback: SpaceInfo)
+    }
+
+    static let sharedDisplayIdentifier = "Main"
+
+    let layout: Layout
     let menuBarDisplayIdentifier: String?
 
-    var menuBarSpaceInfo: SpaceInfo {
-        if let menuBarDisplayIdentifier,
-            let info = spaceInfoByDisplay[menuBarDisplayIdentifier]
-        {
-            return info
+    var spaceInfos: [SpaceInfo] {
+        switch layout {
+        case .shared(let info): [info]
+        case .perDisplay(let infoByDisplay, _): Array(infoByDisplay.values)
         }
+    }
 
-        return fallbackSpaceInfo
+    var menuBarSpaceInfo: SpaceInfo {
+        switch layout {
+        case .shared(let info):
+            return info
+        case .perDisplay(let infoByDisplay, let fallback):
+            return menuBarDisplayIdentifier.flatMap { infoByDisplay[$0] } ?? fallback
+        }
     }
 
     /// The Spaces shown on a physical display, identified by its UUID string.
     func spaceInfo(containingDisplay physicalDisplayIdentifier: String) -> SpaceInfo? {
-        spaceInfoByDisplay[physicalDisplayIdentifier]
+        switch layout {
+        case .shared(let info): info
+        case .perDisplay(let infoByDisplay, _): infoByDisplay[physicalDisplayIdentifier]
+        }
+    }
+
+    var layoutDescription: String {
+        switch layout {
+        case .shared(let info):
+            "shared (\(info.spaceCount) Spaces)"
+        case .perDisplay(let infoByDisplay, _):
+            "per-display ("
+                + infoByDisplay.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value.spaceCount) Spaces" }
+                .joined(separator: ", ") + ")"
+        }
     }
 
     /// Parses the output of `CGSCopyManagedDisplaySpaces`.
@@ -55,11 +85,14 @@ struct SpaceSnapshot {
 
         guard let fallbackSpaceInfo else { return nil }
 
-        return SpaceSnapshot(
-            spaceInfoByDisplay: spaceInfoByDisplay,
-            fallbackSpaceInfo: fallbackSpaceInfo,
-            menuBarDisplayIdentifier: menuBarDisplayIdentifier
-        )
+        let layout: Layout =
+            if let shared = spaceInfoByDisplay[sharedDisplayIdentifier] {
+                .shared(shared)
+            } else {
+                .perDisplay(spaceInfoByDisplay, fallback: fallbackSpaceInfo)
+            }
+
+        return SpaceSnapshot(layout: layout, menuBarDisplayIdentifier: menuBarDisplayIdentifier)
     }
 
     private static func parseSpaceInfo(
