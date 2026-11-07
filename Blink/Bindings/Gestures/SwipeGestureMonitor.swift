@@ -5,63 +5,66 @@
 //  Created by Ben on 3/24/26.
 //
 
-import AppKit
 import CoreGraphics
 import Foundation
 
-/// Minimum accumulated horizontal delta (points) required to fire a swipe.
-private let kSwipeDeltaThreshold: Double = 0.06
+/// A recognized swipe remains actionable after the physical touches end. The
+/// Dock stream can start a new policy session before this main-queue action runs.
+@MainActor
+final class SwipeActionDelivery {
+    private var generation: UInt64 = 0
+    private let schedule: (@escaping @MainActor () -> Void) -> Void
 
-/// Dominance of x-axis over y-axis for trigger
-private let kSwipeDeltaXDominance: Double = 1.35
+    init(schedule: @escaping (@escaping @MainActor () -> Void) -> Void = { action in
+        DispatchQueue.main.async { action() }
+    }) {
+        self.schedule = schedule
+    }
 
+    func enqueue(_ action: @escaping @MainActor () -> Void) {
+        let generation = generation
+        schedule { [weak self] in
+            guard self?.generation == generation else { return }
+            action()
+        }
+    }
+
+    func invalidate() {
+        generation &+= 1
+    }
+}
+
+@MainActor
 final class SwipeGestureMonitor {
     /// Parameters: (direction, fingerCount)
     var onSwipe: ((SwipeDirection, Int) -> Void)?
 
-    /// Invert swipe direction
-    var flipSwipeDirection: Bool = false
-
-    /// When true, the same direction can fire multiple times within a single gesture.
-    var allowSameDirectionRepeat: Bool = false
-
-    /// Additional delta that must accumulate (beyond the base threshold) before the
-    /// same direction can fire again. Only meaningful when `allowSameDirectionRepeat`
-    /// is true. Same scale as `kSwipeDeltaThreshold` (0 = fires as easily as the
-    /// first swipe, higher = harder to repeat).
-    var sameDirectionRepeatSensitivity: Double = 0.06
-
-    var policy = NativeSwipePolicy()
-    private var monitoringGeneration: UInt64 = 0
-    private var ignoreUntilGestureEnds = false
-
-    private var eventTap: EventTap?
-
-    private struct GestureState {
-        var isActive = false
-        var shouldIgnoreCurrentGesture = false
-        var policySession: NativeSwipePolicy.Session?
-        var lastFiredDirection: SwipeDirection?
-        /// Accumulates delta in the same direction after a swipe fires, used to
-        /// gate same-direction repeats. Reset to 0 each time a swipe fires.
-        var postFireAccumulator: Double = 0
-        var accumulatedDeltaX: Double = 0
-        var accumulatedDeltaY: Double = 0
-        var previousPositions: [String: CGPoint] = [:]
-
-        mutating func reset() {
-            isActive = false
-            shouldIgnoreCurrentGesture = false
-            policySession = nil
-            lastFiredDirection = nil
-            postFireAccumulator = 0
-            accumulatedDeltaX = 0
-            accumulatedDeltaY = 0
-            previousPositions = [:]
-        }
+    /// Reports each swipe in the opposite direction.
+    var flipSwipeDirection: Bool {
+        get { recognizer.flipDirection }
+        set { recognizer.flipDirection = newValue }
     }
 
-    private var state = GestureState()
+    /// When true, the same direction can fire multiple times within a single gesture.
+    var allowSameDirectionRepeat: Bool {
+        get { recognizer.allowSameDirectionRepeat }
+        set { recognizer.allowSameDirectionRepeat = newValue }
+    }
+
+    /// Extra travel before the same direction fires again.
+    var sameDirectionRepeatSensitivity: Double {
+        get { recognizer.sameDirectionRepeatSensitivity }
+        set { recognizer.sameDirectionRepeatSensitivity = newValue }
+    }
+
+    private var recognizer = SwipeRecognizer()
+    var policy = NativeSwipePolicy()
+    private let actionDelivery = SwipeActionDelivery()
+    private var policySession: NativeSwipePolicy.Session?
+    private var shouldIgnoreCurrentGesture = false
+    private var ignoreUntilFingersLift = false
+
+    private var eventTap: EventTap?
 
     // MARK - Monitoring lifecycle
 
@@ -79,18 +82,15 @@ final class SwipeGestureMonitor {
 
                 switch type {
                 case .tapDisabledByTimeout, .tapDisabledByUserInput:
-                    self.state.reset()
+                    self.resetGesture()
                     self.policy.reset()
-                    self.ignoreUntilGestureEnds = true
-                    self.monitoringGeneration &+= 1
+                    self.ignoreUntilFingersLift = true
+                    self.actionDelivery.invalidate()
                     proxy.enable()
                     return cgEvent
 
                 case .gesture:
-                    guard !NativeSwipePolicy.isAppPosted(cgEvent) else { return cgEvent }
-                    if let nsEvent = NSEvent(cgEvent: cgEvent) {
-                        self.handleEvent(nsEvent)
-                    }
+                    self.process(cgEvent)
                     return cgEvent
 
                 default:
@@ -103,106 +103,51 @@ final class SwipeGestureMonitor {
     }
 
     func stopMonitoring() {
-        monitoringGeneration &+= 1
+        actionDelivery.invalidate()
         policy.reset()
         eventTap?.disable()
         eventTap = nil
-        state.reset()
-        ignoreUntilGestureEnds = false
+        resetGesture()
+        ignoreUntilFingersLift = false
     }
 
     // MARK: - Event handling
 
-    private func handleEvent(_ event: NSEvent) {
-        let touches = event.allTouches()
-        guard !touches.isEmpty else {
-            policy.end(.recognition, session: state.policySession)
-            state.reset()
-            ignoreUntilGestureEnds = false
+    func process(_ event: CGEvent) {
+        guard !NativeSwipePolicy.isAppPosted(event), let frame = TouchFrame(event) else { return }
+
+        if ignoreUntilFingersLift {
+            if frame.contacts.isEmpty { ignoreUntilFingersLift = false }
             return
         }
 
-        let activeFingerCount =
-            touches.allSatisfy { $0.phase == .ended || $0.phase == .cancelled } ? 0 : touches.count
-        if activeFingerCount == 0 {
-            policy.end(.recognition, session: state.policySession)
-            state.reset()
-            ignoreUntilGestureEnds = false
-            return
-        }
-
-        if ignoreUntilGestureEnds {
-            guard touches.allSatisfy({ $0.phase == .began }) else { return }
-            ignoreUntilGestureEnds = false
-        }
-
-        if !state.isActive {
-            state.isActive = true
-            let session = policy.begin(.recognition)
-            state.policySession = session
-            state.shouldIgnoreCurrentGesture = session.bypass
-        } else if state.policySession?.generation != policy.generation {
-            // Discard remaining touches after a shared session reset.
-            state.shouldIgnoreCurrentGesture = true
-        }
-
-        if state.shouldIgnoreCurrentGesture {
-            return
-        }
-
-        var dx: CGFloat = 0
-        var dy: CGFloat = 0
-        for touch in touches {
-            let key = String(describing: touch.identity)
-            let current = touch.normalizedPosition
-
-            if let prev = state.previousPositions[key] {
-                dx += current.x - prev.x
-                dy += current.y - prev.y
-            }
-
-            if touch.phase == .ended {
-                state.previousPositions.removeValue(forKey: key)
-            } else {
-                state.previousPositions[key] = current
+        for output in recognizer.consume(frame) {
+            switch output {
+            case .began:
+                let session = policy.begin(.recognition)
+                policySession = session
+                shouldIgnoreCurrentGesture = session.bypass
+            case .ended:
+                policy.end(.recognition, session: policySession)
+                policySession = nil
+                shouldIgnoreCurrentGesture = false
+            case .swipe(let direction, let fingers):
+                // After a shared session reset, ignore the rest of this gesture.
+                if policySession?.generation != policy.generation {
+                    shouldIgnoreCurrentGesture = true
+                }
+                guard !shouldIgnoreCurrentGesture else { continue }
+                // Defer the action so the event-tap callback can return immediately.
+                actionDelivery.enqueue { [weak self] in
+                    self?.onSwipe?(direction, fingers)
+                }
             }
         }
+    }
 
-        state.accumulatedDeltaX += dx
-        state.accumulatedDeltaY += dy
-
-        guard abs(state.accumulatedDeltaX) > abs(state.accumulatedDeltaY) * kSwipeDeltaXDominance,
-            abs(state.accumulatedDeltaX) >= kSwipeDeltaThreshold
-        else { return }
-
-        let rawDirection: SwipeDirection = state.accumulatedDeltaX > 0 ? .right : .left
-        let direction = flipSwipeDirection ? rawDirection.opposite : rawDirection
-
-        if direction == state.lastFiredDirection {
-            state.postFireAccumulator += abs(dx)
-            guard allowSameDirectionRepeat,
-                state.postFireAccumulator >= sameDirectionRepeatSensitivity
-            else {
-                state.accumulatedDeltaX = 0
-                return
-            }
-        }
-
-        state.lastFiredDirection = direction
-        state.postFireAccumulator = 0
-        state.accumulatedDeltaX = 0
-
-        // Defer the action so the event-tap callback can return immediately.
-        let generation = monitoringGeneration
-        let policyGeneration = policy.generation
-        DispatchQueue.main.async { [weak self] in
-            guard
-                let self,
-                self.monitoringGeneration == generation,
-                self.policy.generation == policyGeneration,
-                self.eventTap != nil
-            else { return }
-            self.onSwipe?(direction, activeFingerCount)
-        }
+    private func resetGesture() {
+        recognizer.reset()
+        policySession = nil
+        shouldIgnoreCurrentGesture = false
     }
 }
