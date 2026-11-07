@@ -114,10 +114,7 @@ final class SwipeGestureMonitor {
                     return cgEvent
 
                 case .gesture:
-                    guard !NativeSwipePolicy.isAppPosted(cgEvent) else { return cgEvent }
-                    if let nsEvent = NSEvent(cgEvent: cgEvent) {
-                        self.handleEvent(nsEvent)
-                    }
+                    self.process(cgEvent)
                     return cgEvent
 
                 default:
@@ -139,6 +136,13 @@ final class SwipeGestureMonitor {
     }
 
     // MARK: - Event handling
+
+    func process(_ event: CGEvent) {
+        guard !NativeSwipePolicy.isAppPosted(event), let nsEvent = NSEvent(cgEvent: event) else {
+            return
+        }
+        handleEvent(nsEvent)
+    }
 
     private func handleEvent(_ event: NSEvent) {
         let touches = event.allTouches()
@@ -221,7 +225,7 @@ final class SwipeGestureMonitor {
 
         // Defer the action so the event-tap callback can return immediately.
         actionDelivery.enqueue { [weak self] in
-            guard let self, self.eventTap != nil else { return }
+            guard let self else { return }
             self.onSwipe?(direction, activeFingerCount)
         }
     }
